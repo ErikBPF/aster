@@ -25,6 +25,10 @@ pub struct EngineInfo {
     /// Engine family, e.g. "trino", "spark", "starrocks".
     pub kind: String,
     pub endpoint: String,
+    /// Routing group this instance belongs to when it sits behind a gateway.
+    /// Selecting a pool is then a choice of group, not of host.
+    #[serde(default)]
+    pub routing_group: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
