@@ -1,0 +1,11 @@
+{
+  "name": "orders",
+  "description": "one row per customer order",
+  "owner": "data-team",
+  "schema": [
+    { "name": "order_id", "type": "bigint", "required": true },
+    { "name": "customer_id", "type": "bigint", "required": true },
+    { "name": "total", "type": "decimal(12,2)", "required": true },
+    { "name": "placed_at", "type": "timestamp", "required": true }
+  ]
+}
