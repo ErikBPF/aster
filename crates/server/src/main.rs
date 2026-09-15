@@ -9,10 +9,11 @@ use aster_core::{
 
 mod gitstore;
 mod store;
+mod web;
 
 use axum::{
     extract::{Path, State},
-    http::{HeaderMap, StatusCode},
+    http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
@@ -138,24 +139,38 @@ struct QueryBody {
 }
 
 /// Temporary identity seam for the pre-SSO scaffold: identity arrives as
-/// headers. ponytail: replace with the OIDC session extractor in S2 — header
-/// trust is dev-only and must never reach production.
+/// headers, or as the `aster_subject`/`aster_roles` cookies the dev-login route
+/// sets so a browser can use the same routes. ponytail: replace with the OIDC
+/// session extractor in S2 — this trust is dev-only and must never reach
+/// production.
 fn principal_from_headers(headers: &HeaderMap) -> Result<Principal, ApiError> {
     let subject = headers
         .get("x-aster-subject")
         .and_then(|value| value.to_str().ok())
+        .map(|value| value.to_string())
+        .or_else(|| cookie(headers, "aster_subject"))
         .ok_or_else(|| CoreError::Unauthorized("missing x-aster-subject".into()))?;
 
     let roles = headers
         .get("x-aster-roles")
         .and_then(|value| value.to_str().ok())
+        .map(|value| value.to_string())
+        .or_else(|| cookie(headers, "aster_roles"))
         .map(|value| value.split(',').filter_map(parse_role).collect())
         .unwrap_or_else(|| vec![Role::Editor]);
 
-    Ok(Principal {
-        subject: subject.to_string(),
-        roles,
-    })
+    Ok(Principal { subject, roles })
+}
+
+fn cookie(headers: &HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get(header::COOKIE)?
+        .to_str()
+        .ok()?
+        .split(';')
+        .filter_map(|pair| pair.trim().split_once('='))
+        .find(|(key, _)| *key == name)
+        .map(|(_, value)| value.to_string())
 }
 
 fn parse_role(value: &str) -> Option<Role> {
@@ -319,6 +334,9 @@ async fn save_notebook(
 
 fn app(state: Arc<AppState>) -> Router {
     Router::new()
+        .route("/", get(web::index))
+        .route("/dev-login", get(web::dev_login))
+        .route("/notebooks/{id}", get(web::notebook_view))
         .route("/healthz", get(healthz))
         .route("/api/engines", get(list_engines))
         .route("/api/catalogs", get(list_catalogs))
