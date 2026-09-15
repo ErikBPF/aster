@@ -17,12 +17,17 @@ pub struct TrinoEngine {
 }
 
 impl TrinoEngine {
-    pub fn new(id: impl Into<String>, endpoint: impl Into<String>) -> Self {
+    pub fn new(
+        id: impl Into<String>,
+        endpoint: impl Into<String>,
+        routing_group: Option<String>,
+    ) -> Self {
         Self {
             info: EngineInfo {
                 id: EngineId::new(id),
                 kind: "trino".into(),
                 endpoint: endpoint.into(),
+                routing_group,
             },
             client: reqwest::Client::new(),
             user: "aster".into(),
@@ -53,6 +58,9 @@ impl QueryEngine for TrinoEngine {
             .client
             .post(url)
             .header("X-Trino-User", &self.user)
+            .header("X-Trino-Source", "aster")
+            .header("X-Trino-Client-Tags", "aster")
+            .headers(routing_headers(&self.info))
             .body(request.sql)
             .send()
             .await
@@ -127,17 +135,34 @@ impl QueryEngine for TrinoEngine {
     }
 }
 
+/// Trino Gateway picks the backend pool from this header; without it the
+/// gateway uses its own default routing group.
+fn routing_headers(info: &EngineInfo) -> reqwest::header::HeaderMap {
+    let mut headers = reqwest::header::HeaderMap::new();
+    if let Some(group) = &info.routing_group {
+        if let Ok(value) = reqwest::header::HeaderValue::from_str(group) {
+            headers.insert("X-Trino-Routing-Group", value);
+        }
+    }
+    headers
+}
+
 pub struct SparkEngine {
     info: EngineInfo,
 }
 
 impl SparkEngine {
-    pub fn new(id: impl Into<String>, endpoint: impl Into<String>) -> Self {
+    pub fn new(
+        id: impl Into<String>,
+        endpoint: impl Into<String>,
+        routing_group: Option<String>,
+    ) -> Self {
         Self {
             info: EngineInfo {
                 id: EngineId::new(id),
                 kind: "spark".into(),
                 endpoint: endpoint.into(),
+                routing_group,
             },
         }
     }
@@ -165,12 +190,17 @@ pub struct StarRocksEngine {
 }
 
 impl StarRocksEngine {
-    pub fn new(id: impl Into<String>, endpoint: impl Into<String>) -> Self {
+    pub fn new(
+        id: impl Into<String>,
+        endpoint: impl Into<String>,
+        routing_group: Option<String>,
+    ) -> Self {
         Self {
             info: EngineInfo {
                 id: EngineId::new(id),
                 kind: "starrocks".into(),
                 endpoint: endpoint.into(),
+                routing_group,
             },
         }
     }
@@ -194,11 +224,46 @@ impl QueryEngine for StarRocksEngine {
 }
 
 pub fn engine_from_config(config: &EngineConfig) -> Result<Arc<dyn QueryEngine>> {
+    let routing_group = config.routing_group.clone();
     let engine: Arc<dyn QueryEngine> = match config.kind.as_str() {
-        "trino" => Arc::new(TrinoEngine::new(&config.id, &config.endpoint)),
-        "spark" => Arc::new(SparkEngine::new(&config.id, &config.endpoint)),
-        "starrocks" => Arc::new(StarRocksEngine::new(&config.id, &config.endpoint)),
+        "trino" => Arc::new(TrinoEngine::new(
+            &config.id,
+            &config.endpoint,
+            routing_group,
+        )),
+        "spark" => Arc::new(SparkEngine::new(
+            &config.id,
+            &config.endpoint,
+            routing_group,
+        )),
+        "starrocks" => Arc::new(StarRocksEngine::new(
+            &config.id,
+            &config.endpoint,
+            routing_group,
+        )),
         other => return Err(CoreError::Invalid(format!("unknown engine kind: {other}"))),
     };
     Ok(engine)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn routing_group_becomes_a_gateway_header() {
+        let scoped = EngineInfo {
+            id: EngineId::new("adhoc"),
+            kind: "trino".into(),
+            endpoint: "http://gw:8080".into(),
+            routing_group: Some("adhoc".into()),
+        };
+        assert_eq!(routing_headers(&scoped)["x-trino-routing-group"], "adhoc");
+
+        let plain = EngineInfo {
+            routing_group: None,
+            ..scoped.clone()
+        };
+        assert!(routing_headers(&plain).is_empty());
+    }
 }
