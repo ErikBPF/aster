@@ -3,11 +3,15 @@ use std::time::Instant;
 
 use aster_core::{
     authorize, authorize_engine, AppConfig, AuditEvent, AuditSink, CatalogHealth, CatalogId,
-    CatalogRegistry, CoreError, EngineHealth, EngineId, EngineRegistry, Grants, InMemoryAudit,
-    InMemoryGrants, Notebook, NotebookStore, Principal, QueryRequest, Role,
+    CatalogRegistry, CoreError, DataContract, EngineHealth, EngineId, EngineRegistry, Grants,
+    InMemoryAudit, InMemoryGrants, InMemoryLlm, LlmStore, Notebook, NotebookStore, Principal,
+    QueryRequest, Role, SessionStore,
 };
 
+mod ai;
+mod contracts;
 mod gitstore;
+mod oidc;
 mod store;
 mod web;
 
@@ -19,6 +23,7 @@ use axum::{
     Json, Router,
 };
 use gitstore::GitNotebookStore;
+use oidc::{Oidc, OidcConfig};
 use serde::{Deserialize, Serialize};
 use store::PgStore;
 use tower_http::trace::TraceLayer;
@@ -30,6 +35,15 @@ struct AppState {
     grants: Arc<dyn Grants>,
     audit: Arc<dyn AuditSink>,
     notebooks: Arc<dyn NotebookStore>,
+    llm: Arc<dyn LlmStore>,
+    /// Contract files, read once at startup; deployment artifacts, not user data.
+    contracts: Arc<Vec<DataContract>>,
+    http: reqwest::Client,
+    sessions: Arc<SessionStore>,
+    oidc: Option<Arc<Oidc>>,
+    /// Accepts the pre-SSO header/cookie identity seam. Off whenever OIDC is
+    /// configured, unless explicitly forced for local development.
+    dev_login: bool,
 }
 
 async fn build_state(config: AppConfig) -> anyhow::Result<Arc<AppState>> {
@@ -44,24 +58,30 @@ async fn build_state(config: AppConfig) -> anyhow::Result<Arc<AppState>> {
     }
 
     let seeds = parse_grants(&std::env::var("ASTER_GRANTS").unwrap_or_default());
-    let (grants, audit): (Arc<dyn Grants>, Arc<dyn AuditSink>) = match std::env::var("DATABASE_URL")
-    {
-        Ok(url) => {
-            let store = Arc::new(PgStore::connect(&url).await?);
-            for (subject, engine) in &seeds {
-                store.seed_grant(subject, engine).await?;
+    let (grants, audit, llm): (Arc<dyn Grants>, Arc<dyn AuditSink>, Arc<dyn LlmStore>) =
+        match std::env::var("DATABASE_URL") {
+            Ok(url) => {
+                let store = Arc::new(PgStore::connect(&url).await?);
+                for (subject, engine) in &seeds {
+                    store.seed_grant(subject, engine).await?;
+                }
+                (store.clone(), store.clone(), store)
             }
-            (store.clone(), store)
-        }
-        Err(_) => {
-            tracing::warn!("DATABASE_URL unset; grants and audit are in-memory only");
-            let grants = InMemoryGrants::new();
-            for (subject, engine) in seeds {
-                grants.grant(subject, engine);
+            Err(_) => {
+                tracing::warn!(
+                    "DATABASE_URL unset; grants, audit and llm configs are in-memory only"
+                );
+                let grants = InMemoryGrants::new();
+                for (subject, engine) in seeds {
+                    grants.grant(subject, engine);
+                }
+                (
+                    Arc::new(grants),
+                    Arc::new(InMemoryAudit::new()),
+                    Arc::new(InMemoryLlm::new()),
+                )
             }
-            (Arc::new(grants), Arc::new(InMemoryAudit::new()))
-        }
-    };
+        };
 
     let notebook_dir =
         std::env::var("ASTER_NOTEBOOK_DIR").unwrap_or_else(|_| "data/notebooks".into());
@@ -70,6 +90,32 @@ async fn build_state(config: AppConfig) -> anyhow::Result<Arc<AppState>> {
     let notebooks: Arc<dyn NotebookStore> =
         Arc::new(GitNotebookStore::open(notebook_dir, notebook_branch)?);
 
+    // ponytail: a fixed development key keeps local runs working; a deployment
+    // must set ASTER_SESSION_KEY, which also invalidates sessions on rotation.
+    let session_key = match std::env::var("ASTER_SESSION_KEY") {
+        Ok(key) => key,
+        Err(_) => {
+            tracing::warn!("ASTER_SESSION_KEY unset; using the insecure development key");
+            "aster-development-key".into()
+        }
+    };
+    let sessions = Arc::new(SessionStore::new(session_key));
+
+    let contract_dir = std::env::var("ASTER_CONTRACTS_DIR").unwrap_or_else(|_| "contracts".into());
+    let contracts = contracts::load(std::path::Path::new(&contract_dir));
+    tracing::info!(
+        "loaded {} data contract(s) from {contract_dir}",
+        contracts.len()
+    );
+
+    let oidc = OidcConfig::from_env().map(|config| Arc::new(Oidc::new(config)));
+    let dev_login = oidc.is_none() || std::env::var("ASTER_DEV_LOGIN").is_ok();
+    if oidc.is_none() {
+        tracing::warn!("ASTER_OIDC_ISSUER unset; using the header/cookie dev identity seam");
+    } else if dev_login {
+        tracing::warn!("ASTER_DEV_LOGIN set; the dev identity seam is accepted alongside SSO");
+    }
+
     Ok(Arc::new(AppState {
         config,
         engines,
@@ -77,6 +123,17 @@ async fn build_state(config: AppConfig) -> anyhow::Result<Arc<AppState>> {
         grants,
         audit,
         notebooks,
+        llm,
+        contracts: Arc::new(contracts),
+        // ponytail: no redirects on the outbound client; add per-host allowlisting
+        // if users ever register endpoints outside the lab.
+        http: reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(std::time::Duration::from_secs(60))
+            .build()?,
+        sessions,
+        oidc,
+        dev_login,
     }))
 }
 
@@ -119,6 +176,7 @@ struct EngineSummary {
     id: EngineId,
     kind: String,
     endpoint: String,
+    routing_group: Option<String>,
     health: EngineHealth,
 }
 
@@ -138,12 +196,22 @@ struct QueryBody {
     max_rows: Option<usize>,
 }
 
-/// Temporary identity seam for the pre-SSO scaffold: identity arrives as
-/// headers, or as the `aster_subject`/`aster_roles` cookies the dev-login route
-/// sets so a browser can use the same routes. ponytail: replace with the OIDC
-/// session extractor in S2 — this trust is dev-only and must never reach
-/// production.
-fn principal_from_headers(headers: &HeaderMap) -> Result<Principal, ApiError> {
+/// Resolve the caller: an SSO session cookie first, then the pre-SSO dev seam
+/// (headers or `aster_subject`/`aster_roles` cookies) when dev login is enabled.
+pub(crate) fn principal(state: &AppState, headers: &HeaderMap) -> Result<Principal, ApiError> {
+    if let Some(token) = cookie(headers, "aster_session") {
+        if let Some(session) = state.sessions.decode(&token, now()) {
+            return Ok(Principal {
+                subject: session.subject,
+                roles: session.roles,
+            });
+        }
+    }
+
+    if !state.dev_login {
+        return Err(CoreError::Unauthorized("sign in required".into()).into());
+    }
+
     let subject = headers
         .get("x-aster-subject")
         .and_then(|value| value.to_str().ok())
@@ -162,7 +230,14 @@ fn principal_from_headers(headers: &HeaderMap) -> Result<Principal, ApiError> {
     Ok(Principal { subject, roles })
 }
 
-fn cookie(headers: &HeaderMap, name: &str) -> Option<String> {
+pub(crate) fn now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs() as i64)
+        .unwrap_or_default()
+}
+
+pub(crate) fn cookie(headers: &HeaderMap, name: &str) -> Option<String> {
     headers
         .get(header::COOKIE)?
         .to_str()
@@ -186,7 +261,7 @@ async fn list_audit(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<AuditEvent>>, ApiError> {
-    let principal = principal_from_headers(&headers)?;
+    let principal = principal(&state, &headers)?;
     authorize(&principal, aster_core::Action::Administer)?;
     Ok(Json(state.audit.events().await?))
 }
@@ -203,6 +278,7 @@ async fn list_engines(State(state): State<Arc<AppState>>) -> Json<Vec<EngineSumm
             id: info.id,
             kind: info.kind,
             endpoint: info.endpoint,
+            routing_group: info.routing_group,
             health: engine.health().await,
         });
     }
@@ -221,12 +297,21 @@ async fn list_catalogs(State(state): State<Arc<AppState>>) -> Json<Vec<CatalogSu
     Json(summaries)
 }
 
+async fn list_contracts(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<DataContract>>, ApiError> {
+    let principal = principal(&state, &headers)?;
+    authorize(&principal, aster_core::Action::ReadNotebook)?;
+    Ok(Json(state.contracts.as_ref().clone()))
+}
+
 async fn run_query(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(body): Json<QueryBody>,
 ) -> Result<Json<aster_core::QueryResult>, ApiError> {
-    let principal = principal_from_headers(&headers)?;
+    let principal = principal(&state, &headers)?;
     authorize(&principal, aster_core::Action::RunQuery)?;
 
     let engine_id = body
@@ -304,7 +389,7 @@ async fn list_notebooks(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<String>>, ApiError> {
-    let principal = principal_from_headers(&headers)?;
+    let principal = principal(&state, &headers)?;
     authorize(&principal, aster_core::Action::ReadNotebook)?;
     Ok(Json(state.notebooks.list(&principal.subject).await?))
 }
@@ -314,7 +399,7 @@ async fn get_notebook(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<Notebook>, ApiError> {
-    let principal = principal_from_headers(&headers)?;
+    let principal = principal(&state, &headers)?;
     authorize(&principal, aster_core::Action::ReadNotebook)?;
     Ok(Json(state.notebooks.get(&id).await?))
 }
@@ -325,7 +410,7 @@ async fn save_notebook(
     Path(id): Path<String>,
     Json(mut notebook): Json<Notebook>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let principal = principal_from_headers(&headers)?;
+    let principal = principal(&state, &headers)?;
     authorize(&principal, aster_core::Action::WriteNotebook)?;
     notebook.id = id;
     let revision = state.notebooks.save(&notebook, &principal.subject).await?;
@@ -336,10 +421,24 @@ fn app(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/", get(web::index))
         .route("/dev-login", get(web::dev_login))
+        .route("/login", get(web::login))
+        .route("/callback", get(web::callback))
+        .route("/logout", get(web::logout))
         .route("/notebooks/{id}", get(web::notebook_view))
+        .route("/catalog", get(web::catalog))
+        .route("/contracts", get(web::contracts))
+        .route(
+            "/settings/llm",
+            get(web::llm_settings).post(ai::put_config_form),
+        )
+        .route("/api/llm", get(ai::get_config).put(ai::put_config))
+        .route("/api/ai", post(ai::generate))
+        .route("/catalog/{id}/{namespace}", get(web::catalog_namespace))
+        .route("/catalog/{id}/{namespace}/{table}", get(web::catalog_table))
         .route("/healthz", get(healthz))
         .route("/api/engines", get(list_engines))
         .route("/api/catalogs", get(list_catalogs))
+        .route("/api/contracts", get(list_contracts))
         .route("/api/query", post(run_query))
         .route("/api/audit", get(list_audit))
         .route("/api/notebooks", get(list_notebooks))
