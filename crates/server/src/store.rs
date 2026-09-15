@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use sqlx::{postgres::PgPoolOptions, PgPool};
 
-use aster_core::{AuditEvent, AuditSink, CoreError, EngineId, Grants, Result};
+use aster_core::{AuditEvent, AuditSink, CoreError, EngineId, Grants, LlmConfig, LlmStore, Result};
 
 /// Postgres-backed metadata store for engine grants and the query audit trail.
 pub struct PgStore {
@@ -31,10 +31,15 @@ impl PgStore {
             .connect(url)
             .await
             .map_err(storage)?;
-        sqlx::raw_sql(include_str!("../../../migrations/0001_init.sql"))
-            .execute(&pool)
-            .await
-            .map_err(storage)?;
+        // ponytail: one idempotent script per boot; move to sqlx::migrate! when
+        // the schema starts evolving.
+        sqlx::raw_sql(concat!(
+            include_str!("../../../migrations/0001_init.sql"),
+            include_str!("../../../migrations/0003_llm.sql"),
+        ))
+        .execute(&pool)
+        .await
+        .map_err(storage)?;
         Ok(Self { pool })
     }
 
@@ -45,6 +50,49 @@ impl PgStore {
             .execute(&self.pool)
             .await
             .map_err(storage)?;
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl LlmStore for PgStore {
+    async fn get(&self, subject: &str) -> Result<Option<LlmConfig>> {
+        let row: Option<(String, String, String)> =
+            sqlx::query_as("SELECT base_url, model, api_key FROM llm_configs WHERE subject = $1")
+                .bind(subject)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(storage)?;
+        Ok(row.map(|(base_url, model, api_key)| LlmConfig {
+            subject: subject.to_string(),
+            base_url,
+            model,
+            api_key,
+        }))
+    }
+
+    async fn put(&self, config: LlmConfig) -> Result<()> {
+        if config.base_url.trim().is_empty() || config.model.trim().is_empty() {
+            return Err(CoreError::Invalid(
+                "base_url and model are both required".into(),
+            ));
+        }
+        sqlx::query(
+            "INSERT INTO llm_configs (subject, base_url, model, api_key)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT (subject) DO UPDATE SET
+               base_url = EXCLUDED.base_url,
+               model = EXCLUDED.model,
+               api_key = EXCLUDED.api_key,
+               updated_at = now()",
+        )
+        .bind(&config.subject)
+        .bind(&config.base_url)
+        .bind(&config.model)
+        .bind(&config.api_key)
+        .execute(&self.pool)
+        .await
+        .map_err(storage)?;
         Ok(())
     }
 }
