@@ -1,0 +1,11 @@
+FROM docker.io/library/rust:1.89-bookworm AS build
+WORKDIR /app
+COPY Cargo.toml ./
+COPY crates ./crates
+RUN cargo build --release -p aster-tui
+
+FROM docker.io/library/debian:bookworm-slim AS runtime
+RUN useradd --system --uid 65532 --create-home app
+COPY --from=build /app/target/release/aster-tui /usr/local/bin/aster-tui
+USER 65532:65532
+ENTRYPOINT ["/usr/local/bin/aster-tui"]

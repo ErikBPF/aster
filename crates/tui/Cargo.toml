@@ -1,0 +1,10 @@
+[package]
+name = "aster-tui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+aster-core.workspace = true
+ratatui.workspace = true

@@ -1,0 +1,34 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-aster}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aster}
+      POSTGRES_DB: ${POSTGRES_DB:-aster}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-aster}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  server:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.server
+    environment:
+      ASTER_BIND: 0.0.0.0:8080
+      DATABASE_URL: postgres://${POSTGRES_USER:-aster}:${POSTGRES_PASSWORD:-aster}@postgres:5432/${POSTGRES_DB:-aster}
+      TRINO_ENDPOINT: ${TRINO_ENDPOINT:-http://trino:8080}
+      POLARIS_ENDPOINT: ${POLARIS_ENDPOINT:-http://polaris:8181}
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:
