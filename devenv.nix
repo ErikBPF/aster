@@ -3,6 +3,11 @@
 {
   dotenv.enable = true;
 
+  # prost-build and connectrpc-build look for protoc on PATH, and need its
+  # bundled include tree to resolve google/protobuf imports.
+  env.PROTOC = "${pkgs.protobuf}/bin/protoc";
+  env.PROTOC_INCLUDE = "${pkgs.protobuf}/include";
+
   packages = [
     # rust toolchain: pinned by the declared devenv, not by a host install
     pkgs.cargo
@@ -10,6 +15,9 @@
     pkgs.rustfmt
     pkgs.clippy
     pkgs.rust-analyzer
+
+    # proto codegen: prost and connectrpc-build shell out to protoc
+    pkgs.protobuf
 
     # workflows and glue
     pkgs.git

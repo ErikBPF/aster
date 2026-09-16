@@ -1,3 +1,8 @@
 FROM docker.io/library/rust:1.89-bookworm
-RUN rustup component add rustfmt clippy
+# protoc compiles proto/aster.proto at build time (see crates/server/build.rs);
+# libprotobuf-dev supplies the well-known google/protobuf/*.proto includes.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends protobuf-compiler libprotobuf-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && rustup component add rustfmt clippy
 WORKDIR /app

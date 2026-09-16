@@ -19,6 +19,8 @@ and `aster-catalogs` are adapters. `aster-server`, `aster-controller` and
 | Engine adapter | `crates/engines/src/lib.rs` |
 | Catalog adapter | `crates/catalogs/src/lib.rs` |
 | HTTP route or handler | `crates/server/src/{main,web,ai,oidc}.rs` |
+| Endpoint declaration | `proto/aster.proto` (one definition serves gRPC, Connect and gRPC-Web) |
+| RPC service implementation | `crates/server/src/api.rs` |
 | Reconcile behavior | `crates/controller/src/main.rs` |
 | Terminal client | `crates/tui/src/main.rs` |
 | Behavior contract | `crates/<crate>/features/*.feature`; repo conventions in `features/*.feature` |

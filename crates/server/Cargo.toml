@@ -23,3 +23,8 @@ openidconnect.workspace = true
 reqwest.workspace = true
 base64.workspace = true
 redis.workspace = true
+buffa.workspace = true
+connectrpc.workspace = true
+
+[build-dependencies]
+connectrpc-build = "0.9"
