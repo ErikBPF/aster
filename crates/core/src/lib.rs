@@ -29,5 +29,6 @@ pub use llm::{InMemoryLlm, LlmConfig, LlmStore};
 pub use notebook::{Cell, Notebook, NotebookStore};
 pub use registry::{CatalogRegistry, EngineRegistry};
 pub use state::{
-    new_sid, HandshakeStore, InMemoryHandshakes, InMemorySessions, SessionRecord, SessionRegistry,
+    new_sid, HandshakeStore, InMemoryHandshakes, InMemorySessions, InMemoryUserState,
+    SessionRecord, SessionRegistry, UserState, WorkingState,
 };

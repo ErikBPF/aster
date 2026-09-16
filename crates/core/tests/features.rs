@@ -6,8 +6,8 @@
 
 use aster_core::{
     authorize, authorize_engine, Action, Cell, CoreError, EngineId, HandshakeStore, InMemoryGrants,
-    InMemoryHandshakes, InMemorySessions, Notebook, Principal, Role, SessionRecord,
-    SessionRegistry,
+    InMemoryHandshakes, InMemorySessions, InMemoryUserState, Notebook, Principal, Role,
+    SessionRecord, SessionRegistry, UserState, WorkingState,
 };
 use cucumber::{given, then, when, World};
 
@@ -20,6 +20,8 @@ struct App {
     text: String,
     sessions: Option<InMemorySessions>,
     handshakes: Option<InMemoryHandshakes>,
+    user_state: Option<InMemoryUserState>,
+    resumed: Option<WorkingState>,
     sid: String,
     record: Option<SessionRecord>,
     listed: Vec<SessionRecord>,
@@ -33,6 +35,10 @@ impl App {
 
     fn handshakes(&self) -> &InMemoryHandshakes {
         self.handshakes.as_ref().expect("a handshake store exists")
+    }
+
+    fn user_state(&self) -> &InMemoryUserState {
+        self.user_state.as_ref().expect("a user state store exists")
     }
 }
 
@@ -296,6 +302,63 @@ async fn redeem_handshake_nothing(world: &mut App, state: String, now: i64) {
         .await
         .expect("the store answers");
     assert!(world.redeemed.is_none(), "expected nothing to be redeemed");
+}
+
+#[given("an empty user state store")]
+async fn empty_user_state(world: &mut App) {
+    world.user_state = Some(InMemoryUserState::new());
+}
+
+#[when(expr = "subject {string} records notebook {string} cell {string} engine {string}")]
+async fn record_state(
+    world: &mut App,
+    subject: String,
+    notebook: String,
+    cell: String,
+    engine: String,
+) {
+    let mut state = WorkingState::default();
+    state.notebook = Some(notebook);
+    state.cell = Some(cell);
+    state.engine = Some(engine);
+    world
+        .user_state()
+        .put(&subject, &state)
+        .await
+        .expect("the store answers");
+}
+
+#[then(expr = "subject {string} resumes notebook {string}")]
+async fn resumes_notebook(world: &mut App, subject: String, notebook: String) {
+    world.resumed = world
+        .user_state()
+        .get(&subject)
+        .await
+        .expect("the store answers");
+    let resumed = world.resumed.as_ref().expect("state was recorded");
+    assert_eq!(resumed.notebook.as_deref(), Some(notebook.as_str()));
+}
+
+#[then(expr = "subject {string} resumes cell {string}")]
+async fn resumes_cell(world: &mut App, _subject: String, cell: String) {
+    let resumed = world.resumed.as_ref().expect("state was recorded");
+    assert_eq!(resumed.cell.as_deref(), Some(cell.as_str()));
+}
+
+#[then(expr = "subject {string} resumes engine {string}")]
+async fn resumes_engine(world: &mut App, _subject: String, engine: String) {
+    let resumed = world.resumed.as_ref().expect("state was recorded");
+    assert_eq!(resumed.engine.as_deref(), Some(engine.as_str()));
+}
+
+#[then(expr = "subject {string} has no recorded state")]
+async fn no_recorded_state(world: &mut App, subject: String) {
+    let state = world
+        .user_state()
+        .get(&subject)
+        .await
+        .expect("the store answers");
+    assert!(state.is_none(), "expected nothing recorded, got {state:?}");
 }
 
 #[tokio::main]

@@ -69,6 +69,26 @@ pub trait HandshakeStore: Send + Sync {
     async fn take(&self, state: &str, now: i64) -> Result<Option<String>>;
 }
 
+/// Where a signed-in user left off. Deliberately small and opaque to the store:
+/// the clients agree on the shape, the state plane only keeps it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct WorkingState {
+    /// Notebook the user last had open.
+    pub notebook: Option<String>,
+    /// Cell they were editing, so a reload lands in the same place.
+    pub cell: Option<String>,
+    /// Engine they last ran a cell on.
+    pub engine: Option<String>,
+}
+
+/// Per-subject working state, shared by every container (D18).
+#[async_trait]
+pub trait UserState: Send + Sync {
+    async fn get(&self, subject: &str) -> Result<Option<WorkingState>>;
+    async fn put(&self, subject: &str, state: &WorkingState) -> Result<()>;
+}
+
 /// 128 bits of randomness, hex encoded. The id is the whole credential, so it
 /// must be unguessable rather than derived from a clock or a counter.
 pub fn new_sid() -> Result<String> {
@@ -198,6 +218,38 @@ impl HandshakeStore for InMemoryHandshakes {
             Some((payload, stored_at)) if stored_at + self.ttl_seconds > now => Ok(Some(payload)),
             _ => Ok(None),
         }
+    }
+}
+
+/// Process-local working state for tests and single-container development.
+#[derive(Debug, Default)]
+pub struct InMemoryUserState {
+    subjects: Mutex<HashMap<String, WorkingState>>,
+}
+
+impl InMemoryUserState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+#[async_trait]
+impl UserState for InMemoryUserState {
+    async fn get(&self, subject: &str) -> Result<Option<WorkingState>> {
+        Ok(self
+            .subjects
+            .lock()
+            .map_err(|_| CoreError::Storage("user state poisoned".into()))?
+            .get(subject)
+            .cloned())
+    }
+
+    async fn put(&self, subject: &str, state: &WorkingState) -> Result<()> {
+        self.subjects
+            .lock()
+            .map_err(|_| CoreError::Storage("user state poisoned".into()))?
+            .insert(subject.to_string(), state.clone());
+        Ok(())
     }
 }
 

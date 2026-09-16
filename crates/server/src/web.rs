@@ -25,8 +25,13 @@ button{cursor:pointer}
 "#;
 
 const JS: &str = r#"
-const nb = JSON.parse(document.getElementById('nb').textContent);
+// Only the notebook page embeds a notebook; the other pages get the nav only.
+const node = document.getElementById('nb');
+const nb = node ? JSON.parse(node.textContent) : null;
 const status = document.getElementById('status');
+
+// Opening the notebook is itself a place to resume from.
+if (nb) recordState(null, null);
 
 function cellsFromDom() {
   return [...document.querySelectorAll('.cell')].map(el => ({
@@ -61,10 +66,12 @@ async function run(button) {
   const cell = button.closest('.cell');
   const out = cell.querySelector('.out');
   out.textContent = 'running…';
+  const engine = cell.querySelector('.engine').value || null;
+  recordState(cell.dataset.id, engine);
   const res = await fetch('/api/query', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ sql: cell.querySelector('textarea').value, engine: cell.querySelector('.engine').value || null }),
+    body: JSON.stringify({ sql: cell.querySelector('textarea').value, engine }),
   });
   const data = await res.json();
   if (!res.ok) {
@@ -72,6 +79,16 @@ async function run(button) {
     return;
   }
   out.replaceChildren(resultTable(data));
+}
+
+// Where this user is, kept in the shared state plane so the index page and the
+// TUI can resume on any container. Best effort: a failure never blocks the cell.
+function recordState(cell, engine) {
+  fetch('/api/state', {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ notebook: nb.id, cell: cell, engine: engine }),
+  }).catch(() => {});
 }
 
 async function generate(button) {
@@ -167,6 +184,25 @@ pub async fn index(
     authorize(&principal, Action::ReadNotebook)?;
     let ids = state.notebooks.list(&principal.subject).await?;
 
+    // Where the user left off, resolved from the shared state plane, so a
+    // restart or a different container still offers the same place (D18).
+    let resume = match state.user_state.get(&principal.subject).await? {
+        Some(working) => match working.notebook {
+            Some(notebook) if ids.iter().any(|id| id == &notebook) => {
+                let cell = working
+                    .cell
+                    .map(|cell| format!(", cell {cell}", cell = escape(&cell)))
+                    .unwrap_or_default();
+                format!(
+                    "<p>resume <a href=\"/notebooks/{id}\">{id}</a>{cell}</p>",
+                    id = escape(&notebook)
+                )
+            }
+            _ => String::new(),
+        },
+        None => String::new(),
+    };
+
     let mut items = String::new();
     for id in &ids {
         items.push_str(&format!(
@@ -179,7 +215,7 @@ pub async fn index(
     }
 
     let body = format!(
-        "<p>signed in as <code>{subject}</code></p><h1>Notebooks</h1><ul>{items}</ul>\
+        "<p>signed in as <code>{subject}</code></p>{resume}<h1>Notebooks</h1><ul>{items}</ul>\
          <h2>New notebook</h2><p><input id=\"new-id\" placeholder=\"notebook id\"> \
          <button onclick=\"createNotebook()\">Create</button></p>",
         subject = escape(&principal.subject),
