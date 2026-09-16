@@ -321,7 +321,9 @@ pub async fn callback(
     Query(params): Query<CallbackQuery>,
 ) -> Result<Response, ApiError> {
     if let Some(error) = params.error {
-        return Err(CoreError::Unauthorized(format!("identity provider error: {error}")).into());
+        // The provider's text is for the log; the client gets a plain refusal.
+        tracing::warn!(%error, "identity provider refused the login");
+        return Err(CoreError::Unauthorized("login refused".into()).into());
     }
     let code = params
         .code
@@ -360,10 +362,13 @@ pub async fn callback(
         .await?;
 
     let mut response = Redirect::to("/").into_response();
+    // Secure only once SSO is configured: the dev seam runs over plain HTTP on
+    // localhost, where a Secure cookie would never be stored.
+    let secure = if state.oidc.is_some() { "; Secure" } else { "" };
     set_cookie(
         &mut response,
         &format!(
-            "{SESSION_COOKIE}={}; Path=/; HttpOnly; SameSite=Lax; Max-Age={}",
+            "{SESSION_COOKIE}={}; Path=/; HttpOnly; SameSite=Lax{secure}; Max-Age={}",
             record.sid, state.session_ttl_seconds
         ),
     );

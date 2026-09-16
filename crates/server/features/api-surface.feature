@@ -18,6 +18,10 @@ Feature: Server API surface
     When the catalog inventory is requested
     Then each catalog reports id, kind and health
 
+  Scenario: An unidentified caller cannot read the inventory
+    When an unidentified caller reads the engine inventory
+    Then the response status is 403
+
   Scenario: Unknown engine is not found
     When a query is sent to an unknown engine
     Then the response status is 404

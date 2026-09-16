@@ -410,6 +410,12 @@ async fn unknown_engine(world: &mut Contract) {
     world.send(request).await;
 }
 
+#[when(expr = "an unidentified caller reads the engine inventory")]
+async fn anonymous_engines(world: &mut Contract) {
+    let request = caller("GET", "/api/engines", None, "editor", None);
+    world.send(request).await;
+}
+
 #[when(expr = "a query is sent without a subject header")]
 async fn anonymous_query(world: &mut Contract) {
     let request = caller(
@@ -811,9 +817,12 @@ async fn unauthenticated(world: &mut Contract) {
     assert_eq!(world.rpc_json()["code"], "unauthenticated");
 }
 
-#[then(expr = "the call fails as unauthenticated naming the missing grant")]
-async fn unauthenticated_with_grant(world: &mut Contract) {
-    assert_eq!(world.status.expect("response").as_u16(), 401);
+#[then(expr = "the call fails as permission denied naming the missing grant")]
+async fn permission_denied_with_grant(world: &mut Contract) {
+    // The caller is authenticated, so a missing grant is 403, not 401 — the
+    // same meaning the REST layer gives it.
+    assert_eq!(world.status.expect("response").as_u16(), 403);
+    assert_eq!(world.rpc_json()["code"], "permission_denied");
     let message = world.rpc_json()["message"].as_str().unwrap_or_default();
     assert!(
         message.contains("not granted") && message.contains("trino-local"),

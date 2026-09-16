@@ -182,11 +182,13 @@ async fn build_state(config: AppConfig) -> anyhow::Result<Arc<AppState>> {
     }))
 }
 
-/// Seconds from the environment, falling back on anything unparseable.
+/// Seconds from the environment, falling back on anything unparseable or
+/// non-positive: a negative TTL would cast to a gigantic expiry in the store.
 fn env_seconds(name: &str, default: i64) -> i64 {
     std::env::var(name)
         .ok()
         .and_then(|value| value.parse().ok())
+        .filter(|value| *value > 0)
         .unwrap_or(default)
 }
 
@@ -248,12 +250,80 @@ struct CatalogSummary {
 }
 
 #[derive(Deserialize)]
-struct QueryBody {
+pub(crate) struct QueryBody {
     sql: String,
     engine: Option<String>,
     catalog: Option<String>,
     schema: Option<String>,
     max_rows: Option<usize>,
+}
+
+/// Runs one query attempt for an already identified caller: role check, engine
+/// resolution, engine grant, execution, and exactly one audit row. Both the REST
+/// route and the RPC leg call this, so the trail is the same whichever protocol
+/// the caller used — and a refusal is recorded too, with `ok: false`.
+pub(crate) async fn execute_query(
+    state: &AppState,
+    principal: &Principal,
+    body: &QueryBody,
+) -> Result<aster_core::QueryResult, CoreError> {
+    let engine_id = body
+        .engine
+        .clone()
+        .or_else(|| state.config.default_engine.clone())
+        .map(EngineId::new);
+
+    let started = Instant::now();
+    let outcome = match authorize(principal, aster_core::Action::RunQuery) {
+        Ok(()) => run_attempt(state, principal, body, engine_id.as_ref()).await,
+        Err(error) => Err(error),
+    };
+    let latency_ms = started.elapsed().as_millis() as u64;
+
+    let (ok, row_count) = match &outcome {
+        Ok(result) => (true, result.rows.len()),
+        Err(_) => (false, 0),
+    };
+    let event = AuditEvent {
+        subject: principal.subject.clone(),
+        // A refusal before routing has no engine: name that in the trail instead
+        // of dropping the attempt.
+        engine: engine_id.unwrap_or_else(|| EngineId::new("(unrouted)")),
+        catalog: body.catalog.clone(),
+        schema: body.schema.clone(),
+        sql: body.sql.clone(),
+        latency_ms,
+        row_count,
+        ok,
+    };
+    if let Err(error) = state.audit.record(&event).await {
+        tracing::error!(%error, "failed to record audit event");
+    }
+
+    outcome
+}
+
+async fn run_attempt(
+    state: &AppState,
+    principal: &Principal,
+    body: &QueryBody,
+    engine_id: Option<&EngineId>,
+) -> Result<aster_core::QueryResult, CoreError> {
+    let engine_id =
+        engine_id.ok_or_else(|| CoreError::Invalid("no engine selected and no default".into()))?;
+    let engine = state
+        .engines
+        .get(engine_id)
+        .ok_or_else(|| CoreError::NotFound("unknown engine".into()))?;
+    authorize_engine(state.grants.as_ref(), &principal.subject, engine_id).await?;
+    engine
+        .execute(QueryRequest {
+            sql: body.sql.clone(),
+            catalog: body.catalog.clone(),
+            schema: body.schema.clone(),
+            max_rows: body.max_rows,
+        })
+        .await
 }
 
 /// Resolve the caller: an SSO session cookie first, then the pre-SSO dev seam
@@ -365,7 +435,12 @@ async fn put_state(
     Ok(Json(body))
 }
 
-async fn list_engines(State(state): State<Arc<AppState>>) -> Json<Vec<EngineSummary>> {
+async fn list_engines(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<EngineSummary>>, ApiError> {
+    let principal = principal(&state, &headers).await?;
+    authorize(&principal, aster_core::Action::ReadNotebook)?;
     let mut summaries = Vec::new();
     for engine in state.engines.list() {
         let info = engine.info().clone();
@@ -377,10 +452,15 @@ async fn list_engines(State(state): State<Arc<AppState>>) -> Json<Vec<EngineSumm
             health: engine.health().await,
         });
     }
-    Json(summaries)
+    Ok(Json(summaries))
 }
 
-async fn list_catalogs(State(state): State<Arc<AppState>>) -> Json<Vec<CatalogSummary>> {
+async fn list_catalogs(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<CatalogSummary>>, ApiError> {
+    let principal = principal(&state, &headers).await?;
+    authorize(&principal, aster_core::Action::ReadNotebook)?;
     let mut summaries = Vec::new();
     for catalog in state.catalogs.list() {
         summaries.push(CatalogSummary {
@@ -389,7 +469,7 @@ async fn list_catalogs(State(state): State<Arc<AppState>>) -> Json<Vec<CatalogSu
             health: catalog.health().await,
         });
     }
-    Json(summaries)
+    Ok(Json(summaries))
 }
 
 async fn list_contracts(
@@ -407,61 +487,16 @@ async fn run_query(
     Json(body): Json<QueryBody>,
 ) -> Result<Json<aster_core::QueryResult>, ApiError> {
     let principal = principal(&state, &headers).await?;
-    authorize(&principal, aster_core::Action::RunQuery)?;
-
-    let engine_id = body
-        .engine
-        .clone()
-        .or_else(|| state.config.default_engine.clone())
-        .ok_or_else(|| CoreError::Invalid("no engine selected and no default".into()))?;
-    let engine_id = EngineId::new(engine_id);
-
-    let engine = state
-        .engines
-        .get(&engine_id)
-        .ok_or_else(|| CoreError::NotFound("unknown engine".into()))?;
-
-    authorize_engine(state.grants.as_ref(), &principal.subject, &engine_id).await?;
-
-    let started = Instant::now();
-    let outcome = engine
-        .execute(QueryRequest {
-            sql: body.sql.clone(),
-            catalog: body.catalog.clone(),
-            schema: body.schema.clone(),
-            max_rows: body.max_rows,
-        })
-        .await;
-    let latency_ms = started.elapsed().as_millis() as u64;
-
-    let (ok, row_count) = match &outcome {
-        Ok(result) => (true, result.rows.len()),
-        Err(_) => (false, 0),
-    };
-    if let Err(error) = state
-        .audit
-        .record(&AuditEvent {
-            subject: principal.subject,
-            engine: engine_id,
-            catalog: body.catalog,
-            schema: body.schema,
-            sql: body.sql,
-            latency_ms,
-            row_count,
-            ok,
-        })
-        .await
-    {
-        tracing::error!(%error, "failed to record audit event");
-    }
-
-    Ok(Json(outcome?))
+    Ok(Json(execute_query(&state, &principal, &body).await?))
 }
 
 async fn list_namespaces(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<Vec<aster_core::Namespace>>, ApiError> {
+    let principal = principal(&state, &headers).await?;
+    authorize(&principal, aster_core::Action::ReadNotebook)?;
     let catalog = state
         .catalogs
         .get(&CatalogId::new(id))
@@ -471,8 +506,11 @@ async fn list_namespaces(
 
 async fn list_tables(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Path((id, namespace)): Path<(String, String)>,
 ) -> Result<Json<Vec<aster_core::TableRef>>, ApiError> {
+    let principal = principal(&state, &headers).await?;
+    authorize(&principal, aster_core::Action::ReadNotebook)?;
     let catalog = state
         .catalogs
         .get(&CatalogId::new(id))

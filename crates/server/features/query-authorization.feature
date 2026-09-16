@@ -20,6 +20,7 @@ Feature: Query authorization and audit
     When subject "bob" sends a query to "trino-local"
     Then the response status is 403
     And the error names the missing grant
+    And an audit event is recorded for subject "bob"
 
   Scenario: Granted caller reaches the engine
     Given subject "alice" is granted engine "trino-local"
