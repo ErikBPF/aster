@@ -67,7 +67,10 @@
       "properties": {
         "replicas": { "type": "integer", "minimum": 1 },
         "contractsDir": { "type": "string" },
-        "notebookDir": { "type": "string" }
+        "notebookDir": { "type": "string" },
+        "sessionTtlSeconds": { "type": "integer", "minimum": 60 },
+        "handshakeTtlSeconds": { "type": "integer", "minimum": 30 },
+        "userStateTtlSeconds": { "type": "integer", "minimum": 60 }
       }
     },
     "controller": {

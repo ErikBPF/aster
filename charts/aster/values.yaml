@@ -38,6 +38,11 @@ server:
   notebookDir: /data/notebooks
   notebookBranch: session
   contractsDir: /etc/aster/contracts
+  # State lifetimes in the shared store: an idle session, an in-flight OIDC
+  # handshake, and where a subject left off.
+  sessionTtlSeconds: 28800
+  handshakeTtlSeconds: 300
+  userStateTtlSeconds: 2592000
   # Development-only identity seam; leave empty in a real deployment so SSO is
   # the only way in.
   grants: ""
