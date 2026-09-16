@@ -1,6 +1,6 @@
-//! aster domain: engine and catalog abstractions, notebook model, RBAC, and
-//! the registries that wire plugins together. No UI, HTTP, or database
-//! dependencies live here.
+//! aster domain: engine and catalog abstractions, notebook model, RBAC, the
+//! session and handshake state ports, and the registries that wire plugins
+//! together. No UI, HTTP, or database dependencies live here.
 
 pub mod audit;
 pub mod auth;
@@ -14,7 +14,7 @@ pub mod health;
 pub mod llm;
 pub mod notebook;
 pub mod registry;
-pub mod session;
+pub mod state;
 
 pub use audit::{AuditEvent, AuditSink, InMemoryAudit};
 pub use auth::{authorize, Action, Principal, Role};
@@ -28,4 +28,6 @@ pub use health::Health;
 pub use llm::{InMemoryLlm, LlmConfig, LlmStore};
 pub use notebook::{Cell, Notebook, NotebookStore};
 pub use registry::{CatalogRegistry, EngineRegistry};
-pub use session::{Session, SessionStore};
+pub use state::{
+    new_sid, HandshakeStore, InMemoryHandshakes, InMemorySessions, SessionRecord, SessionRegistry,
+};

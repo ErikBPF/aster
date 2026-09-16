@@ -9,3 +9,8 @@
 # Local runs default ASTER_NOTEBOOK_DIR to ./data/notebooks, which the git
 # notebook store turns into a nested repository. Not content.
 data/
+
+# Helm resolves dependencies at render time (ecosystem convention): the lock and
+# the fetched subcharts are build products, the pin lives in Chart.yaml.
+charts/**/Chart.lock
+charts/**/charts/

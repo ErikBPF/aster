@@ -27,6 +27,10 @@ temporary local repository until the GitHub repository is created through
   web UI and the JSON API the TUI uses; it is stateless apart from the notebook
   checkout. The controller owns migrations, engine/catalog health reconciliation and
   audit retention. Both are one binary each, same image.
+- **Shared state plane.** Sessions and OIDC handshakes live in Valkey
+  (`ASTER_STATE_URL`), keyed `aster:v1:<domain>:<entity>` with a TTL; the cookie
+  carries an opaque id, so any replica resolves the same session and a restart does
+  not sign anyone out. Postgres holds durable metadata, git holds notebooks.
 - **Rust-only.** Workspace crates: `core` (domain + traits), `engines`, `catalogs`,
   `server`, `controller`, `tui`.
 
@@ -61,7 +65,7 @@ just features-check  # every features/*.feature has a Feature and a Scenario
 just build-dev       # container image with rustfmt + clippy
 just build           # production image (server + controller)
 just build-tui       # TUI image
-just up / just down  # compose: postgres + server
+just up / just down  # compose: valkey + postgres + server
 ```
 
 ## Env
@@ -77,11 +81,14 @@ just up / just down  # compose: postgres + server
   (default `session`).
 - `ASTER_CONTRACTS_DIR` (default `contracts`) — JSON contracts; yaml is skipped
   with a warning.
-- `ASTER_SESSION_KEY` (signs session and handshake cookies), `ASTER_OIDC_ISSUER`,
-  `ASTER_OIDC_CLIENT_ID`, `ASTER_OIDC_CLIENT_SECRET`, `ASTER_OIDC_REDIRECT_URI`,
-  `ASTER_OIDC_ADMIN_GROUP`, `ASTER_OIDC_EDITOR_GROUP`. Without an issuer the
-  header/cookie dev seam (`x-aster-subject`, `x-aster-roles`, `/dev-login`) is
-  accepted; `ASTER_DEV_LOGIN` keeps it on alongside SSO.
+- `ASTER_STATE_URL` (Valkey URL, e.g. `redis://:password@valkey:6379`) — session
+  and handshake state. Unset means per-process memory, so a second replica would
+  not see the first one's sessions.
+- `ASTER_SESSION_TTL_SECONDS` (28800), `ASTER_HANDSHAKE_TTL_SECONDS` (300).
+  `ASTER_OIDC_ISSUER`, `ASTER_OIDC_CLIENT_ID`, `ASTER_OIDC_CLIENT_SECRET`,
+  `ASTER_OIDC_REDIRECT_URI`, `ASTER_OIDC_ADMIN_GROUP`, `ASTER_OIDC_EDITOR_GROUP`.
+  Without an issuer the header/cookie dev seam (`x-aster-subject`, `x-aster-roles`,
+  `/dev-login`) is accepted; `ASTER_DEV_LOGIN` keeps it on alongside SSO.
 - Controller: `ASTER_RECONCILE_SECONDS` (30), `ASTER_AUDIT_RETENTION_DAYS` (30).
 - TUI: `ASTER_SERVER`, `ASTER_SUBJECT`, `ASTER_ROLES`.
 

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use aster_core::{authorize, Action, CoreError, Notebook, Session, TableRef};
+use aster_core::{authorize, Action, CoreError, Notebook, TableRef};
 use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap};
 use axum::response::{Html, IntoResponse, Redirect, Response};
@@ -161,7 +161,7 @@ pub async fn index(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let Some(principal) = browser_principal(&state, &headers) else {
+    let Some(principal) = browser_principal(&state, &headers).await else {
         return Ok(sign_in_redirect());
     };
     authorize(&principal, Action::ReadNotebook)?;
@@ -192,7 +192,7 @@ pub async fn notebook_view(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
-    let Some(principal) = browser_principal(&state, &headers) else {
+    let Some(principal) = browser_principal(&state, &headers).await else {
         return Ok(sign_in_redirect());
     };
     authorize(&principal, Action::ReadNotebook)?;
@@ -201,8 +201,8 @@ pub async fn notebook_view(
 }
 
 /// Pages redirect a browser into the login flow; API routes answer 403 instead.
-fn browser_principal(state: &AppState, headers: &HeaderMap) -> Option<aster_core::Principal> {
-    principal(state, headers).ok()
+async fn browser_principal(state: &AppState, headers: &HeaderMap) -> Option<aster_core::Principal> {
+    principal(state, headers).await.ok()
 }
 
 fn sign_in_redirect() -> Response {
@@ -251,8 +251,6 @@ fn notebook_body(notebook: &Notebook) -> String {
 }
 
 const SESSION_COOKIE: &str = "aster_session";
-const HANDSHAKE_COOKIE: &str = "aster_oidc";
-const SESSION_TTL_SECONDS: i64 = 8 * 3600;
 
 /// Starts the OIDC authorization-code flow, or falls back to the dev login form
 /// when no identity provider is configured.
@@ -261,18 +259,17 @@ pub async fn login(State(state): State<Arc<AppState>>) -> Result<Response, ApiEr
         return Ok(Redirect::to("/dev-login").into_response());
     };
     let handshake = oidc.handshake().await?;
-    // state, PKCE verifier and nonce travel together in one signed cookie, so
-    // the server keeps no per-login state between the two redirects.
-    let sealed = state.sessions.seal(&format!(
-        "{}:{}:{}",
-        handshake.state, handshake.verifier, handshake.nonce
-    ));
-    let mut response = Redirect::to(&handshake.url).into_response();
-    set_cookie(
-        &mut response,
-        &format!("{HANDSHAKE_COOKIE}={sealed}; Path=/; HttpOnly; SameSite=Lax; Max-Age=600"),
-    );
-    Ok(response)
+    // The PKCE verifier and nonce wait in the shared store, keyed by the OIDC
+    // state parameter, and are redeemed exactly once by the callback (D20).
+    state
+        .handshakes
+        .put(
+            &handshake.state,
+            &format!("{}:{}", handshake.verifier, handshake.nonce),
+            now(),
+        )
+        .await?;
+    Ok(Redirect::to(&handshake.url).into_response())
 }
 
 #[derive(serde::Deserialize)]
@@ -297,56 +294,56 @@ pub async fn callback(
         .state
         .ok_or_else(|| CoreError::Invalid("missing state".into()))?;
 
-    let sealed = cookie(&headers, HANDSHAKE_COOKIE)
-        .ok_or_else(|| CoreError::Unauthorized("login attempt expired".into()))?;
-    let opened = state
-        .sessions
-        .open(&sealed)
-        .ok_or_else(|| CoreError::Unauthorized("bad handshake cookie".into()))?;
-    let mut parts = opened.splitn(3, ':');
-    let expected_state = parts.next().unwrap_or_default();
-    let verifier = parts.next().unwrap_or_default();
-    let nonce = parts.next().unwrap_or_default();
-    if expected_state.is_empty() || verifier.is_empty() || nonce.is_empty() {
-        return Err(CoreError::Unauthorized("incomplete handshake cookie".into()).into());
-    }
-    if expected_state != returned_state {
-        return Err(CoreError::Unauthorized("state mismatch".into()).into());
-    }
+    // Single use: the entry is gone whether or not the exchange succeeds, so a
+    // replayed callback cannot mint a second session (D20).
+    let payload = state
+        .handshakes
+        .take(&returned_state, now())
+        .await?
+        .ok_or_else(|| CoreError::Unauthorized("login attempt expired or already used".into()))?;
+    let (verifier, nonce) = payload
+        .split_once(':')
+        .ok_or_else(|| CoreError::Unauthorized("incomplete handshake payload".into()))?;
 
     let oidc = state
         .oidc
         .as_ref()
         .ok_or_else(|| CoreError::NotFound("oidc not configured".into()))?;
     let (subject, roles) = oidc.complete(&code, verifier, nonce).await?;
-    let token = state.sessions.encode(&Session {
-        subject,
-        roles,
-        expires_at: now() + SESSION_TTL_SECONDS,
-    })?;
+    let record = state
+        .sessions
+        .create(
+            &subject,
+            roles,
+            headers
+                .get(header::USER_AGENT)
+                .and_then(|value| value.to_str().ok())
+                .map(|value| value.to_string()),
+            now(),
+        )
+        .await?;
 
     let mut response = Redirect::to("/").into_response();
     set_cookie(
         &mut response,
         &format!(
-            "{SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={SESSION_TTL_SECONDS}"
+            "{SESSION_COOKIE}={}; Path=/; HttpOnly; SameSite=Lax; Max-Age={}",
+            record.sid, state.session_ttl_seconds
         ),
-    );
-    set_cookie(
-        &mut response,
-        &format!("{HANDSHAKE_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"),
     );
     Ok(response)
 }
 
-pub async fn logout() -> Response {
+pub async fn logout(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    if let Some(sid) = cookie(&headers, SESSION_COOKIE) {
+        // Revocation is best effort: the caller still gets logged out locally if
+        // the store is unreachable, and the failure is visible in the log.
+        if let Err(error) = state.sessions.revoke(&sid).await {
+            tracing::error!(%error, "session revoke failed");
+        }
+    }
     let mut response = Redirect::to("/login").into_response();
-    for name in [
-        SESSION_COOKIE,
-        HANDSHAKE_COOKIE,
-        "aster_subject",
-        "aster_roles",
-    ] {
+    for name in [SESSION_COOKIE, "aster_subject", "aster_roles"] {
         set_cookie(
             &mut response,
             &format!("{name}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"),
@@ -359,7 +356,7 @@ pub async fn catalog(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let Some(principal) = browser_principal(&state, &headers) else {
+    let Some(principal) = browser_principal(&state, &headers).await else {
         return Ok(sign_in_redirect());
     };
     authorize(&principal, Action::ReadNotebook)?;
@@ -404,7 +401,7 @@ pub async fn contracts(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let Some(principal) = browser_principal(&state, &headers) else {
+    let Some(principal) = browser_principal(&state, &headers).await else {
         return Ok(sign_in_redirect());
     };
     authorize(&principal, Action::ReadNotebook)?;
@@ -446,7 +443,7 @@ pub async fn catalog_namespace(
     headers: HeaderMap,
     Path((id, namespace)): Path<(String, String)>,
 ) -> Result<Response, ApiError> {
-    let Some(principal) = browser_principal(&state, &headers) else {
+    let Some(principal) = browser_principal(&state, &headers).await else {
         return Ok(sign_in_redirect());
     };
     authorize(&principal, Action::ReadNotebook)?;
@@ -486,7 +483,7 @@ pub async fn catalog_table(
     headers: HeaderMap,
     Path((id, namespace, table)): Path<(String, String, String)>,
 ) -> Result<Response, ApiError> {
-    let Some(principal) = browser_principal(&state, &headers) else {
+    let Some(principal) = browser_principal(&state, &headers).await else {
         return Ok(sign_in_redirect());
     };
     authorize(&principal, Action::ReadNotebook)?;
@@ -527,7 +524,7 @@ pub async fn llm_settings(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let Some(principal) = browser_principal(&state, &headers) else {
+    let Some(principal) = browser_principal(&state, &headers).await else {
         return Ok(sign_in_redirect());
     };
     let current = state.llm.get(&principal.subject).await?;

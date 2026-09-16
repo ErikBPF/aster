@@ -34,7 +34,7 @@ pub(crate) async fn get_config(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<Option<LlmSummary>>, ApiError> {
-    let principal = principal(&state, &headers)?;
+    let principal = principal(&state, &headers).await?;
     let config = state.llm.get(&principal.subject).await?;
     Ok(Json(config.map(|config| LlmSummary {
         base_url: config.base_url,
@@ -47,7 +47,7 @@ pub(crate) async fn put_config(
     headers: HeaderMap,
     Json(body): Json<LlmBody>,
 ) -> Result<Json<LlmSummary>, ApiError> {
-    let principal = principal(&state, &headers)?;
+    let principal = principal(&state, &headers).await?;
     state.llm.put(store_config(&principal, body)).await?;
     let config = state
         .llm
@@ -66,7 +66,7 @@ pub(crate) async fn put_config_form(
     headers: HeaderMap,
     axum::extract::Form(body): axum::extract::Form<LlmBody>,
 ) -> Result<axum::response::Response, ApiError> {
-    let principal = principal(&state, &headers)?;
+    let principal = principal(&state, &headers).await?;
     state.llm.put(store_config(&principal, body)).await?;
     Ok(axum::response::Redirect::to("/settings/llm").into_response())
 }
@@ -100,7 +100,7 @@ pub(crate) async fn generate(
     headers: HeaderMap,
     Json(body): Json<AiBody>,
 ) -> Result<Json<Completion>, ApiError> {
-    let principal = principal(&state, &headers)?;
+    let principal = principal(&state, &headers).await?;
     authorize(&principal, Action::RunQuery)?;
 
     let config = state

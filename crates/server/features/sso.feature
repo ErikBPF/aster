@@ -17,24 +17,30 @@ Feature: Sign in through the identity provider
     When the browser requests "/login"
     Then the response is a redirect to "/dev-login"
 
-  Scenario: A callback without a handshake cookie is refused
-    Given no aster_oidc cookie
+  Scenario: A callback without a stored handshake is refused
+    Given no handshake payload is stored for state "y"
     When the browser requests "/callback?code=x&state=y"
     Then the response is 403
 
-  Scenario: A callback whose state does not match the handshake is refused
-    Given a signed handshake cookie holding state "s1"
+  Scenario: A callback whose state has no stored payload is refused
+    Given a stored handshake payload for state "s1"
     When the browser requests "/callback?code=x&state=s2"
     Then the response is 403
 
-  Scenario: A signed session cookie identifies the caller
-    Given a session cookie for subject "alice" with role "editor"
+  Scenario: A session id identifies the caller
+    Given a session cookie holding the id of a live session for subject "alice" with role "editor"
     When the client requests "/api/notebooks"
     Then the response is 200
 
-  Scenario: A tampered session cookie is refused
-    Given a session cookie whose payload was modified
+  Scenario: An unknown session id is refused
+    Given a session cookie holding an id that no session uses
     When the client requests "/api/notebooks"
+    Then the response is 403
+
+  Scenario: Signing out revokes the session
+    Given a session cookie holding the id of a live session for subject "alice" with role "editor"
+    When the browser requests "/logout"
+    And the same session cookie is reused
     Then the response is 403
 
   Scenario: The dev identity seam is refused once a provider is configured
