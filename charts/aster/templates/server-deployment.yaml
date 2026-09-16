@@ -63,11 +63,11 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.externalSecret.targetName }}
                   key: database_url
-            - name: ASTER_SESSION_KEY
+            - name: ASTER_STATE_URL
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.externalSecret.targetName }}
-                  key: session_key
+                  key: state_url
             - name: ASTER_OIDC_CLIENT_SECRET
               valueFrom:
                 secretKeyRef:

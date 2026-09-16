@@ -100,7 +100,32 @@ networkPolicy:
     - 8080
     - 8181
     - 5432
+    - 6379
     - 443
+
+# Session and handshake state (D18/D20). One instance for aster alone; its
+# credential comes from Vault through the ExternalSecret below, never from here.
+valkey:
+  enabled: true
+  auth:
+    enabled: true
+    usersExistingSecret: aster-valkey-auth
+    # The chart requires the default user to be declared; its credential comes
+    # from the ExternalSecret (usersExistingSecret wins over an inline value).
+    aclUsers:
+      default:
+        permissions: "~* &* +@all"
+  dataStorage:
+    enabled: true
+    requestedSize: 1Gi
+    className: local-path
+  resources:
+    requests:
+      cpu: 20m
+      memory: 64Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
 
 # Data contracts shipped with the deployment: name -> ODCS-shaped JSON body.
 contracts: {}

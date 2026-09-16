@@ -1,6 +1,20 @@
-# Local stack: metadata database, API server and the reconcile controller.
-# Images are fully qualified so podman short-name resolution never bites.
+# Local stack: metadata database, session state, API server and the reconcile
+# controller. Images are fully qualified so podman short-name resolution never
+# bites.
 services:
+  valkey:
+    image: docker.io/valkey/valkey:9.1.2-alpine
+    command: ["valkey-server", "--requirepass", "${VALKEY_PASSWORD:-aster-dev}"]
+    ports:
+      - "${ASTER_STATE_PORT:-6379}:6379"
+    volumes:
+      - state:/data
+    healthcheck:
+      test: ["CMD-SHELL", "valkey-cli -a ${VALKEY_PASSWORD:-aster-dev} ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   postgres:
     image: docker.io/library/postgres:17-alpine
     environment:
@@ -30,7 +44,7 @@ services:
       ASTER_GRANTS: ${ASTER_GRANTS:-alice:trino-local}
       ASTER_NOTEBOOK_DIR: /data/notebooks
       ASTER_CONTRACTS_DIR: /etc/aster/contracts
-      ASTER_SESSION_KEY: ${ASTER_SESSION_KEY:-development-only-key}
+      ASTER_STATE_URL: redis://:${VALKEY_PASSWORD:-aster-dev}@valkey:6379
       ASTER_DEV_LOGIN: ${ASTER_DEV_LOGIN:-1}
     ports:
       - "${ASTER_PORT:-8080}:8080"
@@ -39,6 +53,8 @@ services:
       - ./contracts:/etc/aster/contracts:ro
     depends_on:
       postgres:
+        condition: service_healthy
+      valkey:
         condition: service_healthy
 
   controller:
@@ -62,3 +78,4 @@ services:
 volumes:
   pgdata:
   notebooks:
+  state:

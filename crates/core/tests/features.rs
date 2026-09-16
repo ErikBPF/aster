@@ -5,8 +5,9 @@
 //! Cargo.toml as a `harness = false` test target).
 
 use aster_core::{
-    authorize, authorize_engine, Action, Cell, CoreError, EngineId, InMemoryGrants, Notebook,
-    Principal, Role,
+    authorize, authorize_engine, Action, Cell, CoreError, EngineId, HandshakeStore, InMemoryGrants,
+    InMemoryHandshakes, InMemorySessions, Notebook, Principal, Role, SessionRecord,
+    SessionRegistry,
 };
 use cucumber::{given, then, when, World};
 
@@ -17,6 +18,22 @@ struct App {
     decision: Option<Result<(), CoreError>>,
     notebook: Option<Notebook>,
     text: String,
+    sessions: Option<InMemorySessions>,
+    handshakes: Option<InMemoryHandshakes>,
+    sid: String,
+    record: Option<SessionRecord>,
+    listed: Vec<SessionRecord>,
+    redeemed: Option<String>,
+}
+
+impl App {
+    fn sessions(&self) -> &InMemorySessions {
+        self.sessions.as_ref().expect("a session store exists")
+    }
+
+    fn handshakes(&self) -> &InMemoryHandshakes {
+        self.handshakes.as_ref().expect("a handshake store exists")
+    }
 }
 
 fn role(name: &str) -> Role {
@@ -178,6 +195,107 @@ async fn parsing_fails(world: &mut App) {
         matches!(decision, Err(CoreError::Invalid(_))),
         "expected an invalid-notebook error, got {decision:?}"
     );
+}
+
+#[given(expr = "a session store with a {int} second idle timeout")]
+async fn session_store(world: &mut App, ttl: i64) {
+    world.sessions = Some(InMemorySessions::new(ttl));
+}
+
+#[given(expr = "a handshake store with a {int} second timeout")]
+async fn handshake_store(world: &mut App, ttl: i64) {
+    world.handshakes = Some(InMemoryHandshakes::new(ttl));
+}
+
+#[when(expr = "a session is created for {string} with roles {string} at time {int}")]
+async fn create_session(world: &mut App, subject: String, roles: String, now: i64) {
+    let roles = roles.split(',').map(|r| role(r.trim())).collect();
+    let record = world
+        .sessions()
+        .create(&subject, roles, None, now)
+        .await
+        .expect("the session is created");
+    world.sid = record.sid.clone();
+    world.record = Some(record);
+}
+
+#[given(expr = "a session created for {string} with roles {string} at time {int}")]
+async fn a_session(world: &mut App, subject: String, roles: String, now: i64) {
+    create_session(world, subject, roles, now).await;
+}
+
+#[when(expr = "that session is resolved at time {int}")]
+async fn resolve_session(world: &mut App, now: i64) {
+    world.record = world
+        .sessions()
+        .get(&world.sid, now)
+        .await
+        .expect("the store answers");
+}
+
+#[when("that session is revoked")]
+async fn revoke_session(world: &mut App) {
+    world
+        .sessions()
+        .revoke(&world.sid)
+        .await
+        .expect("the store answers");
+}
+
+#[then(expr = "the session resolves to subject {string}")]
+async fn session_subject(world: &mut App, subject: String) {
+    let record = world.record.as_ref().expect("a session was resolved");
+    assert_eq!(record.subject, subject);
+}
+
+#[then("no session is resolved")]
+async fn no_session(world: &mut App) {
+    assert!(world.record.is_none(), "expected no session");
+}
+
+#[then("the session id reveals nothing about the subject")]
+async fn opaque_sid(world: &mut App) {
+    assert_eq!(world.sid.len(), 32);
+    assert!(!world.sid.contains("alice"));
+}
+
+#[then(expr = "subject {string} has {int} sessions listed")]
+async fn listed(world: &mut App, subject: String, count: usize) {
+    world.listed = world
+        .sessions()
+        .list(&subject)
+        .await
+        .expect("the store answers");
+    assert_eq!(world.listed.len(), count);
+}
+
+#[when(expr = "the handshake payload {string} is stored for state {string} at time {int}")]
+async fn store_handshake(world: &mut App, payload: String, state: String, now: i64) {
+    world
+        .handshakes()
+        .put(&state, &payload, now)
+        .await
+        .expect("the store answers");
+}
+
+#[then(expr = "redeeming state {string} at time {int} yields {string}")]
+async fn redeem_handshake(world: &mut App, state: String, now: i64, expected: String) {
+    world.redeemed = world
+        .handshakes()
+        .take(&state, now)
+        .await
+        .expect("the store answers");
+    assert_eq!(world.redeemed.as_deref(), Some(expected.as_str()));
+}
+
+#[then(expr = "redeeming state {string} at time {int} yields nothing")]
+async fn redeem_handshake_nothing(world: &mut App, state: String, now: i64) {
+    world.redeemed = world
+        .handshakes()
+        .take(&state, now)
+        .await
+        .expect("the store answers");
+    assert!(world.redeemed.is_none(), "expected nothing to be redeemed");
 }
 
 #[tokio::main]

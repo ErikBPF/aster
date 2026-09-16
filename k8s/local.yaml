@@ -78,6 +78,79 @@ spec:
     - port: 5432
       targetPort: 5432
 ---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: valkey
+  namespace: aster-local
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: valkey
+  namespace: aster-local
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: valkey
+  template:
+    metadata:
+      labels:
+        app: valkey
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: valkey
+          image: docker.io/valkey/valkey:9.1.2-alpine
+          args: ["valkey-server", "--requirepass", "aster-dev", "--appendonly", "yes"]
+          ports:
+            - containerPort: 6379
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            exec:
+              command: ["valkey-cli", "-a", "aster-dev", "ping"]
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 20m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: valkey
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: valkey
+  namespace: aster-local
+spec:
+  selector:
+    app: valkey
+  ports:
+    - port: 6379
+      targetPort: 6379
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -108,8 +181,8 @@ spec:
               value: 0.0.0.0:8080
             - name: DATABASE_URL
               value: postgres://aster:aster@postgres:5432/aster
-            - name: ASTER_SESSION_KEY
-              value: local-development-key
+            - name: ASTER_STATE_URL
+              value: redis://:aster-dev@valkey:6379
             - name: ASTER_DEV_LOGIN
               value: "1"
             - name: ASTER_GRANTS

@@ -110,6 +110,19 @@ streaming/stateful clients, but it should be an accepted decision.
   in-memory adapters; opaque session id cookie; OIDC handshake in Valkey; the
   old HMAC cookie path deleted or kept behind a flag. Contract:
   `crates/server/features/session-state.feature`.
+  **Status 2026-09-16: implemented.** `crates/core/src/state.rs` holds the port
+  (`SessionRegistry`, `HandshakeStore`, `SessionRecord`, `InMemorySessions`,
+  `InMemoryHandshakes`); `crates/server/src/state.rs` is the Valkey adapter
+  (`redis` 1.7, keys `aster:v1:session:<sid>` / `aster:v1:handshake:<state>` /
+  `aster:v1:sessions:<subject>`, handshake redemption by Lua script so it is
+  single-use); the server resolves the `aster_session` cookie through it and
+  fails closed, and `ASTER_STATE_URL` selects Valkey or per-process memory.
+  Evidence: the ignored integration test
+  `state::tests::sessions_are_shared_between_connections` passes against a live
+  Valkey, and a session minted by another client in Valkey was accepted by a
+  running server (200), which then refreshed `last_seen` and the key TTL. The
+  valkey service ships in `docker-compose.yml`, `k8s/local.yaml` and as the
+  `valkey-io/valkey-helm` 0.12.0 chart dependency with the password from Vault.
 - **S13 — User working state.** `aster:v1:user:<subject>:state` read/write API,
   used by the web page and TUI so a session resumes on any container. Contract:
   `crates/server/features/user-state.feature`.

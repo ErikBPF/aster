@@ -9,3 +9,9 @@ appVersion: "0.0.1"
 homepage: https://github.com/ErikBPF/aster
 sources:
   - https://github.com/ErikBPF/aster
+dependencies:
+  # A dedicated instance per decision D18: session state is not shared with
+  # another application's cache.
+  - name: valkey
+    version: 0.12.0
+    repository: https://valkey.io/valkey-helm/
