@@ -126,16 +126,33 @@ streaming/stateful clients, but it should be an accepted decision.
 - **S13 — User working state.** `aster:v1:user:<subject>:state` read/write API,
   used by the web page and TUI so a session resumes on any container. Contract:
   `crates/server/features/user-state.feature`.
-- **S14 — proto and gRPC server.** `proto/aster.proto` (`NotebookService`,
-  `QueryService`, `StateService`, `ReconcileService`); tonic served beside the
-  axum router (`Routes::into_axum_router`) or on its own port; health and
-  reflection wired; TUI migrated first.
+  Status 2026-09-16: implemented — `WorkingState`/`UserState`/
+  `InMemoryUserState` in `core`, `ValkeyUserState` in the server adapter,
+  `GET|PUT /api/state`, the web resume link and `recordState()` on every cell
+  run, and the TUI resuming the recorded notebook. Core contract bound to
+  Gherkin (`crates/core/features/working-state.feature`, 20 scenarios total
+  green) and `crates/server/features/user-state.feature` drafted beside it.
+- **S14 — proto and gRPC server.** `proto/aster.proto` with the `google.api.http`
+  bindings (machine-readable REST contract), served beside the axum router,
+  health and reflection wired; TUI migrated first.
+  Status 2026-09-16: implemented — `connectrpc` 0.9 (buffa messages) replaced
+  the tonic plan, so one generated registration serves gRPC, the Connect
+  protocol (JSON, curl/browser) and gRPC-Web: `crates/server/build.rs` code
+  generates from the vendored `proto/`, `crates/server/src/api.rs` implements
+  the `Aster` service, and `main.rs` mounts it as the router fallback on the same
+  listener. Evidence: `grpcurl -plaintext -import-path proto -proto
+  aster.proto 127.0.0.1:18170 aster.v1.Aster/ListEngines` and the Connect JSON
+  `POST /aster.v1.Aster/ListEngines` both returned the engine list from one
+  process; anonymous calls returned `401 {"code":"unauthenticated"}` and an
+  ungranted caller returned the missing-grant message. Contract:
+  `crates/server/features/rpc-surface.feature` (draft).
 - **S15 — controller over gRPC and `aster-ctl`.** Controller reports over
-  `ReconcileService`; a composable client binary (stdout = product, JSONL) is
+  the RPC surface; a composable client binary (stdout = product, JSONL) is
   added where the philosophy needs it — not for CLI-compliance points.
 - **S16 — process split (only if S14 justifies it).** Separate the browser/HTML
   role from the API/protobuf role inside `aster-server` if the interface proves
-  stable; otherwise keep one process and document why (Parsimony).
+  stable; otherwise keep one process and document why (Parsimony). S14 did not
+  force the split: the RPC surface is a service on the existing listener.
 
 ## 5. Decisions to record
 
@@ -145,8 +162,14 @@ streaming/stateful clients, but it should be an accepted decision.
   plane across all aster containers; Postgres remains the durable metadata store
   and git the notebook source of truth. A **dedicated Valkey for aster** (its own
   deployment in the `aster` namespace), not a shared instance with key prefixes.
-- **ACCEPTED 2026-09-16** **D19** gRPC (tonic) is the native transport between
-  aster programs; the browser stays HTTP.
+- **ACCEPTED 2026-09-16** **D19** gRPC is the native transport between aster
+  programs; the browser stays HTTP. **Revised 2026-09-16** (after the codegen
+  evidence): the implementation is `connectrpc` 0.9, not `tonic` 0.14 —
+  connectrpc generates buffa messages and serves gRPC, Connect (JSON) and
+  gRPC-Web from one registration, while tonic generates prost messages, so
+  pairing them would need a permanent prost↔buffa conversion layer for no
+  protocol gain. `google.api.http` annotations stay in the proto as the
+  machine-readable REST contract for a future Envoy/grpc-gateway transcoder.
 - **ACCEPTED 2026-09-16** **D20** Sessions become opaque ids resolved in Valkey
   (revocable, shared). **Fail closed**: if the store is unavailable, the affected
   request is refused and the user signs in again; there is no HMAC fallback.
