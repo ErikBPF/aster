@@ -40,7 +40,7 @@ Feature: Multiprotocol RPC surface
   Scenario: A caller without an engine grant is refused
     Given "bob" holds the editor role without a grant on "trino-local"
     When "bob" calls RunQuery on "trino-local"
-    Then the call fails as unauthenticated naming the missing grant
+    Then the call fails as permission denied naming the missing grant
 
   Scenario: A query without a selected engine and no default is refused
     Given the server has no default engine

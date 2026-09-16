@@ -64,8 +64,9 @@ impl OidcConfig {
     }
 }
 
-/// Values that must survive the round trip to the IdP. They travel in a signed
-/// cookie, so the server stays stateless between redirects.
+/// Values that must survive the round trip to the IdP. They wait in the shared
+/// handshake store, keyed by the state parameter, so any replica can finish the
+/// login (D20).
 pub struct Handshake {
     pub url: String,
     pub state: String,

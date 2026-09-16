@@ -65,8 +65,8 @@ pub struct ValkeyUserState {
     ttl_seconds: i64,
 }
 
-/// Opens one connection per store. Two connections keep the two domains
-/// independent; neither is hot enough to need pooling beyond multiplexing.
+/// Opens one connection per store. One connection each keeps the three domains
+/// independent; none is hot enough to need pooling beyond multiplexing.
 pub async fn connect(
     url: &str,
     session_ttl_seconds: i64,
@@ -126,8 +126,13 @@ impl SessionRegistry for ValkeySessions {
             .map_err(|error| CoreError::Storage(format!("session decode: {error}")))?;
         if record.last_seen + self.ttl_seconds <= now {
             // The key TTL should already have removed it; this covers a stale
-            // entry written by a longer-lived TTL.
+            // entry written by a longer-lived TTL. Drop the index entry too, or
+            // the subject's set keeps naming sessions that no longer exist.
             let _: () = conn.del(session_key(sid)).await.map_err(storage)?;
+            let _: () = conn
+                .srem(subject_index(&record.subject), sid)
+                .await
+                .map_err(storage)?;
             return Ok(None);
         }
         record.last_seen = now;
@@ -303,6 +308,18 @@ mod tests {
 
         two.revoke(&record.sid).await.expect("revoke");
         assert_eq!(one.get(&record.sid, 1_003).await.expect("get"), None);
+        assert!(one.list("alice").await.expect("list").is_empty());
+
+        // An idle session that expires must also leave its index entry behind
+        // it, or a subject's set grows with every session it ever created.
+        let expiring = one
+            .create("alice", vec![Role::Editor], None, 2_000)
+            .await
+            .expect("create");
+        assert_eq!(
+            one.get(&expiring.sid, 2_000 + 3_600).await.expect("get"),
+            None
+        );
         assert!(one.list("alice").await.expect("list").is_empty());
 
         let mut state = WorkingState::default();

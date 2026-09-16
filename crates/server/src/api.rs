@@ -12,9 +12,7 @@
 
 use std::sync::Arc;
 
-use aster_core::{
-    authorize, authorize_engine, AuditEvent, CoreError, EngineId, Principal, QueryRequest,
-};
+use aster_core::{authorize, CoreError, EngineId, Principal};
 use connectrpc::{ConnectError, RequestContext, ServiceRequest, ServiceResult};
 
 use crate::AppState;
@@ -42,10 +40,13 @@ pub fn router(state: Arc<AppState>) -> connectrpc::Router {
 }
 
 /// Domain failures keep their meaning on the wire; everything else is an
-/// upstream problem and is logged instead of returned.
+/// upstream problem and is logged instead of returned. `unauthorized` never
+/// appears here: an unauthenticated call is refused by `caller` before the
+/// error can reach this mapping, so `Unauthorized` means the caller is known but
+/// not allowed — the same meaning the REST layer gives it with 403.
 fn connect_error(error: CoreError) -> ConnectError {
     match error {
-        CoreError::Unauthorized(message) => ConnectError::unauthenticated(message),
+        CoreError::Unauthorized(message) => ConnectError::permission_denied(message),
         CoreError::NotFound(message) => ConnectError::not_found(message),
         CoreError::Invalid(message) => ConnectError::invalid_argument(message),
         other => {
@@ -257,58 +258,18 @@ impl api::Aster for AsterApi {
         request: ServiceRequest<'_, api::RunQueryRequest>,
     ) -> ServiceResult<api::QueryResult> {
         let caller = caller(&self.state, &ctx).await?;
-        authorize(&caller, aster_core::Action::RunQuery).map_err(connect_error)?;
         let requested = request.to_owned_message();
-
-        let engine_id = requested
-            .engine
-            .clone()
-            .or_else(|| self.state.config.default_engine.clone())
-            .ok_or_else(|| ConnectError::invalid_argument("no engine selected and no default"))?;
-        let engine_id = EngineId::new(engine_id);
-        let engine = self
-            .state
-            .engines
-            .get(&engine_id)
-            .ok_or_else(|| ConnectError::not_found("unknown engine"))?;
-        authorize_engine(self.state.grants.as_ref(), &caller.subject, &engine_id)
+        let body = crate::QueryBody {
+            sql: requested.sql.clone(),
+            engine: requested.engine.clone(),
+            catalog: requested.catalog.clone(),
+            schema: requested.schema.clone(),
+            max_rows: requested.max_rows.map(|rows| rows as usize),
+        };
+        let result = crate::execute_query(&self.state, &caller, &body)
             .await
             .map_err(connect_error)?;
 
-        let started = std::time::Instant::now();
-        let outcome = engine
-            .execute(QueryRequest {
-                sql: requested.sql.clone(),
-                catalog: requested.catalog.clone(),
-                schema: requested.schema.clone(),
-                max_rows: requested.max_rows.map(|rows| rows as usize),
-            })
-            .await;
-        let latency_ms = started.elapsed().as_millis() as u64;
-
-        let (ok, row_count) = match &outcome {
-            Ok(result) => (true, result.rows.len()),
-            Err(_) => (false, 0),
-        };
-        if let Err(error) = self
-            .state
-            .audit
-            .record(&AuditEvent {
-                subject: caller.subject,
-                engine: engine_id,
-                catalog: requested.catalog,
-                schema: requested.schema,
-                sql: requested.sql,
-                latency_ms,
-                row_count,
-                ok,
-            })
-            .await
-        {
-            tracing::error!(%error, "failed to record audit event");
-        }
-
-        let result = outcome.map_err(connect_error)?;
         let columns = result
             .columns
             .iter()
@@ -318,11 +279,16 @@ impl api::Aster for AsterApi {
                 ..Default::default()
             })
             .collect();
-        let rows_json = result
-            .rows
-            .iter()
-            .map(|row| serde_json::to_string(row).unwrap_or_else(|_| "[]".to_string()))
-            .collect();
+        let mut rows_json = Vec::with_capacity(result.rows.len());
+        for row in &result.rows {
+            match serde_json::to_string(row) {
+                Ok(encoded) => rows_json.push(encoded),
+                Err(error) => {
+                    tracing::error!(%error, "query row is not serialisable");
+                    return Err(ConnectError::internal("upstream dependency failed"));
+                }
+            }
+        }
         Ok(api::QueryResult {
             columns,
             rows_json,
