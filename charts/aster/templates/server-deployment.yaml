@@ -58,6 +58,12 @@ spec:
               value: {{ .Values.server.oidc.adminGroup | quote }}
             - name: ASTER_OIDC_EDITOR_GROUP
               value: {{ .Values.server.oidc.editorGroup | quote }}
+            - name: ASTER_SESSION_TTL_SECONDS
+              value: {{ .Values.server.sessionTtlSeconds | quote }}
+            - name: ASTER_HANDSHAKE_TTL_SECONDS
+              value: {{ .Values.server.handshakeTtlSeconds | quote }}
+            - name: ASTER_USER_STATE_TTL_SECONDS
+              value: {{ .Values.server.userStateTtlSeconds | quote }}
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
