@@ -1,0 +1,125 @@
+# Defaults are intentional placeholders: `just chart-lint` renders them, a
+# release must fill the ones marked TODO for release.
+
+image:
+  repository: registry.example.invalid/library/aster
+  tag: "0.0.1"
+  # TODO for release: 64-hex digest of the published image.
+  digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+nameOverride: ""
+
+database:
+  host: postgres
+  port: 5432
+  name: aster
+  user: aster
+  # TODO for release: point at the managed Postgres.
+  sslMode: disable
+
+engines:
+  - id: trino-local
+    kind: trino
+    endpoint: http://trino:8080
+    routingGroup: ""
+
+catalogs:
+  - id: polaris-local
+    kind: polaris
+    endpoint: http://polaris:8181
+    catalog: quickstart_catalog
+
+server:
+  replicas: 1
+  bind: 0.0.0.0:8080
+  notebookDir: /data/notebooks
+  notebookBranch: session
+  contractsDir: /etc/aster/contracts
+  # Development-only identity seam; leave empty in a real deployment so SSO is
+  # the only way in.
+  grants: ""
+  oidc:
+    issuer: ""
+    clientId: aster
+    redirectUri: https://aster.example.invalid/callback
+    adminGroup: aster-admins
+    editorGroup: aster-editors
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+controller:
+  enabled: true
+  reconcileSeconds: 30
+  auditRetentionDays: 30
+  resources:
+    requests:
+      cpu: 20m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+service:
+  port: 80
+
+ingress:
+  enabled: true
+  className: traefik
+  host: aster.example.invalid
+
+persistence:
+  enabled: true
+  size: 2Gi
+  # Platform contract: a PVC without storageClassName fails validation.
+  storageClassName: nfs-slow
+  accessModes:
+    - ReadWriteMany
+
+externalSecret:
+  enabled: true
+  targetName: aster-secret
+  secretStore:
+    name: vault-discovery
+    kind: ClusterSecretStore
+  vaultPath: lab/aster
+  refreshInterval: 1h
+
+networkPolicy:
+  enabled: true
+  ingressNamespace: traefik
+  # Egress targets the data plane; keep it as narrow as the runtime allows.
+  egressPorts:
+    - 8080
+    - 8181
+    - 5432
+    - 443
+
+# Data contracts shipped with the deployment: name -> ODCS-shaped JSON body.
+contracts: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use aster_core::{
-    Column, CoreError, EngineConfig, EngineHealth, EngineId, EngineInfo, QueryEngine, QueryRequest,
+    Column, CoreError, EngineConfig, EngineId, EngineInfo, Health, QueryEngine, QueryRequest,
     QueryResult, Result,
 };
 use async_trait::async_trait;
@@ -41,12 +41,12 @@ impl QueryEngine for TrinoEngine {
         &self.info
     }
 
-    async fn health(&self) -> EngineHealth {
+    async fn health(&self) -> Health {
         let url = format!("{}/v1/info", self.info.endpoint.trim_end_matches('/'));
         match self.client.get(url).send().await {
-            Ok(response) if response.status().is_success() => EngineHealth::Healthy,
-            Ok(_) => EngineHealth::Degraded,
-            Err(_) => EngineHealth::Unavailable,
+            Ok(response) if response.status().is_success() => Health::Healthy,
+            Ok(_) => Health::Degraded,
+            Err(_) => Health::Unavailable,
         }
     }
 
@@ -174,8 +174,8 @@ impl QueryEngine for SparkEngine {
         &self.info
     }
 
-    async fn health(&self) -> EngineHealth {
-        EngineHealth::Unavailable
+    async fn health(&self) -> Health {
+        Health::Unavailable
     }
 
     async fn execute(&self, _request: QueryRequest) -> Result<QueryResult> {
@@ -212,8 +212,8 @@ impl QueryEngine for StarRocksEngine {
         &self.info
     }
 
-    async fn health(&self) -> EngineHealth {
-        EngineHealth::Unavailable
+    async fn health(&self) -> Health {
+        Health::Unavailable
     }
 
     async fn execute(&self, _request: QueryRequest) -> Result<QueryResult> {

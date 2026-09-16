@@ -1,11 +1,18 @@
+# Builds both binaries the deployment needs: the HTTP server and the metadata
+# controller. Build context is the repository root.
 FROM docker.io/library/rust:1.89-bookworm AS build
 WORKDIR /app
-COPY Cargo.toml ./
+COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
-RUN cargo build --release -p aster-server -p aster-controller
+COPY migrations ./migrations
+RUN cargo build --release --locked -p aster-server -p aster-controller
 
 FROM docker.io/library/debian:bookworm-slim AS runtime
-RUN useradd --system --uid 65532 --create-home app
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --uid 65532 --create-home app \
+    && install -d -o 65532 -g 65532 /data/notebooks
 COPY --from=build /app/target/release/aster-server /usr/local/bin/aster-server
 COPY --from=build /app/target/release/aster-controller /usr/local/bin/aster-controller
 USER 65532:65532

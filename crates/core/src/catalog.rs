@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
+use crate::health::Health;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct CatalogId(pub String);
@@ -43,14 +44,6 @@ pub struct TableSchema {
     pub columns: Vec<ColumnSchema>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CatalogHealth {
-    Healthy,
-    Degraded,
-    Unavailable,
-}
-
 /// A catalog and its authorization decisions. Polaris is the first
 /// implementation; Nessie, Unity Catalog, and others plug in behind the same
 /// trait. The trait exposes metadata navigation only; engines enforce grants.
@@ -59,7 +52,7 @@ pub trait Catalog: Send + Sync {
     fn id(&self) -> &CatalogId;
     /// Catalog product, e.g. "polaris", "nessie", "unity".
     fn kind(&self) -> &str;
-    async fn health(&self) -> CatalogHealth;
+    async fn health(&self) -> Health;
     async fn list_namespaces(&self) -> Result<Vec<Namespace>>;
     async fn list_tables(&self, namespace: &str) -> Result<Vec<TableRef>>;
     async fn table_schema(&self, table: &TableRef) -> Result<TableSchema>;

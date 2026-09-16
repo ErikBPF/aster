@@ -2,3 +2,10 @@
 **/*.rs.bk
 .env
 *.secrets.json
+
+# devenv writes local state here; devenv.lock is committed on purpose.
+.devenv/
+
+# Local runs default ASTER_NOTEBOOK_DIR to ./data/notebooks, which the git
+# notebook store turns into a nested repository. Not content.
+data/

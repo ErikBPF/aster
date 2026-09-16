@@ -10,6 +10,7 @@ use async_trait::async_trait;
 /// ponytail: shells out to the `git` binary instead of linking git2/libgit2 —
 /// no C toolchain in the image and remote push is not needed yet. Swap to git2
 /// (or add a token-authenticated push) when per-user repos land in S1/D9.
+#[derive(Clone)]
 pub struct GitNotebookStore {
     dir: PathBuf,
     branch: String,
@@ -76,9 +77,18 @@ fn storage(error: std::io::Error) -> CoreError {
     CoreError::Storage(format!("io error: {error}"))
 }
 
-#[async_trait]
-impl NotebookStore for GitNotebookStore {
-    async fn get(&self, id: &str) -> Result<Notebook> {
+/// Shelling out to `git` and touching the filesystem both block, so every call
+/// from async code goes through here instead of stalling a tokio worker.
+async fn blocking<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T> + Send + 'static,
+) -> Result<T> {
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|error| CoreError::Storage(format!("blocking task failed: {error}")))?
+}
+
+impl GitNotebookStore {
+    fn get_sync(&self, id: &str) -> Result<Notebook> {
         let path = self.path_for(id)?;
         let text = std::fs::read_to_string(&path)
             .map_err(|_| CoreError::NotFound(format!("notebook {id}")))?;
@@ -87,7 +97,7 @@ impl NotebookStore for GitNotebookStore {
         Ok(notebook)
     }
 
-    async fn save(&self, notebook: &Notebook, actor: &str) -> Result<String> {
+    fn save_sync(&self, notebook: &Notebook, actor: &str) -> Result<String> {
         let path = self.path_for(&notebook.id)?;
         std::fs::write(&path, notebook.to_text()).map_err(storage)?;
 
@@ -105,7 +115,7 @@ impl NotebookStore for GitNotebookStore {
         Ok(self.git(&["rev-parse", "HEAD"])?.trim().to_string())
     }
 
-    async fn list(&self, _actor: &str) -> Result<Vec<String>> {
+    fn list_sync(&self) -> Result<Vec<String>> {
         let mut ids = Vec::new();
         for entry in std::fs::read_dir(&self.dir).map_err(storage)? {
             let name = entry
@@ -119,6 +129,27 @@ impl NotebookStore for GitNotebookStore {
         }
         ids.sort();
         Ok(ids)
+    }
+}
+
+#[async_trait]
+impl NotebookStore for GitNotebookStore {
+    async fn get(&self, id: &str) -> Result<Notebook> {
+        let store = self.clone();
+        let id = id.to_string();
+        blocking(move || store.get_sync(&id)).await
+    }
+
+    async fn save(&self, notebook: &Notebook, actor: &str) -> Result<String> {
+        let store = self.clone();
+        let notebook = notebook.clone();
+        let actor = actor.to_string();
+        blocking(move || store.save_sync(&notebook, &actor)).await
+    }
+
+    async fn list(&self, _actor: &str) -> Result<Vec<String>> {
+        let store = self.clone();
+        blocking(move || store.list_sync()).await
     }
 }
 

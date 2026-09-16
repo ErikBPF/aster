@@ -17,3 +17,10 @@ base64.workspace = true
 [dev-dependencies]
 futures.workspace = true
 tokio.workspace = true
+cucumber = "0.23"
+
+# Behavior contracts live next to the code they validate:
+# crates/core/features/*.feature driven by crates/core/tests/features.rs.
+[[test]]
+name = "features"
+harness = false

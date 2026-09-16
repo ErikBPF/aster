@@ -6,7 +6,7 @@
 
 use std::time::Duration;
 
-use aster_core::{AppConfig, CatalogHealth, CoreError, EngineHealth};
+use aster_core::{AppConfig, CoreError};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 
@@ -69,7 +69,7 @@ pub async fn reconcile(
 ) -> Result<(), CoreError> {
     for engine_config in &config.engines {
         let engine = aster_engines::engine_from_config(engine_config)?;
-        let health = engine_health(engine.health().await);
+        let health = engine.health().await.as_str();
         sqlx::query(
             "INSERT INTO engines (id, kind, endpoint, routing_group, health, checked_at)
              VALUES ($1, $2, $3, $4, $5, now())
@@ -90,7 +90,7 @@ pub async fn reconcile(
 
     for catalog_config in &config.catalogs {
         let catalog = aster_catalogs::catalog_from_config(catalog_config)?;
-        let health = catalog_health(catalog.health().await);
+        let health = catalog.health().await.as_str();
         sqlx::query(
             "INSERT INTO catalogs (id, kind, endpoint, catalog, health, checked_at)
              VALUES ($1, $2, $3, $4, $5, now())
@@ -122,22 +122,6 @@ pub async fn reconcile(
     Ok(())
 }
 
-fn engine_health(health: EngineHealth) -> &'static str {
-    match health {
-        EngineHealth::Healthy => "healthy",
-        EngineHealth::Degraded => "degraded",
-        EngineHealth::Unavailable => "unavailable",
-    }
-}
-
-fn catalog_health(health: CatalogHealth) -> &'static str {
-    match health {
-        CatalogHealth::Healthy => "healthy",
-        CatalogHealth::Degraded => "degraded",
-        CatalogHealth::Unavailable => "unavailable",
-    }
-}
-
 fn storage(error: sqlx::Error) -> CoreError {
     CoreError::Storage(format!("metadata database: {error}"))
 }
@@ -145,13 +129,13 @@ fn storage(error: sqlx::Error) -> CoreError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aster_core::Health;
 
     #[test]
     fn health_labels_are_stable() {
-        assert_eq!(engine_health(EngineHealth::Healthy), "healthy");
-        assert_eq!(engine_health(EngineHealth::Degraded), "degraded");
-        assert_eq!(engine_health(EngineHealth::Unavailable), "unavailable");
-        assert_eq!(catalog_health(CatalogHealth::Healthy), "healthy");
+        assert_eq!(Health::Healthy.as_str(), "healthy");
+        assert_eq!(Health::Degraded.as_str(), "degraded");
+        assert_eq!(Health::Unavailable.as_str(), "unavailable");
     }
 
     #[test]

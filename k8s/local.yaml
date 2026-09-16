@@ -1,0 +1,162 @@
+# Local Kubernetes stack for `devspace deploy --profile local`.
+#
+# Local-only: inline dev env values, no Vault, no ingress, images built by
+# `just build` and loaded into the local node. The cluster path (Harbor digests,
+# ExternalSecret, NetworkPolicy) lives in the Helm chart and in platform-gitops.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: aster-local
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres
+  namespace: aster-local
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: aster-local
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: docker.io/library/postgres:17-alpine
+          env:
+            - name: POSTGRES_DB
+              value: aster
+            - name: POSTGRES_USER
+              value: aster
+            - name: POSTGRES_PASSWORD
+              value: aster
+          ports:
+            - containerPort: 5432
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "aster"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: postgres
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: aster-local
+spec:
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aster-server
+  namespace: aster-local
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: aster-server
+  template:
+    metadata:
+      labels:
+        app: aster-server
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: server
+          image: aster-server:local
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: ASTER_BIND
+              value: 0.0.0.0:8080
+            - name: DATABASE_URL
+              value: postgres://aster:aster@postgres:5432/aster
+            - name: ASTER_SESSION_KEY
+              value: local-development-key
+            - name: ASTER_DEV_LOGIN
+              value: "1"
+            - name: ASTER_GRANTS
+              value: alice:trino-local
+            - name: ASTER_NOTEBOOK_DIR
+              value: /data/notebooks
+            - name: ASTER_CONTRACTS_DIR
+              value: /etc/aster/contracts
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: notebooks
+              mountPath: /data/notebooks
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+      volumes:
+        - name: notebooks
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aster-server
+  namespace: aster-local
+spec:
+  selector:
+    app: aster-server
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

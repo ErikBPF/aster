@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "aster chart values",
+  "type": "object",
+  "required": ["image", "engines", "catalogs"],
+  "additionalProperties": true,
+  "properties": {
+    "image": {
+      "type": "object",
+      "required": ["repository", "tag", "digest"],
+      "properties": {
+        "repository": {
+          "type": "string",
+          "description": "Harbor project path; never a bare upstream registry.",
+          "pattern": "^harbor\\.platform\\.example\\.com/"
+        },
+        "tag": { "type": "string", "minLength": 1 },
+        "digest": {
+          "type": "string",
+          "description": "Immutable image digest. The placeholder zero digest fails this pattern on purpose: a release must pin the published digest.",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "pullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] }
+      }
+    },
+    "database": {
+      "type": "object",
+      "required": ["host", "port", "name", "user"],
+      "properties": {
+        "host": { "type": "string", "minLength": 1 },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "name": { "type": "string", "minLength": 1 },
+        "user": { "type": "string", "minLength": 1 },
+        "sslMode": { "type": "string" }
+      }
+    },
+    "engines": {
+      "type": "array",
+      "description": "Query engine pool. The first entry is the default.",
+      "items": {
+        "type": "object",
+        "required": ["id", "kind", "endpoint"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" },
+          "kind": { "type": "string", "minLength": 1 },
+          "endpoint": { "type": "string", "pattern": "^https?://" },
+          "routingGroup": { "type": "string" }
+        }
+      }
+    },
+    "catalogs": {
+      "type": "array",
+      "description": "Metadata catalog pool. The first entry is the default.",
+      "items": {
+        "type": "object",
+        "required": ["id", "kind", "endpoint"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" },
+          "kind": { "type": "string", "minLength": 1 },
+          "endpoint": { "type": "string", "pattern": "^https?://" },
+          "catalog": { "type": "string" }
+        }
+      }
+    },
+    "server": {
+      "type": "object",
+      "properties": {
+        "replicas": { "type": "integer", "minimum": 1 },
+        "contractsDir": { "type": "string" },
+        "notebookDir": { "type": "string" }
+      }
+    },
+    "controller": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "reconcileSeconds": { "type": "integer", "minimum": 1 },
+        "auditRetentionDays": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "ingress": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "className": { "type": "string" },
+        "host": { "type": "string" }
+      }
+    },
+    "persistence": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "storageClassName": { "type": "string" },
+        "size": { "type": "string" }
+      }
+    },
+    "externalSecret": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "targetName": { "type": "string" },
+        "vaultPath": { "type": "string" }
+      }
+    }
+  }
+}

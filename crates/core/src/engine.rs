@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
+use crate::health::Health;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct EngineId(pub String);
@@ -53,19 +54,11 @@ pub struct QueryResult {
     pub truncated: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum EngineHealth {
-    Healthy,
-    Degraded,
-    Unavailable,
-}
-
 /// A query engine instance. Implementations adapt a specific engine's wire
 /// protocol; the rest of the application never branches on engine kind.
 #[async_trait]
 pub trait QueryEngine: Send + Sync {
     fn info(&self) -> &EngineInfo;
-    async fn health(&self) -> EngineHealth;
+    async fn health(&self) -> Health;
     async fn execute(&self, request: QueryRequest) -> Result<QueryResult>;
 }

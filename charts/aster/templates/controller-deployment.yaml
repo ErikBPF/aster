@@ -1,0 +1,64 @@
+{{- if .Values.controller.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-controller
+  labels:
+    app.kubernetes.io/name: aster
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: controller
+    app.kubernetes.io/part-of: aster
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version }}
+spec:
+  # Single writer: the reconcile loop is not leader-elected yet.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: aster
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: controller
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: aster
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: controller
+    spec:
+      securityContext: {{ toYaml .Values.podSecurityContext | nindent 8 }}
+      imagePullSecrets: {{ toYaml .Values.imagePullSecrets | nindent 8 }}
+      containers:
+        - name: controller
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}{{ if .Values.image.digest }}@{{ .Values.image.digest }}{{ end }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # `command` replaces the image ENTRYPOINT in Kubernetes, so the
+          # controller binary runs instead of the server.
+          command: ["/usr/local/bin/aster-controller"]
+          securityContext: {{ toYaml .Values.securityContext | nindent 12 }}
+          env:
+            - name: ASTER_ENGINES
+              value: {{ include "aster.engines" . }}
+            - name: ASTER_CATALOGS
+              value: {{ include "aster.catalogs" . }}
+            - name: ASTER_RECONCILE_SECONDS
+              value: {{ .Values.controller.reconcileSeconds | quote }}
+            - name: ASTER_AUDIT_RETENTION_DAYS
+              value: {{ .Values.controller.auditRetentionDays | quote }}
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.externalSecret.targetName }}
+                  key: database_url
+          resources: {{ toYaml .Values.controller.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{ toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

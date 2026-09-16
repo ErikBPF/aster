@@ -1,0 +1,114 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-server
+  labels:
+    app.kubernetes.io/name: aster
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: server
+    app.kubernetes.io/part-of: aster
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version }}
+spec:
+  replicas: {{ .Values.server.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: aster
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: server
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: aster
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: server
+    spec:
+      securityContext: {{ toYaml .Values.podSecurityContext | nindent 8 }}
+      imagePullSecrets: {{ toYaml .Values.imagePullSecrets | nindent 8 }}
+      containers:
+        - name: server
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}{{ if .Values.image.digest }}@{{ .Values.image.digest }}{{ end }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext: {{ toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: ASTER_BIND
+              value: {{ .Values.server.bind | quote }}
+            - name: ASTER_NOTEBOOK_DIR
+              value: {{ .Values.server.notebookDir | quote }}
+            - name: ASTER_NOTEBOOK_BRANCH
+              value: {{ .Values.server.notebookBranch | quote }}
+            - name: ASTER_CONTRACTS_DIR
+              value: {{ .Values.server.contractsDir | quote }}
+            - name: ASTER_GRANTS
+              value: {{ .Values.server.grants | quote }}
+            - name: ASTER_ENGINES
+              value: {{ include "aster.engines" . }}
+            - name: ASTER_CATALOGS
+              value: {{ include "aster.catalogs" . }}
+            - name: ASTER_OIDC_ISSUER
+              value: {{ .Values.server.oidc.issuer | quote }}
+            - name: ASTER_OIDC_CLIENT_ID
+              value: {{ .Values.server.oidc.clientId | quote }}
+            - name: ASTER_OIDC_REDIRECT_URI
+              value: {{ .Values.server.oidc.redirectUri | quote }}
+            - name: ASTER_OIDC_ADMIN_GROUP
+              value: {{ .Values.server.oidc.adminGroup | quote }}
+            - name: ASTER_OIDC_EDITOR_GROUP
+              value: {{ .Values.server.oidc.editorGroup | quote }}
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.externalSecret.targetName }}
+                  key: database_url
+            - name: ASTER_SESSION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.externalSecret.targetName }}
+                  key: session_key
+            - name: ASTER_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.externalSecret.targetName }}
+                  key: oidc_client_secret
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources: {{ toYaml .Values.server.resources | nindent 12 }}
+          volumeMounts:
+            - name: notebooks
+              mountPath: {{ .Values.server.notebookDir }}
+            - name: contracts
+              mountPath: {{ .Values.server.contractsDir }}
+              readOnly: true
+      volumes:
+        - name: notebooks
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-notebooks
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: contracts
+          configMap:
+            name: {{ .Release.Name }}-contracts
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{ toYaml . | nindent 8 }}
+      {{- end }}

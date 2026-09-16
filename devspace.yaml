@@ -1,0 +1,31 @@
+version: v2beta1
+name: aster
+
+# Local inner loop: `devspace dev` runs the server against the compose Postgres
+# and the engines/catalogs declared below. Images are built by `just build`
+# (or `just build-dev`), never by devspace, matching the ecosystem convention.
+localRegistry:
+  enabled: false
+
+profiles:
+  - name: local
+
+deployments:
+  stack:
+    namespace: aster-local
+    kubectl:
+      manifests:
+        - k8s/local.yaml
+
+dev:
+  server:
+    imageSelector: aster-server:local
+    namespace: aster-local
+    command: ["/usr/local/bin/aster-server"]
+    ports:
+      - port: "8080:8080"
+
+pipelines:
+  deploy:
+    run: |-
+      create_deployments stack
