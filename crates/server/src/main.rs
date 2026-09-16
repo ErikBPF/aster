@@ -4,8 +4,9 @@ use std::time::Instant;
 use aster_core::{
     authorize, authorize_engine, AppConfig, AuditEvent, AuditSink, CatalogId, CatalogRegistry,
     CoreError, DataContract, EngineId, EngineRegistry, Grants, HandshakeStore, Health,
-    InMemoryAudit, InMemoryGrants, InMemoryHandshakes, InMemoryLlm, InMemorySessions, LlmStore,
-    Notebook, NotebookStore, Principal, QueryRequest, Role, SessionRegistry,
+    InMemoryAudit, InMemoryGrants, InMemoryHandshakes, InMemoryLlm, InMemorySessions,
+    InMemoryUserState, LlmStore, Notebook, NotebookStore, Principal, QueryRequest, Role,
+    SessionRegistry, UserState, WorkingState,
 };
 
 mod ai;
@@ -45,6 +46,8 @@ struct AppState {
     handshakes: Arc<dyn HandshakeStore>,
     /// Idle timeout of a session, echoed as the session cookie's Max-Age.
     session_ttl_seconds: i64,
+    /// Where each subject left off, shared across containers (D18).
+    user_state: Arc<dyn UserState>,
     oidc: Option<Arc<Oidc>>,
     /// Accepts the pre-SSO header/cookie identity seam. Off whenever OIDC is
     /// configured, unless explicitly forced for local development.
@@ -99,24 +102,33 @@ async fn build_state(config: AppConfig) -> anyhow::Result<Arc<AppState>> {
     // created by one container is accepted by the next and survives a restart.
     let session_ttl = env_seconds("ASTER_SESSION_TTL_SECONDS", 28_800);
     let handshake_ttl = env_seconds("ASTER_HANDSHAKE_TTL_SECONDS", 300);
-    let (sessions, handshakes): (Arc<dyn SessionRegistry>, Arc<dyn HandshakeStore>) =
-        match std::env::var("ASTER_STATE_URL") {
-            Ok(url) => {
-                let (sessions, handshakes) =
-                    state::connect(&url, session_ttl, handshake_ttl).await?;
-                (Arc::new(sessions), Arc::new(handshakes))
-            }
-            Err(_) => {
-                tracing::warn!(
-                    "ASTER_STATE_URL unset; session state is per-process, so a second replica \
-                     will not see it"
-                );
-                (
-                    Arc::new(InMemorySessions::new(session_ttl)),
-                    Arc::new(InMemoryHandshakes::new(handshake_ttl)),
-                )
-            }
-        };
+    let user_ttl = env_seconds("ASTER_USER_STATE_TTL_SECONDS", 2_592_000);
+    let (sessions, handshakes, user_state): (
+        Arc<dyn SessionRegistry>,
+        Arc<dyn HandshakeStore>,
+        Arc<dyn UserState>,
+    ) = match std::env::var("ASTER_STATE_URL") {
+        Ok(url) => {
+            let (sessions, handshakes, user_state) =
+                state::connect(&url, session_ttl, handshake_ttl, user_ttl).await?;
+            (
+                Arc::new(sessions),
+                Arc::new(handshakes),
+                Arc::new(user_state),
+            )
+        }
+        Err(_) => {
+            tracing::warn!(
+                "ASTER_STATE_URL unset; session state is per-process, so a second replica \
+                 will not see it"
+            );
+            (
+                Arc::new(InMemorySessions::new(session_ttl)),
+                Arc::new(InMemoryHandshakes::new(handshake_ttl)),
+                Arc::new(InMemoryUserState::new()),
+            )
+        }
+    };
 
     let contract_dir = std::env::var("ASTER_CONTRACTS_DIR").unwrap_or_else(|_| "contracts".into());
     let contracts = contracts::load(std::path::Path::new(&contract_dir));
@@ -151,6 +163,7 @@ async fn build_state(config: AppConfig) -> anyhow::Result<Arc<AppState>> {
         sessions,
         handshakes,
         session_ttl_seconds: session_ttl,
+        user_state,
         oidc,
         dev_login,
     }))
@@ -315,6 +328,28 @@ async fn list_audit(
 
 async fn healthz() -> &'static str {
     "ok"
+}
+
+/// Where this subject left off. Any signed-in user may keep their own place;
+/// the subject always comes from the session, never from the body.
+async fn get_state(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<WorkingState>, ApiError> {
+    let principal = principal(&state, &headers).await?;
+    let state = state.user_state.get(&principal.subject).await?;
+    Ok(Json(state.unwrap_or_default()))
+}
+
+async fn put_state(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<WorkingState>,
+) -> Result<Json<WorkingState>, ApiError> {
+    let principal = principal(&state, &headers).await?;
+    authorize(&principal, aster_core::Action::ReadNotebook)?;
+    state.user_state.put(&principal.subject, &body).await?;
+    Ok(Json(body))
 }
 
 async fn list_engines(State(state): State<Arc<AppState>>) -> Json<Vec<EngineSummary>> {
@@ -488,6 +523,7 @@ fn app(state: Arc<AppState>) -> Router {
         .route("/api/contracts", get(list_contracts))
         .route("/api/query", post(run_query))
         .route("/api/audit", get(list_audit))
+        .route("/api/state", get(get_state).put(put_state))
         .route("/api/notebooks", get(list_notebooks))
         .route("/api/notebooks/{id}", get(get_notebook).put(save_notebook))
         .route("/api/catalogs/{id}/namespaces", get(list_namespaces))

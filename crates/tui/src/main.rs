@@ -65,6 +65,11 @@ impl Client {
         self.call(self.http.get(format!("{}/api/notebooks/{id}", self.base)))
     }
 
+    /// Where this subject left off, resolved from the shared state plane.
+    fn working_state(&self) -> Result<WorkingState, String> {
+        self.call(self.http.get(format!("{}/api/state", self.base)))
+    }
+
     fn save(&self, notebook: &Notebook) -> Result<String, String> {
         #[derive(serde::Deserialize)]
         struct Saved {
@@ -90,6 +95,12 @@ impl Client {
 #[derive(serde::Deserialize)]
 struct EngineSummary {
     id: String,
+}
+
+/// The subset of `/api/state` the client resumes from.
+#[derive(serde::Deserialize)]
+struct WorkingState {
+    notebook: Option<String>,
 }
 
 fn error_message(body: &str) -> String {
@@ -132,6 +143,15 @@ impl App {
         match client.engines() {
             Ok(engines) => app.engines = engines,
             Err(error) => app.status = format!("engines: {error}"),
+        }
+        // Resume where this subject left off, if the state plane knows.
+        if let Ok(working) = client.working_state() {
+            if let Some(id) = working.notebook {
+                if let Some(index) = app.notebooks.iter().position(|open| open == &id) {
+                    app.selected = index;
+                    app.status = format!("resuming {id}");
+                }
+            }
         }
         app
     }

@@ -6,7 +6,8 @@
 //! TTL, so an abandoned session expires without a sweeper.
 
 use aster_core::{
-    new_sid, CoreError, HandshakeStore, Result, Role, SessionRecord, SessionRegistry,
+    new_sid, CoreError, HandshakeStore, Result, Role, SessionRecord, SessionRegistry, UserState,
+    WorkingState,
 };
 use redis::aio::MultiplexedConnection;
 use redis::AsyncCommands;
@@ -28,6 +29,10 @@ fn subject_index(subject: &str) -> String {
 
 fn handshake_key(state: &str) -> String {
     format!("{PREFIX}:handshake:{state}")
+}
+
+fn user_state_key(subject: &str) -> String {
+    format!("{PREFIX}:user:{subject}")
 }
 
 async fn open_connection(url: &str) -> Result<MultiplexedConnection> {
@@ -53,13 +58,21 @@ pub struct ValkeyHandshakes {
     ttl_seconds: i64,
 }
 
+/// Per-subject working state resolved from Valkey.
+#[derive(Clone)]
+pub struct ValkeyUserState {
+    conn: MultiplexedConnection,
+    ttl_seconds: i64,
+}
+
 /// Opens one connection per store. Two connections keep the two domains
 /// independent; neither is hot enough to need pooling beyond multiplexing.
 pub async fn connect(
     url: &str,
     session_ttl_seconds: i64,
     handshake_ttl_seconds: i64,
-) -> Result<(ValkeySessions, ValkeyHandshakes)> {
+    user_ttl_seconds: i64,
+) -> Result<(ValkeySessions, ValkeyHandshakes, ValkeyUserState)> {
     let sessions = ValkeySessions {
         conn: open_connection(url).await?,
         ttl_seconds: session_ttl_seconds,
@@ -68,7 +81,11 @@ pub async fn connect(
         conn: open_connection(url).await?,
         ttl_seconds: handshake_ttl_seconds,
     };
-    Ok((sessions, handshakes))
+    let user_state = ValkeyUserState {
+        conn: open_connection(url).await?,
+        ttl_seconds: user_ttl_seconds,
+    };
+    Ok((sessions, handshakes, user_state))
 }
 
 #[async_trait::async_trait]
@@ -208,15 +225,40 @@ impl HandshakeStore for ValkeyHandshakes {
     }
 }
 
+#[async_trait::async_trait]
+impl UserState for ValkeyUserState {
+    async fn get(&self, subject: &str) -> Result<Option<WorkingState>> {
+        let mut conn = self.conn.clone();
+        let body: Option<String> = conn.get(user_state_key(subject)).await.map_err(storage)?;
+        let Some(body) = body else {
+            return Ok(None);
+        };
+        let state: WorkingState = serde_json::from_str(&body)
+            .map_err(|error| CoreError::Storage(format!("user state decode: {error}")))?;
+        Ok(Some(state))
+    }
+
+    async fn put(&self, subject: &str, state: &WorkingState) -> Result<()> {
+        let mut conn = self.conn.clone();
+        let body = serde_json::to_string(state)
+            .map_err(|error| CoreError::Storage(format!("user state encode: {error}")))?;
+        let _: () = conn
+            .set_ex(user_state_key(subject), body, self.ttl_seconds as u64)
+            .await
+            .map_err(storage)?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn keys_are_namespaced_and_versioned() {
         assert_eq!(session_key("abc"), "aster:v1:session:abc");
         assert_eq!(handshake_key("abc"), "aster:v1:handshake:abc");
         assert_eq!(subject_index("alice"), "aster:v1:sessions:alice");
+        assert_eq!(user_state_key("alice"), "aster:v1:user:alice");
     }
 
     /// Proves the cross-container claim: two independent connections (what two
@@ -228,8 +270,10 @@ mod tests {
     async fn sessions_are_shared_between_connections() {
         let url = std::env::var("ASTER_TEST_STATE_URL")
             .unwrap_or_else(|_| "redis://:aster-dev@127.0.0.1:6379".into());
-        let (one, one_handshakes) = connect(&url, 3600, 300).await.expect("container one");
-        let (two, two_handshakes) = connect(&url, 3600, 300).await.expect("container two");
+        let (one, one_handshakes, one_user) =
+            connect(&url, 3600, 300, 3600).await.expect("container one");
+        let (two, two_handshakes, two_user) =
+            connect(&url, 3600, 300, 3600).await.expect("container two");
 
         let record = one
             .create("alice", vec![Role::Editor], Some("test".into()), 1_000)
@@ -260,5 +304,16 @@ mod tests {
         two.revoke(&record.sid).await.expect("revoke");
         assert_eq!(one.get(&record.sid, 1_003).await.expect("get"), None);
         assert!(one.list("alice").await.expect("list").is_empty());
+
+        let mut state = WorkingState::default();
+        state.notebook = Some("sales".into());
+        state.cell = Some("c2".into());
+        state.engine = Some("trino-local".into());
+        one_user.put("alice", &state).await.expect("put state");
+        assert_eq!(
+            two_user.get("alice").await.expect("get state"),
+            Some(state),
+            "the other container resumes where alice left off"
+        );
     }
 }
