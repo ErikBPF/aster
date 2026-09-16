@@ -33,6 +33,11 @@ temporary local repository until the GitHub repository is created through
   not sign anyone out. Postgres holds durable metadata, git holds notebooks.
 - **Rust-only.** Workspace crates: `core` (domain + traits), `engines`, `catalogs`,
   `server`, `controller`, `tui`.
+- **Multiprotocol.** `proto/aster.proto` is the only endpoint declaration; one
+  registration serves gRPC (programs), Connect JSON (curl, browser) and gRPC-Web
+  over the same listener. The `google.api.http` bindings in the proto are the
+  machine-readable REST contract for a transcoding proxy. The older `/api/*` JSON
+  handlers still back the server-rendered page and disappear once it moves.
 
 ## Layout
 
@@ -41,10 +46,11 @@ crates/core        domain types, QueryEngine/Catalog/NotebookStore/Grants/AuditS
                    traits, registries, RBAC, text notebook format, data contracts
 crates/engines     Trino (real, pool routing) + Spark/StarRocks (stubs)
 crates/catalogs    Polaris (real) + Nessie/Unity (stubs)
-crates/server      axum API + server-rendered UI, OIDC login, git store, Postgres store
+crates/server      axum API + server-rendered UI, RPC surface, OIDC login, git store
 crates/controller  reconcile loop: health mirror + audit retention
-crates/tui         ratatui client over the same JSON API
-features/          behavior contracts; one .feature per implemented behavior
+crates/tui         ratatui client over the same API
+proto/             aster.proto + the vendored google/api annotations it imports
+crates/*/features/ behavior contracts, colocated with the crate they validate
 contracts/         example ODCS-shaped data contracts
 migrations/        metadata schema (grants, audit, engines/catalogs, llm configs)
 docker/            dev + server + tui images
@@ -53,19 +59,31 @@ docker/            dev + server + tui images
 ## Build and test
 
 The dev host has Docker but no Rust and no cargo; builds run on `cache-host` through
-`nix shell`, driven by `just`. Local equivalents with a container image exist too.
+its declared `devenv`, driven by `just`. The local checkout stays the source of
+truth. Local equivalents with a container image exist too.
 
 ```
-just sync            # rsync the workspace to cache-host
+just sync            # rsync the workspace to cache-host (deletes stale files there)
 just remote-check    # cargo check --workspace --all-targets
 just remote-test     # cargo test --workspace
 just remote-clippy   # clippy -D warnings
 just fmt-remote      # format on cache-host, pull the result back, verify
-just features-check  # every features/*.feature has a Feature and a Scenario
+just ci              # fmt + clippy + tests + features + repo contract (devenv)
+just features        # every .feature declares a Feature and a Scenario
+just repo-check      # binding for features/repo-setup.feature
 just build-dev       # container image with rustfmt + clippy
 just build           # production image (server + controller)
 just build-tui       # TUI image
-just up / just down  # compose: valkey + postgres + server
+just compose-up      # compose: valkey + postgres + server
+just chart-lint      # render charts/aster and validate with kubeconform
+```
+
+Calling a gRPC method with `grpcurl` (no reflection needed, the proto is in the
+repository):
+
+```
+grpcurl -plaintext -import-path proto -proto aster.proto \
+  -H 'x-aster-subject: alice' 127.0.0.1:8080 aster.v1.Aster/ListEngines
 ```
 
 ## Env
@@ -99,7 +117,8 @@ deployment.
 
 Thin vertical is implemented: SSO (or the dev seam) -> git-backed notebook ->
 pooled engine execution with per-subject grants -> audit row, plus catalog
-browsing, the controller, the TUI, LLM-assisted cells and data contracts. The
-deployment manifests live in `platform-gitops` under `apps/platform/aster` and stay
-unsynced until the prerequisite runtime (proposal D6) and the published Harbor
-image exist.
+browsing, the controller, the TUI, LLM-assisted cells, data contracts, shared
+session/working state in Valkey and the gRPC/Connect RPC surface in
+`proto/aster.proto`. The deployment manifests live in `platform-gitops` under
+`apps/platform/aster` and stay unsynced until the prerequisite runtime (proposal
+D6) and the published Harbor image exist.

@@ -50,6 +50,11 @@ just ci               # fmt + clippy + test + features + repo
    and is registered by kind; do not branch on kind anywhere else.
 10. **No new dependency without a reason in the PR.** Stdlib or an
     already-present crate first.
+11. **An endpoint is declared once, in `proto/aster.proto`.** The generated
+    service (`crates/server/src/api.rs`) is what gRPC, Connect JSON and gRPC-Web
+    all use; the `/api/*` JSON handlers are legacy and only stay while the
+    server-rendered page uses them. Regenerating needs `protoc`, which the
+    devenv shell and both Docker images provide.
 
 ## Containers and deployment
 

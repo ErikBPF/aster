@@ -10,6 +10,7 @@ use aster_core::{
 };
 
 mod ai;
+mod api;
 mod contracts;
 mod gitstore;
 mod oidc;
@@ -500,6 +501,10 @@ async fn save_notebook(
 }
 
 fn app(state: Arc<AppState>) -> Router {
+    // gRPC, Connect and gRPC-Web all arrive on the same router, so the proto in
+    // `proto/aster.proto` is the only endpoint declaration. Unknown paths still
+    // fall through to a 404 from the Connect router.
+    let rpc = api::router(Arc::clone(&state)).into_axum_service();
     Router::new()
         .route("/", get(web::index))
         .route("/dev-login", get(web::dev_login))
@@ -532,6 +537,7 @@ fn app(state: Arc<AppState>) -> Router {
             get(list_tables),
         )
         .layer(TraceLayer::new_for_http())
+        .fallback_service(rpc)
         .with_state(state)
 }
 

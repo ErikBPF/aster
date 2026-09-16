@@ -1,0 +1,162 @@
+//! The aster API, in one place.
+//!
+//! Every method carries a `google.api.http` binding, so the REST shape of the
+//! API is machine-readable even though the Rust server serves it through
+//! ConnectRPC. That keeps a transcoding proxy (Envoy, grpc-gateway) an
+//! operational choice instead of a rewrite.
+//!
+//! Internal callers use gRPC, the browser and curl use the Connect protocol's
+//! JSON encoding, and both come from this one registration.
+
+syntax = "proto3";
+
+package aster.v1;
+
+import "google/api/annotations.proto";
+
+service Aster {
+  // Working state of the caller. The subject comes from the session, never
+  // from the request.
+  rpc GetState(GetStateRequest) returns (WorkingState) {
+    option (google.api.http) = {
+      get: "/v1/state"
+    };
+  }
+
+  rpc PutState(PutStateRequest) returns (WorkingState) {
+    option (google.api.http) = {
+      patch: "/v1/state"
+      body: "*"
+    };
+  }
+
+  rpc ListEngines(ListEnginesRequest) returns (ListEnginesResponse) {
+    option (google.api.http) = {
+      get: "/v1/engines"
+    };
+  }
+
+  rpc ListCatalogs(ListCatalogsRequest) returns (ListCatalogsResponse) {
+    option (google.api.http) = {
+      get: "/v1/catalogs"
+    };
+  }
+
+  rpc ListNotebooks(ListNotebooksRequest) returns (ListNotebooksResponse) {
+    option (google.api.http) = {
+      get: "/v1/notebooks"
+    };
+  }
+
+  rpc GetNotebook(GetNotebookRequest) returns (Notebook) {
+    option (google.api.http) = {
+      get: "/v1/notebooks/{id}"
+    };
+  }
+
+  rpc SaveNotebook(SaveNotebookRequest) returns (SaveNotebookResponse) {
+    option (google.api.http) = {
+      put: "/v1/notebooks/{id}"
+      body: "notebook"
+    };
+  }
+
+  rpc RunQuery(RunQueryRequest) returns (QueryResult) {
+    option (google.api.http) = {
+      post: "/v1/query"
+      body: "*"
+    };
+  }
+}
+
+message GetStateRequest {}
+
+message PutStateRequest {
+  optional string notebook = 1;
+  optional string cell = 2;
+  optional string engine = 3;
+}
+
+message WorkingState {
+  optional string notebook = 1;
+  optional string cell = 2;
+  optional string engine = 3;
+}
+
+message ListEnginesRequest {}
+
+message Engine {
+  string id = 1;
+  string kind = 2;
+  string endpoint = 3;
+  string routing_group = 4;
+  string health = 5;
+}
+
+message ListEnginesResponse {
+  repeated Engine engines = 1;
+}
+
+message ListCatalogsRequest {}
+
+message Catalog {
+  string id = 1;
+  string kind = 2;
+  string health = 3;
+}
+
+message ListCatalogsResponse {
+  repeated Catalog catalogs = 1;
+}
+
+message ListNotebooksRequest {}
+
+message ListNotebooksResponse {
+  repeated string ids = 1;
+}
+
+message GetNotebookRequest {
+  string id = 1;
+}
+
+message Cell {
+  string id = 1;
+  string sql = 2;
+  optional string engine = 3;
+}
+
+message Notebook {
+  string id = 1;
+  string title = 2;
+  repeated Cell cells = 3;
+}
+
+message SaveNotebookRequest {
+  string id = 1;
+  Notebook notebook = 2;
+}
+
+message SaveNotebookResponse {
+  string revision = 1;
+}
+
+message RunQueryRequest {
+  string sql = 1;
+  optional string engine = 2;
+  optional string catalog = 3;
+  optional string schema = 4;
+  optional uint32 max_rows = 5;
+}
+
+message Column {
+  string name = 1;
+  string data_type = 2;
+}
+
+message QueryResult {
+  repeated Column columns = 1;
+  // Rows are the engine's JSON values, one encoded array per row, because the
+  // engines type their columns at runtime and not at compile time.
+  repeated string rows_json = 2;
+  bool truncated = 3;
+}
