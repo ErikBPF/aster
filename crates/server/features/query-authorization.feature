@@ -1,9 +1,8 @@
 # Behavior contract: query authorization and audit.
-# Status: contract only (@unautomated). The equivalent Rust tests in
-# crates/core (auth, grants, audit) and the server smoke path currently
-# execute these behaviors; binding to a Gherkin runner is tracked in the
-# aster proposal (IP S2+).
-@contract @unautomated
+# Status: bound to `crates/server/tests/contracts.rs`, which drives the router
+# in process with in-memory stores and a stub engine. The durability scenario
+# needs a live database and lives in features/audit-persistence.feature.
+@contract
 Feature: Query authorization and audit
   A query runs only when the caller is identified, holds a role allowed to run
   queries, and is granted access to the selected engine. Every attempt is
@@ -38,9 +37,3 @@ Feature: Query authorization and audit
     Then the response status is 403
     When subject "root" with role "admin" reads the audit trail
     Then the response status is 200
-
-  Scenario: Audit trail survives a server restart
-    Given the metadata store is Postgres
-    And subject "alice" has run a query
-    When the server restarts
-    Then the audit event for subject "alice" is still listed

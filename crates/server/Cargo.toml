@@ -28,3 +28,15 @@ connectrpc.workspace = true
 
 [build-dependencies]
 connectrpc-build = "0.9"
+
+[dev-dependencies]
+cucumber = "0.23"
+async-trait.workspace = true
+tower = "0.5"
+futures.workspace = true
+
+# The Gherkin harness drives the router in process; it needs its own target
+# because cucumber supplies `main`.
+[[test]]
+name = "contracts"
+harness = false

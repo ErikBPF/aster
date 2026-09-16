@@ -1,6 +1,6 @@
 # Behavior contract: server API surface.
-# Status: contract only (@unautomated); see features/query-authorization.feature.
-@contract @unautomated
+# Status: bound to `crates/server/tests/contracts.rs` (in-process router).
+@contract
 Feature: Server API surface
   The server reports readiness and the registered plugin inventory so callers
   can discover engines and catalogs before running anything.
