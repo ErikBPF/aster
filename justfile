@@ -1,15 +1,15 @@
 # aster workflows. Recipes are the single source of truth: CI, devenv's
 # `enterTest`, and humans all call into this file.
 #
-# The workspace builds either inside the devenv shell (local cargo) or on the
-# remote build host via `just remote-*` (Rust toolchain comes from nix there).
+# The workspace compiles on the remote build host (`just remote-*`), which owns
+# the toolchain; devenv also provides it locally for quick edits and CI.
 default:
     @just --list
 
 root := justfile_directory()
 dev_image := "aster-dev:latest"
 host := env_var_or_default("ASTER_BUILD_HOST", "cache-host")
-nix_rust := "nix shell nixpkgs#cargo nixpkgs#rustc nixpkgs#rustfmt nixpkgs#clippy -c"
+remote := "devenv shell --"
 container_engine := env_var_or_default("CONTAINER_ENGINE", `command -v podman >/dev/null 2>&1 && echo podman || echo docker`)
 chart := "charts/aster"
 
@@ -105,25 +105,31 @@ chart-diff:
     helm template aster {{chart}}
 
 # ------------------------------------------------------------- remote build host
+# Building happens on {{host}} (32 cores) through its declared devenv; the local
+# checkout stays the source of truth and `sync` mirrors it with --delete so stale
+# files cannot survive. Build artefacts, devenv state and local run data are
+# excluded, and both sides ignore them.
 
 sync:
-    rsync -a --exclude target {{root}}/ {{host}}:~/aster/
+    rsync -a --delete --exclude target --exclude .devenv --exclude data {{root}}/ {{host}}:~/aster/
 
 remote-check: sync
-    ssh {{host}} 'cd ~/aster && {{nix_rust}} cargo check --workspace --all-targets'
+    ssh {{host}} 'cd ~/aster && {{remote}} cargo check --workspace --all-targets'
 
 remote-test: sync
-    ssh {{host}} 'cd ~/aster && {{nix_rust}} cargo test --workspace'
+    ssh {{host}} 'cd ~/aster && {{remote}} cargo test --workspace'
 
 remote-clippy: sync
-    ssh {{host}} 'cd ~/aster && {{nix_rust}} cargo clippy --workspace --all-targets -- -D warnings'
+    ssh {{host}} 'cd ~/aster && {{remote}} cargo clippy --workspace --all-targets -- -D warnings'
 
-# Format on the build host and pull the result back (no local toolchain).
+# Format on the build host and pull the result back, so the host owns the
+# toolchain version that decides formatting.
 fmt-remote: sync
-    ssh {{host}} 'cd ~/aster && {{nix_rust}} cargo fmt --all'
+    ssh {{host}} 'cd ~/aster && {{remote}} cargo fmt --all'
     rsync -a {{host}}:~/aster/crates/ {{root}}/crates/
-    ssh {{host}} 'cd ~/aster && {{nix_rust}} cargo fmt --all -- --check'
+    ssh {{host}} 'cd ~/aster && {{remote}} cargo fmt --all -- --check'
 
-# Full gate on the build host, for machines without devenv.
-remote-ci: remote-clippy remote-test features repo-check
-    @echo "REMOTE CI GREEN (clippy + tests + features + repo)"
+# Full gate on the build host.
+remote-ci: sync
+    ssh {{host}} 'cd ~/aster && {{remote}} just ci'
+    @echo "REMOTE CI GREEN (fmt + clippy + tests + features + repo)"
