@@ -22,7 +22,7 @@ type ConfiguredClient = CoreClient<
 
 /// OIDC relying-party settings. Present only when the process is pointed at an
 /// identity provider; otherwise the dev identity seam is used.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct OidcConfig {
     pub issuer: String,
     pub client_id: String,
@@ -30,6 +30,20 @@ pub struct OidcConfig {
     pub redirect_uri: String,
     pub admin_group: String,
     pub editor_group: String,
+}
+
+/// Redacted on purpose: `client_secret` must never reach a log line.
+impl std::fmt::Debug for OidcConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OidcConfig")
+            .field("issuer", &self.issuer)
+            .field("client_id", &self.client_id)
+            .field("client_secret", &"<redacted>")
+            .field("redirect_uri", &self.redirect_uri)
+            .field("admin_group", &self.admin_group)
+            .field("editor_group", &self.editor_group)
+            .finish()
+    }
 }
 
 impl OidcConfig {

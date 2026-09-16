@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use aster_core::{
-    Catalog, CatalogConfig, CatalogHealth, CatalogId, ColumnSchema, CoreError, Namespace, Result,
+    Catalog, CatalogConfig, CatalogId, ColumnSchema, CoreError, Health, Namespace, Result,
     TableRef, TableSchema,
 };
 use async_trait::async_trait;
@@ -59,11 +59,11 @@ impl Catalog for PolarisCatalog {
         "polaris"
     }
 
-    async fn health(&self) -> CatalogHealth {
+    async fn health(&self) -> Health {
         match self.request("namespaces").send().await {
-            Ok(response) if response.status().is_success() => CatalogHealth::Healthy,
-            Ok(_) => CatalogHealth::Degraded,
-            Err(_) => CatalogHealth::Unavailable,
+            Ok(response) if response.status().is_success() => Health::Healthy,
+            Ok(_) => Health::Degraded,
+            Err(_) => Health::Unavailable,
         }
     }
 
@@ -201,8 +201,8 @@ macro_rules! stub_catalog {
                 $kind
             }
 
-            async fn health(&self) -> CatalogHealth {
-                CatalogHealth::Unavailable
+            async fn health(&self) -> Health {
+                Health::Unavailable
             }
 
             async fn list_namespaces(&self) -> Result<Vec<Namespace>> {

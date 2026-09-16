@@ -568,29 +568,52 @@ pub struct DevLogin {
 }
 
 /// Temporary pre-SSO convenience so a browser can act as a subject.
-/// ponytail: dev-only, deleted when the OIDC session extractor lands in S2.
-pub async fn dev_login(Query(params): Query<DevLogin>) -> Response {
+/// ponytail: dev-only, deleted when the SSO session extractor replaces it.
+pub async fn dev_login(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<DevLogin>,
+) -> Response {
+    if !state.dev_login {
+        return axum::http::StatusCode::NOT_FOUND.into_response();
+    }
     let subject = params.subject.unwrap_or_else(|| "alice".into());
     let roles = params.roles.unwrap_or_else(|| "editor".into());
+    if !safe_cookie_value(&subject) || !safe_cookie_value(&roles) {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            "invalid subject or roles",
+        )
+            .into_response();
+    }
     let mut response = Redirect::to("/").into_response();
-    response.headers_mut().append(
-        header::SET_COOKIE,
-        format!("aster_subject={subject}; Path=/; HttpOnly; SameSite=Lax")
-            .parse()
-            .expect("valid cookie"),
-    );
-    response.headers_mut().append(
-        header::SET_COOKIE,
-        format!("aster_roles={roles}; Path=/; HttpOnly; SameSite=Lax")
-            .parse()
-            .expect("valid cookie"),
-    );
+    for (name, value) in [("aster_subject", &subject), ("aster_roles", &roles)] {
+        let cookie = format!("{name}={value}; Path=/; HttpOnly; SameSite=Lax");
+        match cookie.parse() {
+            Ok(parsed) => {
+                response.headers_mut().append(header::SET_COOKIE, parsed);
+            }
+            Err(_) => {
+                return (axum::http::StatusCode::BAD_REQUEST, "invalid cookie value")
+                    .into_response()
+            }
+        }
+    }
     response
+}
+
+/// Cookie values travel in a header, so keep them to a conservative charset:
+/// anything else could smuggle header syntax (CR/LF) into the response.
+fn safe_cookie_value(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '@' | ':'))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::escape;
+    use super::{escape, safe_cookie_value};
 
     #[test]
     fn escape_neutralizes_markup() {
@@ -598,5 +621,14 @@ mod tests {
             escape("<script>alert(\"x\") & 'y'</script>"),
             "&lt;script&gt;alert(&quot;x&quot;) &amp; 'y'&lt;/script&gt;"
         );
+    }
+
+    #[test]
+    fn cookie_values_reject_header_smuggling() {
+        assert!(safe_cookie_value("alice"));
+        assert!(safe_cookie_value("alice@example.com"));
+        assert!(!safe_cookie_value("alice\r\nSet-Cookie: x=1"));
+        assert!(!safe_cookie_value(""));
+        assert!(!safe_cookie_value(&"a".repeat(65)));
     }
 }

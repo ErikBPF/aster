@@ -2,10 +2,10 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use aster_core::{
-    authorize, authorize_engine, AppConfig, AuditEvent, AuditSink, CatalogHealth, CatalogId,
-    CatalogRegistry, CoreError, DataContract, EngineHealth, EngineId, EngineRegistry, Grants,
-    InMemoryAudit, InMemoryGrants, InMemoryLlm, LlmStore, Notebook, NotebookStore, Principal,
-    QueryRequest, Role, SessionStore,
+    authorize, authorize_engine, AppConfig, AuditEvent, AuditSink, CatalogId, CatalogRegistry,
+    CoreError, DataContract, EngineId, EngineRegistry, Grants, Health, InMemoryAudit,
+    InMemoryGrants, InMemoryLlm, LlmStore, Notebook, NotebookStore, Principal, QueryRequest, Role,
+    SessionStore,
 };
 
 mod ai;
@@ -163,11 +163,18 @@ impl IntoResponse for ApiError {
             CoreError::Invalid(_) => StatusCode::BAD_REQUEST,
             _ => StatusCode::BAD_GATEWAY,
         };
-        (
-            status,
-            Json(serde_json::json!({ "error": self.0.to_string() })),
-        )
-            .into_response()
+        // 5xx details can carry git stderr or upstream internals: log them and
+        // hand the client a generic message.
+        let message = match &self.0 {
+            CoreError::Unauthorized(message)
+            | CoreError::NotFound(message)
+            | CoreError::Invalid(message) => message.clone(),
+            other => {
+                tracing::error!(error = %other, "request failed");
+                "upstream dependency failed".to_string()
+            }
+        };
+        (status, Json(serde_json::json!({ "error": message }))).into_response()
     }
 }
 
@@ -177,14 +184,14 @@ struct EngineSummary {
     kind: String,
     endpoint: String,
     routing_group: Option<String>,
-    health: EngineHealth,
+    health: Health,
 }
 
 #[derive(Serialize)]
 struct CatalogSummary {
     id: CatalogId,
     kind: String,
-    health: CatalogHealth,
+    health: Health,
 }
 
 #[derive(Deserialize)]
@@ -468,6 +475,27 @@ async fn main() -> anyhow::Result<()> {
 
     let listener = tokio::net::TcpListener::bind(&bind).await?;
     tracing::info!("aster-server listening on {bind}");
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
     Ok(())
+}
+
+/// Kubernetes sends SIGTERM before killing a pod; drain instead of dying.
+async fn shutdown_signal() {
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(error) => {
+                tracing::warn!(%error, "cannot listen for SIGTERM");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => tracing::info!("ctrl-c, shutting down"),
+        _ = terminate => tracing::info!("SIGTERM, shutting down"),
+    }
 }

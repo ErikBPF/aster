@@ -1,12 +1,14 @@
+# Local stack: metadata database, API server and the reconcile controller.
+# Images are fully qualified so podman short-name resolution never bites.
 services:
   postgres:
-    image: postgres:17-alpine
+    image: docker.io/library/postgres:17-alpine
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-aster}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aster}
       POSTGRES_DB: ${POSTGRES_DB:-aster}
     ports:
-      - "5432:5432"
+      - "${ASTER_DB_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -19,16 +21,44 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.server
+    image: aster-server:local
     environment:
       ASTER_BIND: 0.0.0.0:8080
       DATABASE_URL: postgres://${POSTGRES_USER:-aster}:${POSTGRES_PASSWORD:-aster}@postgres:5432/${POSTGRES_DB:-aster}
-      TRINO_ENDPOINT: ${TRINO_ENDPOINT:-http://trino:8080}
-      POLARIS_ENDPOINT: ${POLARIS_ENDPOINT:-http://polaris:8181}
+      ASTER_ENGINES: ${ASTER_ENGINES:-trino-local;trino;http://trino:8080}
+      ASTER_CATALOGS: ${ASTER_CATALOGS:-polaris-local;polaris;http://polaris:8181;quickstart_catalog}
+      ASTER_GRANTS: ${ASTER_GRANTS:-alice:trino-local}
+      ASTER_NOTEBOOK_DIR: /data/notebooks
+      ASTER_CONTRACTS_DIR: /etc/aster/contracts
+      ASTER_SESSION_KEY: ${ASTER_SESSION_KEY:-development-only-key}
+      ASTER_DEV_LOGIN: ${ASTER_DEV_LOGIN:-1}
     ports:
-      - "8080:8080"
+      - "${ASTER_PORT:-8080}:8080"
+    volumes:
+      - notebooks:/data/notebooks
+      - ./contracts:/etc/aster/contracts:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  controller:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.server
+    image: aster-server:local
+    # entrypoint, not command: the image sets an exec-form ENTRYPOINT, so CMD
+    # would be appended as arguments to aster-server instead of replacing it.
+    entrypoint: ["/usr/local/bin/aster-controller"]
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-aster}:${POSTGRES_PASSWORD:-aster}@postgres:5432/${POSTGRES_DB:-aster}
+      ASTER_ENGINES: ${ASTER_ENGINES:-trino-local;trino;http://trino:8080}
+      ASTER_CATALOGS: ${ASTER_CATALOGS:-polaris-local;polaris;http://polaris:8181;quickstart_catalog}
+      ASTER_RECONCILE_SECONDS: ${ASTER_RECONCILE_SECONDS:-30}
+      ASTER_AUDIT_RETENTION_DAYS: ${ASTER_AUDIT_RETENTION_DAYS:-30}
     depends_on:
       postgres:
         condition: service_healthy
 
 volumes:
   pgdata:
+  notebooks:

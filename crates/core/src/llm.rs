@@ -8,13 +8,25 @@ use crate::error::{CoreError, Result};
 
 /// A caller's own OpenAI-compatible completion endpoint. The API key is stored
 /// server-side and is never returned to a client.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct LlmConfig {
     pub subject: String,
     pub base_url: String,
     pub model: String,
     #[serde(skip_serializing)]
     pub api_key: String,
+}
+
+/// Redacted on purpose: `api_key` must never reach a log line.
+impl std::fmt::Debug for LlmConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LlmConfig")
+            .field("subject", &self.subject)
+            .field("base_url", &self.base_url)
+            .field("model", &self.model)
+            .field("api_key", &"<redacted>")
+            .finish()
+    }
 }
 
 #[async_trait]

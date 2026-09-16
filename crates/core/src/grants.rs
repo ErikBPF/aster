@@ -24,7 +24,7 @@ pub async fn authorize_engine(grants: &dyn Grants, subject: &str, engine: &Engin
     }
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct InMemoryGrants {
     map: RwLock<HashMap<String, HashSet<String>>>,
 }

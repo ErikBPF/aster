@@ -1,0 +1,11 @@
+apiVersion: v2
+name: aster
+description: |
+  Git-backed SQL notebooks: API server, browser UI, terminal client and the
+  metadata reconcile controller.
+type: application
+version: 0.1.0
+appVersion: "0.0.1"
+homepage: https://github.com/ErikBPF/aster
+sources:
+  - https://github.com/ErikBPF/aster
