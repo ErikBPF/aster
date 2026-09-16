@@ -1,8 +1,8 @@
-# Contract-only (@unautomated). The equivalent behavior is exercised by
-# crates/core text-format tests and the crates/server GitNotebookStore tests,
-# plus the API smoke path in the justfile. Binding these steps to a Gherkin
-# runner remains tracked in the proposal (IP S2+).
-@contract @unautomated
+# Behavior contract: git-backed notebooks.
+# Status: bound to `crates/server/tests/contracts.rs`, which drives the router
+# against a temporary real git repository; the unit-level store tests stay in
+# crates/server/src/gitstore.rs.
+@contract
 Feature: Git-backed notebooks
   Notebooks are text-first files committed on a branch-per-session, so a save
   is a git commit and the metadata database stores only the index.
@@ -34,6 +34,8 @@ Feature: Git-backed notebooks
     When subject "bob" with role "viewer" saves notebook "sales"
     Then the response status is 403
 
-  Scenario: A notebook id with a path separator is rejected
-    When subject "alice" saves notebook "../evil"
+  Scenario: A notebook id with a percent-encoded path separator is rejected
+    # A raw "../" is normalized away by the HTTP layer before routing, so the
+    # percent-encoded form is what actually reaches the id guard.
+    When subject "alice" saves notebook "..%2Fevil"
     Then the response status is 400

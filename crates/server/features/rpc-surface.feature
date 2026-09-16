@@ -1,16 +1,10 @@
-# Draft contract (@unautomated).
-#
-# The RPC surface in `proto/aster.proto` is registered once and speaks gRPC,
-# the Connect protocol (JSON) and gRPC-Web, so these scenarios are currently
-# executed by hand against a running server (curl with
-# `connect-protocol-version: 1`, and `grpcurl -import-path proto -proto
-# aster.proto`) plus the `/api/*` handler tests that read the same AppState.
-# Binding them to steps needs an in-process axum harness that drives the
-# Connect router with `tower::ServiceExt::oneshot`; tracked as the next test
-# infrastructure slice. The mapping and authorization logic itself is already
-# covered by the Rust tests in crates/core and crates/server.
-
-@contract @unautomated
+# Behavior contract: the multiprotocol RPC surface.
+# Status: bound to `crates/server/tests/contracts.rs`. The Connect leg is called
+# as JSON through the router; the gRPC leg sends a framed `application/grpc`
+# request on the same route and asserts the response is a gRPC-framed protobuf
+# naming the same engine (a real client-level gRPC check stays in the
+# `grpcurl` smoke documented in the README).
+@contract
 Feature: Multiprotocol RPC surface
 
   Background:
