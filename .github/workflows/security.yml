@@ -1,0 +1,30 @@
+name: Security
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+      - name: Scan repository
+        id: gitleaks
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Notify security channel
+        if: always() && steps.gitleaks.outcome == 'failure'
+        env:
+          WEBHOOK: ${{ secrets.DISCORD_SECURITY_WEBHOOK }}
+          CLEYTIN_USER_ID: "1532710143517659356"
+        run: |
+          if [[ -z "$WEBHOOK" ]]; then echo "::notice::DISCORD_SECURITY_WEBHOOK not configured"; exit 0; fi
+          jq -nc --arg cleytin "$CLEYTIN_USER_ID" --arg repo "$GITHUB_REPOSITORY" --arg ref "$GITHUB_REF_NAME" --arg url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            '{content:("<@"+$cleytin+">") ,allowed_mentions:{users:[$cleytin]},embeds:[{title:"SECRET SCAN FAILED",description:("**Repository:** `"+$repo+"`\n**Ref:** `"+$ref+"`\nFindings withheld from Discord.\n[Open workflow]("+$url+")"),color:15548997}]}' |
+            curl -fsS -H "Content-Type: application/json" --data @- "$WEBHOOK"
