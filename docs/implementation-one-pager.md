@@ -1,102 +1,80 @@
 # aster — first testable draft (implementation one-pager)
 
-**Stage / revision:** PL+IP+RV combined / r1
-**Status:** implementation complete for the thin vertical and all queued slices; nothing deployed, nothing exercised against a live Trino, Polaris or Authentik
-**Owner / date:** Erik / 2026-09-15
-**Basis:** `docs/proposals/2026-09-14-aster-sql-notebook-platform.md`, `docs/behaviors/aster/platform.feature` (platform), commits `47efb44..3ff229d` (aster), `f8f2d9c` (platform-gitops). This page grants no execution authority.
+**Stage / revision:** PL+IP+RV combined / r2 (closing record for S0–S14)
+**Status:** the thin vertical and every queued slice are implemented, tested and container-validated; nothing is deployed and nothing has been exercised against a live Trino, Polaris or identity provider
+**Owner / date:** Erik / 2026-09-16
+**Basis:** platform proposal `docs/proposals/2026-09-14-aster-sql-notebook-platform.md`, `docs/unix-grpc-valkey-plan.md` (D17–D20 accepted 2026-09-16), `docs/quality-audit.md`. This page grants no execution authority.
 
 ## Outcome and why it matters
 
-`aster` is a git-backed SQL notebook: the notebook is a text file committed to git, a cell runs on a Trino instance chosen from a pool, permissions come from Polaris at table level and Trino at row/column level, SSO is Authentik OIDC, and every query is audited. The first testable draft exists end to end in Rust: web UI, JSON API, TUI client, metadata controller, engine/catalog plugins, LLM assist, data contracts, and Kubernetes manifests.
+`aster` is a git-backed SQL notebook: a notebook is a text file committed to git, a cell runs on an engine chosen from a pool, permissions come from the catalog at table level and the engine at row/column level, sign-in is OIDC, and every attempt — including every refusal — is audited. The first testable draft exists end to end in Rust: web UI, JSON API, TUI client, metadata controller, engine/catalog plugins, LLM assist, data contracts, a shared state plane and a generated multiprotocol RPC surface.
 
 ## What is implemented
 
-Five crates plus a virtual workspace, 24 Rust source files, ~4,270 lines.
+Six crates in one workspace (`crates/core`, `engines`, `catalogs`, `server`, `controller`, `tui`), plus `proto/aster.proto` as the single endpoint declaration.
 
-| Crate | What it does | Key files |
-|---|---|---|
-| `aster-core` | domain only, no IO: engine/catalog/notebook traits, RBAC, grants, audit, HMAC sessions, LLM config, data contracts | `engine.rs`, `catalog.rs`, `notebook.rs`, `auth.rs`, `grants.rs`, `audit.rs`, `session.rs`, `llm.rs`, `contract.rs`, `config.rs`, `registry.rs` |
-| `aster-engines` | `QueryEngine` implementations; `TrinoEngine` real, `SparkEngine`/`StarRocksEngine` plugin stubs | `lib.rs` (269) |
-| `aster-catalogs` | `Catalog` implementations; `PolarisCatalog` real (Iceberg REST), Nessie/Unity stubs | `lib.rs` (247) |
-| `aster-server` | axum HTTP: SSO, notebooks, catalog, contracts, LLM proxy, audit; Postgres or in-memory stores | `main.rs` (473), `web.rs` (602), `oidc.rs` (269), `ai.rs` (192), `gitstore.rs` (168), `store.rs` (158), `contracts.rs` (78) |
-| `aster-controller` | reconcile loop: probe engine/catalog health into the metadata DB, prune expired audit | `main.rs` (161) |
-| `aster-tui` | ratatui client over the same JSON API | `main.rs` (464) |
+| Area | What it does |
+|---|---|
+| `aster-core` | domain only, no IO: engine/catalog/notebook/store traits, RBAC and grants, audit, session and handshake ports, working state, LLM config, data contracts, `Health` |
+| `aster-engines` / `aster-catalogs` | `TrinoEngine` and `PolarisCatalog` against the real APIs; Spark/StarRocks/Nessie/Unity rejected at config parse rather than stubbed into silence |
+| `aster-server` | axum: OIDC login, notebook editor, catalog browse, contracts, LLM proxy, session/working-state routes, `/api/*` JSON plus the Connect/gRPC surface |
+| `aster-controller` | one reconcile loop: migrations, engine/catalog health into Postgres, audit retention |
+| `aster-tui` | ratatui client over the same JSON API, resumes where the subject left off |
+| State | Valkey (`redis` 1.7): sessions, single-use OIDC handshakes, per-subject working state; in-memory adapters for dev and tests |
+| Surface | `/healthz`, `/api/{engines,catalogs,query,audit,notebooks,llm,ai,contracts,state}` and `aster.v1.Aster/*` over Connect JSON, gRPC and gRPC-Web from one registration |
+| Config | env-only, no `.env` file: `ASTER_BIND`, `DATABASE_URL`, `ASTER_STATE_URL`, `ASTER_ENGINES=id;kind;endpoint[;routing_group]`, `ASTER_CATALOGS=id;kind;endpoint[;catalog]`, `ASTER_GRANTS`, `ASTER_NOTEBOOK_DIR`/`_BRANCH`, `ASTER_CONTRACTS_DIR`, `ASTER_OIDC_*`, `ASTER_*_TTL_SECONDS`, `ASTER_RECONCILE_SECONDS`, `ASTER_AUDIT_RETENTION_DAYS`, TUI `ASTER_SERVER`/`ASTER_SUBJECT`/`ASTER_ROLES` |
 
-Behavior surface: `/` notebook list, `/notebooks/{id}` editor, `/catalog[/{id}/{ns}/{table}]`, `/contracts`, `/settings/llm`, `/login` `/callback` `/logout`, `/dev-login` (dev only); API `/healthz`, `/api/engines`, `/api/catalogs`, `POST /api/query`, `/api/audit`, `/api/notebooks[/{id}]`, `/api/catalogs/...`, `/api/llm`, `POST /api/ai`, `/api/contracts`.
-
-Configuration is env-only (no `.env` file): `ASTER_BIND`, `DATABASE_URL`, `ASTER_ENGINES=id;kind;endpoint[;routing_group]`, `ASTER_CATALOGS=id;kind;endpoint[;catalog]`, `ASTER_GRANTS=subject:engine,...`, `ASTER_NOTEBOOK_DIR`/`ASTER_NOTEBOOK_BRANCH`, `ASTER_CONTRACTS_DIR`, `ASTER_SESSION_KEY`, `ASTER_OIDC_*`, `ASTER_RECONCILE_SECONDS`, `ASTER_AUDIT_RETENTION_DAYS`, `ASTER_SERVER`/`ASTER_SUBJECT`/`ASTER_ROLES` (TUI).
-
-Notebook format is a deliberate choice: a text `.aster` file (`# aster notebook v1`, `# title:`, `-- cell <id> [engine=]`) that diffs and merges in git. Save = `git add` + `git commit` on a per-session branch, returning the revision hash.
+Notebook format is deliberate: a text `.aster` file (`# aster notebook v1`, `# title:`, `-- cell <id> [engine=]`) that diffs in git. Save is `git add` + `git commit` on a per-session branch and returns the revision hash.
 
 ## Slice status
 
 | Slice | Status | Note |
 |---|---|---|
-| S0 prerequisite runtime | **not started** | no Trino/Polaris/gateway anywhere in the platform (D6) |
+| S0 prerequisite runtime | **not started** | no Trino/Polaris/gateway in the platform (D6) |
 | S1 repo + identity scaffolding | **not started** | GitHub repo, Authentik client, OpenBao `lab/aster`, Harbor image |
-| S2 server + SSO | implemented | OIDC+PKCE, HMAC-signed cookie, group→role; dev seam only while unconfigured |
-| S3 git notebooks | implemented | branch-per-session, path-traversal guard |
-| S4 query authz + audit | implemented | central `authorize` + per-engine grant check |
-| S5 deployment | manifests written, not synced | digest placeholder `sha256:000…0` |
-| S6 TUI | implemented | compiles, 3 unit tests; never run against a live server |
-| S7 web UI | implemented | hand-written HTML/JS, not askama/HTMX/CodeMirror |
-| S8 catalog tab | implemented | namespace/table/column browse |
-| S9 engine pool routing | implemented | `X-Trino-Routing-Group` per instance |
-| S10 AI assist | partial | registration + completion proxy shipped; evaluation metric not built |
-| S11 data contracts | partial | JSON only; ODCS YAML and Cube unbuilt |
+| S2 SSO | implemented | OIDC+PKCE; opaque session id in Valkey; dev seam only while no issuer is configured |
+| S3 git notebooks | implemented | branch-per-session, path-traversal guard, co-located unit tests |
+| S4 query authz + audit | implemented | one `execute_query` shared by REST and RPC; refusals audited with `ok:false` |
+| S5 deployment | manifests written, not synced | digest placeholder `sha256:000…0`; chart carries the same placeholder |
+| S6 TUI | implemented | resumes the subject's working state; no live-server run yet |
+| S7 web UI | implemented | hand-written HTML/JS by choice; catalog + contracts + AI pages included |
+| S8 catalog tab | implemented | namespace → table → column, catalog errors rendered inline |
+| S9 engine pool routing | implemented | `X-Trino-Routing-Group` sent only when a group is configured |
+| S10 AI assist | partial | registration + completion proxy shipped; notebook evaluation metric not built |
+| S11 data contracts | partial | ODCS-shaped JSON only; YAML and Cube unbuilt (D12) |
+| S12 state plane | implemented | Valkey adapter, single-use handshake, fail-closed on store error |
+| S13 working state | implemented | `GET|PUT /api/state`, web resume link, TUI resume |
+| S14 RPC surface | implemented | one proto → Connect JSON + gRPC + gRPC-Web on the existing router |
 
 ## Evidence and limits
 
 | Claim | Evidence | Limit |
 |---|---|---|
-| Compiles and lints clean | `just remote-check`, `remote-clippy -D warnings`, `fmt-remote` on cache-host | toolchain via `nix shell`; cache-host DNS to crates.io was down, so checks ran `--offline` |
-| 33 tests pass | `just remote-test`: core 19, engines 1, server 8, controller 2, tui 3 | unit-level; no integration harness |
-| 11 behavior contracts exist | `features/*.feature`, `just features-check` = `features OK: 11 file(s)` | `@unautomated`; no Gherkin runner bound |
-| Audit survives restart | Postgres 17 container; row present before and after server restart | local container, single node |
-| Forged cookies rejected | tampered payload and foreign-key tests in `session.rs` | no key rotation |
-| XSS neutralized | notebook titled `<script>alert(1)</script>`: page contains 0 raw tags, 2 escaped | hand-rolled `escape()`; no CSP header yet |
-| Unauthorized engine refused | 403 naming the missing grant, header and cookie clients | grants seeded by env var, not yet a UI |
-| Controller reconciles | 4 passes against Postgres; `engines`/`catalogs` rows updated | no leader election; `Recreate` single writer |
-| Manifests are structurally valid | `kubeconform -strict`: 10 valid, 0 invalid, 2 skipped | never applied; no cluster diff run |
-| Token never returned to clients | `api_key` is `skip_serializing`; asserted by test | stored plaintext at rest (D10) |
-
-## Concerns by topic
-
-**Security.** SSO path is written but never exercised against a real IdP — only the discovery-failure path was smoke-tested. The `groups` claim is read from the already-validated ID token payload rather than a mapped claim. `ASTER_SESSION_KEY` has a development default. The dev seam (`/dev-login`, `x-aster-subject`) is fail-safe (it disables itself when `ASTER_OIDC_ISSUER` is set) but must be deleted in S5. LLM tokens rest unencrypted. No CSP, no rate limiting, no CSRF token on the form POST to `/settings/llm`.
-
-**Infrastructure.** The whole runtime is a prerequisite that does not exist (D6): Trino, Trino Gateway, Polaris, and the metadata Postgres have no home-lab deployment. Manifests assume `nfs-slow` RWX storage and a `vault-discovery` ClusterSecretStore. The network policy egress rule is namespace-open until the runtime labels exist.
-
-**Experience.** The web UI is server-rendered HTML with ~60 lines of vanilla JS; the SQL editor is a plain textarea with no highlighting or completion. The TUI has no live-server run yet. Engine selection is a free-text input, not a dropdown fed by the pool.
-
-**Data.** Notebooks are per-session branches of one local git repo — no remote, no push, no per-user isolation (D9). Row/column enforcement is documented as Trino's job, but no Trino access-control rules exist. Contracts are JSON-only; no Cube semantic layer.
-
-**Operations.** No metrics, no tracing export beyond `tracing_subscriber`, no backups for the notebook PVC. Audit retention is a fixed 30-day delete.
+| Gate is green | `just ci` on `cache-host`: fmt, clippy `-D warnings`, tests, `features`, `repo-check` | one host, one toolchain |
+| 34 Rust tests pass | libtest: core 18, server 10 (+1 ignored Valkey test), tui 3, controller 2, engines 1 | unit and in-process level |
+| Behavior files execute | core cucumber **4 features / 17 scenarios / 76 steps**; server harness **4 features / 23 scenarios / 97 steps**; repo contract by script | 12 of 21 files are still `@unautomated` drafts |
+| Both protocols behave the same | live compose run: Connect `ListEngines` 200, Connect `RunQuery` refusal `permission_denied`, `grpcurl` over h2c returns the same data; REST `POST /api/query` refusal 403 naming the grant | no live engine behind either |
+| Refusals are audited | live: two `bob` rows with `ok:false` in Postgres after REST and Connect refusals; `query-authorization.feature` asserts it in-process | engine id `(unrouted)` when no engine resolves |
+| Sessions live outside the process | live: a record minted with `valkey-cli` was accepted by the server, an unknown id was refused, `last_seen` rewritten | single Valkey instance, no failover |
+| Notebook save is a commit | in-container: `git log` shows `alice: update sales` on `session/alice` | local repo only; remote push gated on D9 |
+| Audit survives a restart | Postgres: row listed before and after stopping and starting the server | single node |
+| Secrets stay server-side | `api_key` skips serialisation and has a redacting `Debug` (tested); no `Debug` on the OIDC config prints its secret | tokens rest unencrypted (D10) |
+| Chart and manifests are valid | `just chart-lint`: 15 resources, 13 valid, 2 skipped (no CRD schema); platform `apps/platform/aster` kubeconform-valid | never applied; zero-digest placeholder |
 
 ## Decisions
 
-| ID | Decision | Status |
-|---|---|---|
-| D2 | name `aster` | settled (trademark check: Teradata marks lapsed/EU-expired) |
-| D4 | per-user git repos, branch per session | partly implemented (single local repo) |
-| D5 | thin vertical first | done |
-| D8 | custom text-first notebook format | settled by implementation |
-| D13/D14 | engine- and catalog-agnostic plugin traits | settled |
-| D15/D16 | all-Rust, container-first, scaffold | settled |
-| D6 | where Trino/Polaris/Gateway run | **open — blocks S0/S5** |
-| D7 | Postgres placement | open |
-| D9 | GitHub App vs PAT for push | open |
-| D10 | LLM token custody | open |
-| D11 | Trino row/column rule source | open |
-| D12 | ODCS/Cube role | open |
+Settled and implemented: D1 ecosystem, D2 name, D3 routing group, D4 per-user repos (single local repo so far), D5 thin vertical, D8 text notebook format, D13 engine-agnostic, D14 catalog-agnostic, D15 all-Rust and container-first, D16 scaffold, **D17** Unix philosophy as the design rule, **D18** Valkey owns user and session state globally on a dedicated instance, **D19** internal transport is gRPC generated from one proto — connectrpc alone, not tonic plus connectrpc, so there is one type set — **D20** fail closed when the state store is unavailable.
+
+Still open and blocking: **D6** where Trino/Gateway/Polaris run (blocks S0 and the live query path), D7 Postgres placement, D9 GitHub App vs PAT for remote notebook push, D10 LLM token custody, D11 Trino row/column rule source, D12 ODCS/Cube position.
 
 ## What continues / what waits
 
-Continues without blockers: binding the 11 feature files to a runner, the S10 evaluation metric, and UX polish on the editor. Waits on the human: D6 (runtime), D9 (GitHub identity), D10 (token custody). Waits on S1: Harbor image publish, then the S5 digest pin and the first Argo sync.
+Continues without a human decision: binding the remaining 12 drafts (the harness selects by tag, so removing `@unautomated` is the whole change), the S10 evaluation metric, editor polish, and Cube definition generation. Waits on the human: D6, D9, D10. Waits on S1: the Harbor image publish, then the S5 digest pin and the first Argo sync.
 
 ## Risks and recovery
 
-**Source location.** The `aster` repository lives at `/tmp/opencode/aster` — volatile, not pushed anywhere. Until S1 creates the org repo, a tmp wipe loses 7 commits. Recovery: push to the org repo or copy out; the platform proposal and one-pager record the design independently.
+**Nothing is deployed.** No cluster resource was applied and no secret was written; rollback is deleting the manifests commit. Host-side artifacts are the `aster-*` images on `cache-host` plus two stale `sqlbook-*` volumes that still need `docker volume rm`.
 
-**Zero-risk rollout.** Nothing is deployed, no cluster resource was applied, no secret was written. Rollback is deletion of the manifests commit. The only host-side artifacts are images `aster-dev:latest`/`aster-server:local` on cache-host and the two stale `sqlbook-*` volumes that still need `docker volume rm`.
+**Design risk.** The engine and catalog plugins have never talked to a real Trino or Polaris, so protocol-level surprises (auth scopes, vended credentials, pagination) remain unverified, as does the whole SSO path against a real IdP. The thin slice and the D6 split are the mitigation: every component runs with no engine, no catalog and no issuer, so the dev loop never depends on the missing runtime.
 
-**Design risk.** Engine and catalog traits are proven only against stubs; the Polaris and Trino paths have never talked to a real server, so protocol-level surprises (auth scopes, vended credentials, pagination) remain unverified.
+**Source location.** The canonical checkout is `/home/developer/projects/aster` on a `main` branch. It is not pushed anywhere yet; an earlier scratch copy under `/tmp` was lost to tmp cleanup and restored, which is why the working copy no longer lives in a temporary directory. Until S1 creates the org repository, the working copy is the only copy.
