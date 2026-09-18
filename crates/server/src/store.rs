@@ -36,6 +36,7 @@ impl PgStore {
         sqlx::raw_sql(concat!(
             include_str!("../../../migrations/0001_init.sql"),
             include_str!("../../../migrations/0003_llm.sql"),
+            include_str!("../../../migrations/0004_llm_helpers.sql"),
         ))
         .execute(&pool)
         .await
@@ -54,45 +55,76 @@ impl PgStore {
     }
 }
 
+fn llm_config(subject: &str, row: (String, String, String, String)) -> LlmConfig {
+    let (id, base_url, model, api_key) = row;
+    LlmConfig {
+        subject: subject.to_string(),
+        id,
+        base_url,
+        model,
+        api_key,
+    }
+}
+
 #[async_trait]
 impl LlmStore for PgStore {
-    async fn get(&self, subject: &str) -> Result<Option<LlmConfig>> {
-        let row: Option<(String, String, String)> =
-            sqlx::query_as("SELECT base_url, model, api_key FROM llm_configs WHERE subject = $1")
-                .bind(subject)
-                .fetch_optional(&self.pool)
-                .await
-                .map_err(storage)?;
-        Ok(row.map(|(base_url, model, api_key)| LlmConfig {
-            subject: subject.to_string(),
-            base_url,
-            model,
-            api_key,
-        }))
+    async fn list(&self, subject: &str) -> Result<Vec<LlmConfig>> {
+        let rows: Vec<(String, String, String, String)> = sqlx::query_as(
+            "SELECT id, base_url, model, api_key FROM llm_helpers
+             WHERE subject = $1 ORDER BY id",
+        )
+        .bind(subject)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(storage)?;
+        Ok(rows
+            .into_iter()
+            .map(|row| llm_config(subject, row))
+            .collect())
+    }
+
+    async fn get(&self, subject: &str, id: &str) -> Result<Option<LlmConfig>> {
+        let row: Option<(String, String, String, String)> = sqlx::query_as(
+            "SELECT id, base_url, model, api_key FROM llm_helpers
+             WHERE subject = $1 AND id = $2",
+        )
+        .bind(subject)
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(storage)?;
+        Ok(row.map(|row| llm_config(subject, row)))
     }
 
     async fn put(&self, config: LlmConfig) -> Result<()> {
-        if config.base_url.trim().is_empty() || config.model.trim().is_empty() {
-            return Err(CoreError::Invalid(
-                "base_url and model are both required".into(),
-            ));
-        }
+        config.validate()?;
         sqlx::query(
-            "INSERT INTO llm_configs (subject, base_url, model, api_key)
-             VALUES ($1, $2, $3, $4)
-             ON CONFLICT (subject) DO UPDATE SET
+            "INSERT INTO llm_helpers (subject, id, base_url, model, api_key)
+             VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT (subject, id) DO UPDATE SET
                base_url = EXCLUDED.base_url,
                model = EXCLUDED.model,
                api_key = EXCLUDED.api_key,
                updated_at = now()",
         )
         .bind(&config.subject)
+        .bind(&config.id)
         .bind(&config.base_url)
         .bind(&config.model)
         .bind(&config.api_key)
         .execute(&self.pool)
         .await
         .map_err(storage)?;
+        Ok(())
+    }
+
+    async fn remove(&self, subject: &str, id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM llm_helpers WHERE subject = $1 AND id = $2")
+            .bind(subject)
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(storage)?;
         Ok(())
     }
 }

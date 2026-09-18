@@ -97,9 +97,13 @@ grpcurl -plaintext -import-path proto -proto aster.proto \
   `ASTER_STATE_URL` is set), `ASTER_NOTEBOOK_STORE` (`git`). The full matrix is
   in [docs/provider-matrix.md](docs/provider-matrix.md).
 - `ASTER_ENGINES` = `id;kind;endpoint[;routing_group]` comma-separated;
-  `ASTER_CATALOGS` = `id;kind;endpoint[;catalog]`.
-  `ASTER_DEFAULT_ENGINE`, `ASTER_DEFAULT_CATALOG`. `TRINO_ENDPOINT` and
-  `POLARIS_ENDPOINT`/`POLARIS_CATALOG` still configure the single default entry.
+  `ASTER_CATALOGS` = `id;kind;endpoint[;catalog]`. Kinds are `trino`, `spark`,
+  `starrocks`, `mock` (engines) and `polaris`, `nessie`, `unity`, `mock`
+  (catalogs). `ASTER_DEFAULT_ENGINE`, `ASTER_DEFAULT_CATALOG`. `TRINO_ENDPOINT`
+  and `POLARIS_ENDPOINT`/`POLARIS_CATALOG` still configure the single default
+  entry.
+- `mock` is a demo provider that answers with canned rows and metadata; it is for
+  local work on the shell, never for a deployment.
 - `ASTER_GRANTS` = `subject:engine,...` seeds grants at boot (dev).
 - `ASTER_NOTEBOOK_DIR` (default `data/notebooks`), `ASTER_NOTEBOOK_BRANCH`
   (default `session`).
@@ -132,6 +136,41 @@ grpcurl -plaintext -import-path proto -proto aster.proto \
 
 There is no `.env` file in the repository; export these or set them in the
 deployment.
+
+## Working on the shell
+
+The web shell needs no infrastructure: the `mock` providers answer with canned
+rows and metadata, and with no identity provider configured the dev seam signs
+you in as `alice`.
+
+```sh
+ASTER_ENGINES='mock-local;mock;local' \
+ASTER_CATALOGS='mock-local;mock;local' \
+just run
+# then open http://localhost:8080, or drive it headless:
+curl -c /tmp/c -b /tmp/c -L 'http://localhost:8080/dev-login?subject=alice&roles=editor'
+```
+
+The notebook page renders one editor per cell, a per-cell engine choice filled
+from `/api/engines`, and a result grid; `⌘/Ctrl+Enter` runs the focused cell,
+`Shift+Enter` runs it and moves on, `Run all` runs the notebook in order,
+`⌘/Ctrl+S` saves, and every save is a git commit on the session branch. Each cell
+carries the Jupyter `In [n]` / `Out [n]` counters, and the notebook toolbar picks
+the AI helper the notebook asks. The layout, styles and script live in
+`crates/server/assets/` and are compiled in with `include_str!`.
+
+A user may register several OpenAI-compatible helpers, each under a short name,
+and choose one per notebook:
+
+```sh
+curl -X PUT localhost:8080/api/llm/lab-qwen -H 'content-type: application/json' \
+  -d '{"base_url":"http://llm.local:4000/v1","model":"qwen","api_key":"…"}'
+curl localhost:8080/api/llm          # id, base_url and model; never the token
+curl -X DELETE localhost:8080/api/llm/lab-qwen
+```
+
+`POST /api/ai` takes an optional `helper` name and falls back to the first
+registered one; the settings page lists, adds and removes helpers.
 
 ## Identity providers
 

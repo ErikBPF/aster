@@ -917,6 +917,84 @@ async fn call_does_not_succeed(world: &mut Contract) {
     assert!(!status.is_success(), "unexpected {status}: {}", world.body);
 }
 
+#[given(expr = "subject {string} has saved notebook {string} titled {string}")]
+async fn saved_notebook_titled(world: &mut Contract, subject: String, id: String, title: String) {
+    let request = caller(
+        "PUT",
+        &format!("/api/notebooks/{id}"),
+        Some(&subject),
+        "editor",
+        Some(json!({"id": id, "title": title, "cells": [{"id": "c1", "sql": "SELECT 1"}]})),
+    );
+    world.send(request).await;
+}
+
+#[when(expr = "subject {string} opens the index page")]
+async fn open_index(world: &mut Contract, subject: String) {
+    let request = caller("GET", "/", Some(&subject), "editor", None);
+    world.send(request).await;
+}
+
+#[when(expr = "a caller without identity opens the index page")]
+async fn open_index_anonymous(world: &mut Contract) {
+    let request = caller("GET", "/", None, "editor", None);
+    world.send(request).await;
+}
+
+#[when(expr = "subject {string} opens the {string} notebook page")]
+async fn open_notebook_page(world: &mut Contract, subject: String, id: String) {
+    let request = caller(
+        "GET",
+        &format!("/notebooks/{id}"),
+        Some(&subject),
+        "editor",
+        None,
+    );
+    world.send(request).await;
+}
+
+#[then(expr = "the page carries the application shell")]
+async fn page_carries_shell(world: &mut Contract) {
+    for marker in [
+        "class=\"topbar\"",
+        "<nav class=\"nav\">",
+        "id=\"status\"",
+        "href=\"/logout\"",
+    ] {
+        assert!(
+            world.body.contains(marker),
+            "page is missing {marker}: {}",
+            world.body
+        );
+    }
+}
+
+#[then(expr = "the page renders one editor and one run action per cell")]
+async fn page_renders_cells(world: &mut Contract) {
+    let editors = world.body.matches("class=\"editor\"").count();
+    let runs = world.body.matches("data-action=\"run\"").count();
+    assert!(editors > 0, "no cell editor rendered: {}", world.body);
+    assert_eq!(editors, runs, "every cell needs an editor and a run action");
+    assert!(world.body.contains("class=\"engine\""), "no engine choice");
+    assert!(
+        world.body.contains("id=\"nb\""),
+        "notebook JSON not embedded"
+    );
+}
+
+#[then(expr = "the notebook title is escaped in the markup")]
+async fn title_escaped(world: &mut Contract) {
+    assert!(
+        !world.body.contains("<script>alert(1)</script>"),
+        "raw notebook title reached the markup"
+    );
+    assert!(
+        world.body.contains("&lt;script&gt;alert(1)&lt;/script&gt;"),
+        "escaped title missing: {}",
+        world.body
+    );
+}
+
 /// Saves through the JSON API, so the git store sees the same path the page uses.
 async fn save_notebook_via_api(
     world: &mut Contract,

@@ -1,149 +1,19 @@
 use std::sync::Arc;
 
-use aster_core::{authorize, Action, CoreError, Notebook, TableRef};
+use aster_core::{authorize, Action, CoreError, Health, Notebook, Principal, TableRef};
 use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 
 use crate::{cookie, now, principal, ApiError, AppState};
 
-const CSS: &str = r#"
-:root{color-scheme:light dark}
-body{font:14px/1.5 ui-sans-serif,system-ui,sans-serif;margin:0}
-header{border-bottom:1px solid #8884;padding:.6rem 1rem;display:flex;gap:1rem;align-items:center}
-a{color:inherit}
-main{padding:1rem;max-width:60rem}
-.cell{border:1px solid #8884;border-radius:6px;margin:1rem 0}
-.cell>header{display:flex;gap:.5rem;align-items:center;border:0;border-bottom:1px solid #8884;padding:.4rem .6rem}
-.cell input{flex:1;min-width:6rem}
-textarea{width:100%;box-sizing:border-box;border:0;padding:.6rem;font:13px/1.5 ui-monospace,monospace;background:transparent;resize:vertical;min-height:4rem}
-.out{overflow:auto;padding:0 .6rem .6rem}
-table{border-collapse:collapse;font:12px/1.4 ui-monospace,monospace}
-th,td{border:1px solid #8884;padding:.2rem .5rem;text-align:left}
-button{cursor:pointer}
-.status{color:#888}
-"#;
+// Assets live beside the crate so the markup, the styles and the script stay
+// readable; `include_str!` keeps them in the binary with no extra service.
+const CSS: &str = include_str!("../assets/app.css");
+const JS: &str = include_str!("../assets/app.js");
 
-const JS: &str = r#"
-// Only the notebook page embeds a notebook; the other pages get the nav only.
-const node = document.getElementById('nb');
-const nb = node ? JSON.parse(node.textContent) : null;
-const status = document.getElementById('status');
-
-// Opening the notebook is itself a place to resume from.
-if (nb) recordState(null, null);
-
-function cellsFromDom() {
-  return [...document.querySelectorAll('.cell')].map(el => ({
-    id: el.dataset.id,
-    sql: el.querySelector('textarea').value,
-    engine: el.querySelector('.engine').value || null,
-  }));
-}
-
-function resultTable(res) {
-  const table = document.createElement('table');
-  const head = document.createElement('tr');
-  for (const col of res.columns) {
-    const th = document.createElement('th');
-    th.textContent = col.name;
-    head.appendChild(th);
-  }
-  table.appendChild(head);
-  for (const row of res.rows) {
-    const tr = document.createElement('tr');
-    for (const value of row) {
-      const td = document.createElement('td');
-      td.textContent = value === null ? '∅' : String(value);
-      tr.appendChild(td);
-    }
-    table.appendChild(tr);
-  }
-  return table;
-}
-
-async function run(button) {
-  const cell = button.closest('.cell');
-  const out = cell.querySelector('.out');
-  out.textContent = 'running…';
-  const engine = cell.querySelector('.engine').value || null;
-  recordState(cell.dataset.id, engine);
-  const res = await fetch('/api/query', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ sql: cell.querySelector('textarea').value, engine }),
-  });
-  const data = await res.json();
-  if (!res.ok) {
-    out.textContent = 'error: ' + (data.error || res.status);
-    return;
-  }
-  out.replaceChildren(resultTable(data));
-}
-
-// Where this user is, kept in the shared state plane so the index page and the
-// TUI can resume on any container. Best effort: a failure never blocks the cell.
-function recordState(cell, engine) {
-  fetch('/api/state', {
-    method: 'PUT',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ notebook: nb.id, cell: cell, engine: engine }),
-  }).catch(() => {});
-}
-
-async function generate(button) {
-  const cell = button.closest('.cell');
-  const area = cell.querySelector('textarea');
-  const out = cell.querySelector('.out');
-  out.textContent = 'asking the model…';
-  const res = await fetch('/api/ai', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ prompt: 'Write a query for: ' + (nb.title || 'a report'), sql: area.value }),
-  });
-  const data = await res.json();
-  if (!res.ok) {
-    out.textContent = 'error: ' + (data.error || res.status);
-    return;
-  }
-  area.value = data.sql;
-  out.textContent = 'model suggestion inserted; run it to check.';
-}
-
-async function save() {
-  const res = await fetch('/api/notebooks/' + encodeURIComponent(nb.id), {
-    method: 'PUT',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ ...nb, cells: cellsFromDom() }),
-  });
-  const data = await res.json().catch(() => ({}));
-  status.textContent = res.ok ? 'saved ' + String(data.revision).slice(0, 8) : 'save failed: ' + res.status;
-}
-
-function addCell() {
-  const section = document.createElement('section');
-  section.className = 'cell';
-  section.dataset.id = 'c' + Date.now().toString(36);
-  section.innerHTML = '<header><code></code><input class="engine" placeholder="engine (default)"><button onclick="run(this)">Run</button><button onclick="generate(this)">AI</button></header><textarea spellcheck="false"></textarea><div class="out"></div>';
-  section.querySelector('code').textContent = section.dataset.id;
-  document.getElementById('cells').appendChild(section);
-  section.querySelector('textarea').focus();
-}
-
-async function createNotebook() {
-  const id = document.getElementById('new-id').value.trim();
-  if (!id) return;
-  await fetch('/api/notebooks/' + encodeURIComponent(id), {
-    method: 'PUT',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ id, title: id, cells: [{ id: 'c1', sql: 'SELECT 1', engine: null }] }),
-  });
-  location.href = '/notebooks/' + encodeURIComponent(id);
-}
-"#;
-
-/// ponytail: hand-rolled escaping for two static pages; add askama when a third
-/// page or a designer owns the markup.
+/// ponytail: hand-rolled escaping for a handful of pages; add askama when a
+/// designer owns the markup.
 fn escape(value: &str) -> String {
     value
         .replace('&', "&amp;")
@@ -152,21 +22,70 @@ fn escape(value: &str) -> String {
         .replace('"', "&quot;")
 }
 
-fn layout(title: &str, body: &str) -> String {
-    let mut out = String::new();
-    out.push_str("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">");
-    out.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
-    out.push_str("<title>");
-    out.push_str(&escape(title));
-    out.push_str("</title><style>");
+fn nav(current: &str, items: &[(&str, &str, &str)]) -> String {
+    items
+        .iter()
+        .map(|(id, href, label)| {
+            if *id == current {
+                format!("<a href=\"{href}\" aria-current=\"page\">{label}</a>")
+            } else {
+                format!("<a href=\"{href}\">{label}</a>")
+            }
+        })
+        .collect()
+}
+
+fn health_badge(health: Health) -> String {
+    let class = match health {
+        Health::Healthy => "ok",
+        Health::Degraded => "warn",
+        _ => "bad",
+    };
+    format!(
+        "<span class=\"badge {class}\">{label}</span>",
+        label = health.as_str()
+    )
+}
+
+/// Application shell: sticky topbar with the navigation, the caller's identity
+/// and the page status line, then the page body.
+fn layout(current: &str, title: &str, principal: &Principal, body: &str) -> String {
+    let role = principal
+        .roles
+        .iter()
+        .max()
+        .map(|role| role.to_string())
+        .unwrap_or_else(|| "viewer".into());
+    let links = nav(
+        current,
+        &[
+            ("notebooks", "/", "notebooks"),
+            ("catalog", "/catalog", "catalog"),
+            ("contracts", "/contracts", "contracts"),
+            ("ai", "/settings/llm", "ai"),
+        ],
+    );
+    let mut out = String::from(
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
+         <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">",
+    );
+    out.push_str(&format!("<title>{}</title>", escape(title)));
+    out.push_str("<style>");
     out.push_str(CSS);
-    out.push_str("</style></head><body><header><strong>aster</strong>");
-    out.push_str("<a href=\"/\">notebooks</a><a href=\"/catalog\">catalog</a>");
-    out.push_str("<a href=\"/contracts\">contracts</a>");
-    out.push_str("<a href=\"/settings/llm\">ai</a>");
-    out.push_str("<span class=\"status\" id=\"status\"></span>");
-    out.push_str("<a href=\"/logout\" style=\"margin-left:auto\">sign out</a>");
-    out.push_str("</header><main>");
+    out.push_str(
+        "</style></head><body><header class=\"topbar\">\
+         <a class=\"brand\" href=\"/\">aster</a>",
+    );
+    out.push_str(&format!("<nav class=\"nav\">{links}</nav>"));
+    out.push_str(
+        "<div class=\"spacer\"></div><div class=\"who\"><span class=\"status\" id=\"status\"></span>",
+    );
+    out.push_str(&format!(
+        "<code class=\"subject\">{}</code><span class=\"chip\">{}</span>\
+         <a class=\"btn ghost\" href=\"/logout\">sign out</a></div></header><main class=\"wrap\">",
+        escape(&principal.subject),
+        escape(&role),
+    ));
     out.push_str(body);
     out.push_str("</main><script>");
     out.push_str(JS);
@@ -191,10 +110,11 @@ pub async fn index(
             Some(notebook) if ids.iter().any(|id| id == &notebook) => {
                 let cell = working
                     .cell
-                    .map(|cell| format!(", cell {cell}", cell = escape(&cell)))
+                    .map(|cell| format!(" at cell <code>{cell}</code>", cell = escape(&cell)))
                     .unwrap_or_default();
                 format!(
-                    "<p>resume <a href=\"/notebooks/{id}\">{id}</a>{cell}</p>",
+                    "<div class=\"panel\"><div class=\"panel-body\">pick up where you left off: \
+                     <a href=\"/notebooks/{id}\">{id}</a>{cell}</div></div>",
                     id = escape(&notebook)
                 )
             }
@@ -203,24 +123,29 @@ pub async fn index(
         None => String::new(),
     };
 
-    let mut items = String::new();
+    let mut cards = String::new();
     for id in &ids {
-        items.push_str(&format!(
-            "<li><a href=\"/notebooks/{id}\">{id}</a></li>",
-            id = escape(id)
+        let id = escape(id);
+        cards.push_str(&format!(
+            "<a class=\"card\" href=\"/notebooks/{id}\"><h3>{id}</h3>\
+             <span class=\"status\">open notebook</span></a>"
         ));
     }
-    if items.is_empty() {
-        items.push_str("<li>no notebooks yet</li>");
-    }
+    let notebooks = if cards.is_empty() {
+        "<div class=\"empty\">no notebooks yet — create one to get started</div>".to_string()
+    } else {
+        format!("<div class=\"grid\">{cards}</div>")
+    };
 
     let body = format!(
-        "<p>signed in as <code>{subject}</code></p>{resume}<h1>Notebooks</h1><ul>{items}</ul>\
-         <h2>New notebook</h2><p><input id=\"new-id\" placeholder=\"notebook id\"> \
-         <button onclick=\"createNotebook()\">Create</button></p>",
+        "<div class=\"page-head\"><div><h1>Notebooks</h1>\
+         <p class=\"status\">signed in as <code>{subject}</code></p></div>\
+         <div class=\"spacer\"></div>\
+         <form id=\"create\"><input id=\"new-id\" placeholder=\"new notebook id\" required> \
+         <button class=\"btn primary\">Create</button></form></div>{resume}{notebooks}",
         subject = escape(&principal.subject),
     );
-    Ok(Html(layout("aster", &body)).into_response())
+    Ok(Html(layout("notebooks", "aster", &principal, &body)).into_response())
 }
 
 pub async fn notebook_view(
@@ -233,7 +158,8 @@ pub async fn notebook_view(
     };
     authorize(&principal, Action::ReadNotebook)?;
     let notebook = state.notebooks.get(&id).await?;
-    Ok(Html(layout(&notebook.title, &notebook_body(&notebook))).into_response())
+    let body = notebook_body(&notebook);
+    Ok(Html(layout("notebooks", &notebook.title, &principal, &body)).into_response())
 }
 
 /// Pages redirect a browser into the login flow; API routes answer 403 instead.
@@ -261,11 +187,23 @@ fn notebook_body(notebook: &Notebook) -> String {
             .map(|id| id.to_string())
             .unwrap_or_default();
         cells.push_str(&format!(
-            "<section class=\"cell\" data-id=\"{id}\"><header><code>{id}</code>\
-             <input class=\"engine\" placeholder=\"engine (default)\" value=\"{engine}\">\
-             <button onclick=\"run(this)\">Run</button>\
-             <button onclick=\"generate(this)\">AI</button></header>\
-             <textarea spellcheck=\"false\">{sql}</textarea><div class=\"out\"></div></section>",
+            "<section class=\"cell\" data-id=\"{id}\">\
+             <div class=\"cell-gutter\"><span class=\"prompt in\">In&nbsp;[&nbsp;]</span></div>\
+             <div class=\"cell-body\">\
+             <div class=\"cell-head\"><code class=\"cell-id\">{id}</code>\
+             <div class=\"cell-actions\">\
+             <button type=\"button\" class=\"btn btn-run\" data-action=\"run\">▶ Run</button>\
+             <button type=\"button\" class=\"btn\" data-action=\"ai\">AI</button>\
+             <button type=\"button\" class=\"btn ghost\" data-action=\"add\">+</button>\
+             <button type=\"button\" class=\"btn ghost\" data-action=\"up\">↑</button>\
+             <button type=\"button\" class=\"btn ghost\" data-action=\"down\">↓</button>\
+             <button type=\"button\" class=\"btn ghost danger\" data-action=\"delete\">✕</button>\
+             </div>\
+             <div class=\"select-wrap\"><span class=\"muted\">engine</span>\
+             <select class=\"engine\" data-current=\"{engine}\"></select></div></div>\
+             <textarea class=\"editor\" spellcheck=\"false\">{sql}</textarea>\
+             <div class=\"out\"><span class=\"prompt out\">Out&nbsp;[&nbsp;]</span>\
+             <div class=\"out-content\"></div></div></div></section>",
             id = escape(&cell.id),
             engine = escape(&engine),
             sql = escape(&cell.sql),
@@ -278,10 +216,24 @@ fn notebook_body(notebook: &Notebook) -> String {
         .replace('<', "\\u003c");
 
     format!(
-        "<h1>{title}</h1><div id=\"cells\">{cells}</div>\
-         <p><button onclick=\"addCell()\">Add cell</button> \
-         <button onclick=\"save()\">Save</button></p>\
+        "<div class=\"page-head\"><div>\
+         <p class=\"crumb\"><a href=\"/\">notebooks</a> / {id}</p>\
+         <h1>{title}</h1></div></div>\
+         <div class=\"nb-bar\">\
+         <button type=\"button\" class=\"btn\" data-action=\"add\">+ Cell</button>\
+         <button type=\"button\" class=\"btn\" data-action=\"run-all\">▶ Run all</button>\
+         <button type=\"button\" class=\"btn primary\" data-action=\"save\">Save</button>\
+         <div class=\"spacer\"></div>\
+         <label class=\"helper\">helper\
+         <span class=\"select-wrap\"><select class=\"helper-select\" id=\"helper\"></select></span>\
+         </label>\
+         </div>\
+         <p class=\"status\">run with <span class=\"kbd\">⌘/Ctrl</span> <span class=\"kbd\">Enter</span>, \
+         run and move on with <span class=\"kbd\">Shift</span> <span class=\"kbd\">Enter</span>, \
+         save with <span class=\"kbd\">⌘/Ctrl</span> <span class=\"kbd\">S</span></p>\
+         <div class=\"cells\" id=\"cells\">{cells}</div>\
          <script type=\"application/json\" id=\"nb\">{json}</script>",
+        id = escape(&notebook.id),
         title = escape(&notebook.title),
     )
 }
@@ -407,20 +359,29 @@ pub async fn catalog(
     };
     authorize(&principal, Action::ReadNotebook)?;
 
-    let mut body = String::from("<h1>Catalog</h1>");
+    let mut body = String::from(
+        "<div class=\"page-head\"><div><h1>Catalog</h1>\
+         <p class=\"status\">namespaces exposed by each registered metastore</p></div></div>",
+    );
+    if state.catalogs.list().is_empty() {
+        body.push_str("<div class=\"empty\">no catalogs registered</div>");
+    }
     for catalog in state.catalogs.list() {
         let id = catalog.id().to_string();
         let health = catalog.health().await;
         body.push_str(&format!(
-            "<h2>{id} <span class=\"status\">{health:?}</span></h2>",
-            id = escape(&id)
+            "<div class=\"panel\"><div class=\"panel-head\"><strong>{id}</strong>\
+             <span class=\"chip\">{kind}</span>{health}</div><div class=\"panel-body\">",
+            id = escape(&id),
+            kind = escape(catalog.kind()),
+            health = health_badge(health),
         ));
         match catalog.list_namespaces().await {
             Ok(namespaces) if namespaces.is_empty() => {
                 body.push_str("<p class=\"status\">no namespaces</p>")
             }
             Ok(namespaces) => {
-                body.push_str("<ul>");
+                body.push_str("<ul class=\"list\">");
                 for namespace in namespaces {
                     let url = format!(
                         "/catalog/{}/{namespace}",
@@ -439,8 +400,9 @@ pub async fn catalog(
                 escape(&error.to_string())
             )),
         }
+        body.push_str("</div></div>");
     }
-    Ok(Html(layout("catalog", &body)).into_response())
+    Ok(Html(layout("catalog", "catalog", &principal, &body)).into_response())
 }
 
 pub async fn contracts(
@@ -452,15 +414,20 @@ pub async fn contracts(
     };
     authorize(&principal, Action::ReadNotebook)?;
 
-    let mut body = String::from("<h1>Data contracts</h1>");
+    let mut body = String::from(
+        "<div class=\"page-head\"><div><h1>Data contracts</h1>\
+         <p class=\"status\">declarations the assistant may quote when a cell names them</p>\
+         </div></div>",
+    );
     if state.contracts.is_empty() {
-        body.push_str("<p class=\"status\">no contracts loaded</p>");
+        body.push_str("<div class=\"empty\">no contracts loaded</div>");
     }
     for contract in state.contracts.iter() {
         body.push_str(&format!(
-            "<h2>{name} <span class=\"status\">{id}</span></h2>",
+            "<div class=\"panel\"><div class=\"panel-head\"><strong>{name}</strong>\
+             <span class=\"chip\">{id}</span></div><div class=\"panel-body\">",
             name = escape(&contract.name),
-            id = escape(&contract.id)
+            id = escape(&contract.id),
         ));
         if let Some(description) = &contract.description {
             body.push_str(&format!("<p>{}</p>", escape(description)));
@@ -469,19 +436,23 @@ pub async fn contracts(
             body.push_str(&format!("<p class=\"status\">owner {}</p>", escape(owner)));
         }
         if !contract.fields.is_empty() {
-            body.push_str("<table><tr><th>field</th><th>type</th><th>required</th></tr>");
+            body.push_str(
+                "<table class=\"schema\"><tr><th>field</th><th>type</th><th>required</th></tr>",
+            );
             for field in &contract.fields {
                 body.push_str(&format!(
-                    "<tr><td>{name}</td><td>{data_type}</td><td>{required}</td></tr>",
+                    "<tr><td><code>{name}</code></td><td class=\"muted\">{data_type}</td>\
+                     <td class=\"muted\">{required}</td></tr>",
                     name = escape(&field.name),
                     data_type = escape(field.data_type.as_deref().unwrap_or("")),
-                    required = field.required
+                    required = if field.required { "yes" } else { "no" },
                 ));
             }
             body.push_str("</table>");
         }
+        body.push_str("</div></div>");
     }
-    Ok(Html(layout("contracts", &body)).into_response())
+    Ok(Html(layout("contracts", "contracts", &principal, &body)).into_response())
 }
 
 pub async fn catalog_namespace(
@@ -509,19 +480,30 @@ pub async fn catalog_namespace(
             name = escape(&table.name)
         );
         items.push_str(&format!(
-            "<li><a href=\"{url}\">{name}</a></li>",
+            "<li data-name=\"{name}\"><a href=\"{url}\">{name}</a></li>",
             name = escape(&table.name)
         ));
     }
     if items.is_empty() {
-        items.push_str("<li>no tables</li>");
+        items.push_str("<li class=\"status\">no tables</li>");
     }
     let body = format!(
-        "<h1>{catalog} / {namespace}</h1><ul>{items}</ul>",
+        "<p class=\"crumb\"><a href=\"/catalog\">catalog</a> / {catalog}</p>\
+         <div class=\"page-head\"><div><h1>{namespace}</h1>\
+         <p class=\"status\">{count} table(s)</p></div><div class=\"spacer\"></div>\
+         <input placeholder=\"filter tables\" oninput=\"filterList(this)\"></div>\
+         <div class=\"panel\"><ul class=\"list\">{items}</ul></div>",
         catalog = escape(&id),
         namespace = escape(&namespace),
+        count = tables.len(),
     );
-    Ok(Html(layout(&format!("{id}/{namespace}"), &body)).into_response())
+    Ok(Html(layout(
+        "catalog",
+        &format!("{id}/{namespace}"),
+        &principal,
+        &body,
+    ))
+    .into_response())
 }
 
 pub async fn catalog_table(
@@ -548,24 +530,38 @@ pub async fn catalog_table(
     let mut rows = String::new();
     for column in &schema.columns {
         rows.push_str(&format!(
-            "<tr><td>{name}</td><td>{data_type}</td><td>{nullable}</td></tr>",
+            "<tr><td><code>{name}</code></td><td class=\"muted\">{data_type}</td>\
+             <td class=\"muted\">{nullable}</td></tr>",
             name = escape(&column.name),
             data_type = escape(&column.data_type),
             nullable = if column.nullable { "yes" } else { "no" },
         ));
     }
     let body = format!(
-        "<h1>{catalog} / {namespace} / {table}</h1>\
-         <table><tr><th>column</th><th>type</th><th>nullable</th></tr>{rows}</table>",
+        "<p class=\"crumb\"><a href=\"/catalog\">catalog</a> / \
+         <a href=\"/catalog/{catalog}/{namespace}\">{namespace}</a></p>\
+         <div class=\"page-head\"><div><h1>{table}</h1>\
+         <p class=\"status\">{count} column(s)</p></div>\
+         <div class=\"spacer\"></div>\
+         <a class=\"btn\" href=\"/catalog/{catalog}/{namespace}\">back to tables</a></div>\
+         <div class=\"panel\"><table class=\"schema\">\
+         <tr><th>column</th><th>type</th><th>nullable</th></tr>{rows}</table></div>",
         catalog = escape(&id),
         namespace = escape(&namespace),
         table = escape(&table),
+        count = schema.columns.len(),
     );
-    Ok(Html(layout(&format!("{id}/{namespace}/{table}"), &body)).into_response())
+    Ok(Html(layout(
+        "catalog",
+        &format!("{id}/{namespace}/{table}"),
+        &principal,
+        &body,
+    ))
+    .into_response())
 }
 
-/// Registration form for the caller's own OpenAI-compatible endpoint. The token
-/// is written once and never rendered back.
+/// Registration list for the caller's own OpenAI-compatible endpoints. A token is
+/// written once and never rendered back.
 pub async fn llm_settings(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -573,35 +569,45 @@ pub async fn llm_settings(
     let Some(principal) = browser_principal(&state, &headers).await else {
         return Ok(sign_in_redirect());
     };
-    let current = state.llm.get(&principal.subject).await?;
-    let (base_url, model, note) = match current {
-        Some(config) => (
-            config.base_url,
-            config.model,
-            "a token is already registered; submitting replaces it".to_string(),
-        ),
-        None => (
-            String::new(),
-            String::new(),
-            "no endpoint registered".to_string(),
-        ),
+    let helpers = state.llm.list(&principal.subject).await?;
+
+    let mut list = String::new();
+    for helper in &helpers {
+        list.push_str(&format!(
+            "<li><div><code>{id}</code> <span class=\"muted\">{base_url}</span> \
+             <span class=\"badge\">{model}</span></div>\
+             <form method=\"post\" action=\"/settings/llm/{id}/delete\">\
+             <button class=\"btn ghost danger\">remove</button></form></li>",
+            id = escape(&helper.id),
+            base_url = escape(&helper.base_url),
+            model = escape(&helper.model),
+        ));
+    }
+    let registered = if helpers.is_empty() {
+        "<p class=\"status\">no endpoint registered</p>".to_string()
+    } else {
+        format!("<ul class=\"list\">{list}</ul>")
     };
 
     let body = format!(
-        "<h1>AI endpoint</h1><p class=\"status\">{note}</p>\
-         <form method=\"post\" action=\"/settings/llm\">\
-         <p><label>base url <input name=\"base_url\" size=\"40\" value=\"{base_url}\" \
+        "<div class=\"page-head\"><div><h1>AI helpers</h1>\
+         <p class=\"status\">each helper is one OpenAI-compatible endpoint; a notebook picks one</p>\
+         </div></div>\
+         {registered}\
+         <form class=\"panel\" method=\"post\" action=\"/settings/llm\">\
+         <div class=\"panel-head\">add or replace a helper</div>\
+         <div class=\"panel-body\">\
+         <p><label>name<br><input name=\"id\" size=\"24\" value=\"\" \
+         placeholder=\"lab-qwen\"></label></p>\
+         <p><label>base url<br><input name=\"base_url\" size=\"48\" value=\"\" \
          placeholder=\"http://llm.local:4000/v1\"></label></p>\
-         <p><label>model <input name=\"model\" size=\"30\" value=\"{model}\"></label></p>\
-         <p><label>token <input name=\"api_key\" type=\"password\" size=\"40\"></label></p>\
-         <p><button>Save</button></p></form>\
+         <p><label>model<br><input name=\"model\" size=\"36\" value=\"\"></label></p>\
+         <p><label>token<br><input name=\"api_key\" type=\"password\" size=\"48\"></label></p>\
+         <p><button class=\"btn primary\">Save</button></p>\
          <p class=\"status\">The token stays on the server; notebooks call it through \
-         <code>/api/ai</code>.</p>",
-        note = escape(&note),
-        base_url = escape(&base_url),
-        model = escape(&model),
+         <code>/api/ai</code>. Submitting an existing name replaces that helper.</p></div></form>",
     );
-    Ok(Html(layout("ai endpoint", &body)).into_response())
+    Ok(Html(layout("ai", "ai helpers", &principal, &body)).into_response())
 }
 
 #[derive(serde::Deserialize)]

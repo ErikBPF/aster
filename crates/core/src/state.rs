@@ -80,6 +80,8 @@ pub struct WorkingState {
     pub cell: Option<String>,
     /// Engine they last ran a cell on.
     pub engine: Option<String>,
+    /// LLM helper the notebook is set to use.
+    pub helper: Option<String>,
 }
 
 /// Per-subject working state, shared by every container (D18).
