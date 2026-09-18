@@ -1,0 +1,34 @@
+# A real Open Data Contract Standard document (v3.2), which is what teams write.
+# aster reads name/id, team.name, schema[].properties[] and semanticType; every
+# other section is ignored on purpose.
+version: 3.2.0
+apiVersion: v3.2.0
+kind: DataContract
+id: orders
+name: orders
+status: active
+description: one row per customer order
+team:
+  name: data-team
+domain: sales
+schema:
+  - name: orders
+    logicalType: object
+    properties:
+      - name: order_id
+        logicalType: bigint
+        required: true
+        primaryKey: true
+        semanticType: column
+      - name: customer_id
+        logicalType: bigint
+        required: true
+        semanticType: dimension
+      - name: total
+        logicalType: decimal(12,2)
+        required: true
+        semanticType: measure
+      - name: placed_at
+        logicalType: timestamp
+        required: true
+        semanticType: dimension

@@ -18,6 +18,8 @@ rust-version = "1.89"
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# YAML, because a real ODCS document is YAML; parses JSON too.
+serde_norway = "0.9"
 async-trait = "0.1"
 thiserror = "2"
 anyhow = "1"

@@ -5,10 +5,10 @@
 //! Cargo.toml as a `harness = false` test target).
 
 use aster_core::{
-    authorize, authorize_engine, require, Action, Cell, CoreError, EngineId, HandshakeStore,
-    InMemoryGrants, InMemoryHandshakes, InMemorySecrets, InMemorySessions, InMemoryUserState,
-    Notebook, Principal, Role, SecretStore, SessionRecord, SessionRegistry, UserState,
-    WorkingState,
+    authorize, authorize_engine, relevant, require, Action, Cell, CoreError, DataContract,
+    EngineId, HandshakeStore, InMemoryGrants, InMemoryHandshakes, InMemorySecrets,
+    InMemorySessions, InMemoryUserState, Notebook, Principal, Role, SecretStore, SessionRecord,
+    SessionRegistry, UserState, WorkingState,
 };
 use cucumber::{given, then, when, World};
 
@@ -30,6 +30,10 @@ struct App {
     secrets: Option<InMemorySecrets>,
     secret: Option<Result<String, CoreError>>,
     looked_up: Option<Option<String>>,
+    contract_text: String,
+    contract: Option<Result<DataContract, CoreError>>,
+    contracts: Vec<DataContract>,
+    selected: Vec<String>,
 }
 
 impl App {
@@ -410,6 +414,125 @@ async fn looks_up_secret(world: &mut App, key: String) {
 async fn lookup_reports_nothing(world: &mut App) {
     let looked_up = world.looked_up.as_ref().expect("a lookup happened");
     assert!(looked_up.is_none(), "expected nothing, got {looked_up:?}");
+}
+
+/* ---- data contracts -------------------------------------------------- */
+
+/// Builds the YAML a team actually commits, so the parser is exercised on the
+/// real shape rather than on our own convenience format.
+#[given(expr = "an ODCS v3.2 contract named {string} with fields {string} and owner {string}")]
+async fn an_odcs_contract(world: &mut App, name: String, fields: String, owner: String) {
+    let mut properties = String::new();
+    for (index, field) in fields.split(',').map(str::trim).enumerate() {
+        let semantic = if field == "total" {
+            "measure"
+        } else {
+            "dimension"
+        };
+        properties.push_str(&format!(
+            "      - name: {field}\n        logicalType: bigint\n        semanticType: {semantic}\n"
+        ));
+        let _ = index;
+    }
+    world.contract_text = format!(
+        "version: 3.2.0\napiVersion: v3.2.0\nkind: DataContract\nid: {name}\nteam:\n  name: {owner}\nschema:\n  - name: {name}\n    properties:\n{properties}"
+    );
+}
+
+#[given(expr = "a flat contract object with name {string} and a required field {string}")]
+async fn a_flat_contract(world: &mut App, name: String, field: String) {
+    world.contract_text = format!(
+        r#"{{"name":"{name}","schema":[{{"name":"{field}","type":"bigint","required":true}}]}}"#
+    );
+}
+
+#[given("a contract document without a name")]
+async fn a_contract_without_a_name(world: &mut App) {
+    world.contract_text = "schema: []\n".into();
+}
+
+#[when("the contract is parsed")]
+async fn parse_contract(world: &mut App) {
+    world.contract = Some(DataContract::parse("contract.yaml", &world.contract_text));
+}
+
+#[then(expr = "the contract is named {string}")]
+async fn contract_is_named(world: &mut App, name: String) {
+    assert_eq!(contract(world).name, name);
+}
+
+#[then(expr = "the owner is {string}")]
+async fn contract_owner_is(world: &mut App, owner: String) {
+    assert_eq!(contract(world).owner.as_deref(), Some(owner.as_str()));
+}
+
+#[then(expr = "the contract has {int} fields")]
+async fn contract_field_count(world: &mut App, count: usize) {
+    assert_eq!(contract(world).fields.len(), count);
+}
+
+/// Same assertion, singular wording in a scenario.
+#[then(expr = "the contract has {int} field")]
+async fn contract_field_count_singular(world: &mut App, count: usize) {
+    assert_eq!(contract(world).fields.len(), count);
+}
+
+#[then(expr = "the field {string} is a {string}")]
+async fn field_semantic_type(world: &mut App, name: String, semantic: String) {
+    let field = contract(world)
+        .fields
+        .iter()
+        .find(|field| field.name == name)
+        .unwrap_or_else(|| panic!("no field named {name}"));
+    assert_eq!(field.semantic_type.as_deref(), Some(semantic.as_str()));
+}
+
+#[then("the parse is refused as invalid")]
+async fn parse_is_refused(world: &mut App) {
+    let parsed = world.contract.as_ref().expect("a contract was parsed");
+    assert!(
+        matches!(parsed, Err(CoreError::Invalid(_))),
+        "expected an invalid contract, got {parsed:?}"
+    );
+}
+
+#[given(expr = "a contract named {string} and a contract named {string}")]
+async fn two_contracts(world: &mut App, first: String, second: String) {
+    world.contracts = [first, second]
+        .iter()
+        .map(|name| DataContract::parse(name, &format!(r#"{{"name":"{name}"}}"#)).expect("parses"))
+        .collect();
+}
+
+#[when(expr = "the statement {string} is prepared")]
+async fn prepare_statement(world: &mut App, sql: String) {
+    world.selected = relevant(&world.contracts, &sql)
+        .into_iter()
+        .map(|contract| contract.name.clone())
+        .collect();
+}
+
+#[then(expr = "the selected contracts are {string}")]
+async fn selected_contracts(world: &mut App, expected: String) {
+    assert_eq!(world.selected.join(", "), expected);
+}
+
+#[then("no contract is selected")]
+async fn no_contract_selected(world: &mut App) {
+    assert!(
+        world.selected.is_empty(),
+        "expected none, got {:?}",
+        world.selected
+    );
+}
+
+fn contract(world: &App) -> &DataContract {
+    world
+        .contract
+        .as_ref()
+        .expect("a contract was parsed")
+        .as_ref()
+        .expect("the contract parsed")
 }
 
 #[tokio::main]

@@ -7,7 +7,9 @@ use std::path::Path;
 
 use aster_core::DataContract;
 
-/// Reads `*.json` contracts from `dir`. Missing directory is not an error: contracts are optional.
+/// Reads every `*.json`, `*.yaml` and `*.yml` contract from `dir`. A missing
+/// directory is not an error: contracts are optional, and one that fails to parse
+/// is skipped with a warning rather than stopping the server.
 pub fn load(dir: &Path) -> Vec<DataContract> {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
@@ -31,19 +33,18 @@ pub fn load(dir: &Path) -> Vec<DataContract> {
             .unwrap_or_default()
             .to_string();
 
-        match extension {
-            Some("json") => match std::fs::read_to_string(&path) {
-                Ok(text) => match DataContract::parse(&id, &text) {
-                    Ok(contract) => contracts.push(contract),
-                    Err(error) => tracing::warn!("skipping contract {name}: {error}"),
-                },
+        if !matches!(extension, Some("json" | "yaml" | "yml")) {
+            continue;
+        }
+        match std::fs::read_to_string(&path) {
+            Ok(text) => match DataContract::parse(&id, &text) {
+                Ok(contract) => {
+                    tracing::info!("loaded data contract {name}");
+                    contracts.push(contract);
+                }
                 Err(error) => tracing::warn!("skipping contract {name}: {error}"),
             },
-            // ponytail: yaml contracts need a yaml crate; keep JSON until a team stores yaml.
-            Some("yaml" | "yml") => {
-                tracing::warn!("skipping contract {name}: yaml contracts are not supported yet")
-            }
-            _ => {}
+            Err(error) => tracing::warn!("skipping contract {name}: {error}"),
         }
     }
 
@@ -56,8 +57,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn loads_json_contracts_and_ignores_yaml() {
-        let dir = std::env::temp_dir().join(format!("aster-contracts-{}", std::process::id()));
+    fn loads_json_and_yaml_contracts_and_skips_broken_ones() {
+        let dir = std::env::temp_dir().join(format!(
+            "aster-contracts-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("temp dir");
         std::fs::write(
@@ -65,14 +70,26 @@ mod tests {
             r#"{"name":"orders","schema":[{"name":"id","type":"bigint","required":true}]}"#,
         )
         .expect("write json");
-        std::fs::write(dir.join("people.yaml"), "name: people\n").expect("write yaml");
+        std::fs::write(
+            dir.join("people.yaml"),
+            "apiVersion: v3.2.0\nkind: DataContract\nid: people\nschema:\n  - name: people\n    properties:\n      - name: name\n        logicalType: string\n",
+        )
+        .expect("write yaml");
         std::fs::write(dir.join("broken.json"), "{").expect("write broken");
+        std::fs::write(dir.join("notes.txt"), "not a contract").expect("write notes");
 
         let contracts = load(&dir);
 
         std::fs::remove_dir_all(&dir).ok();
 
-        assert_eq!(contracts.len(), 1);
-        assert_eq!(contracts[0].name, "orders");
+        assert_eq!(
+            contracts
+                .iter()
+                .map(|contract| contract.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["orders", "people"]
+        );
+        assert_eq!(contracts[0].fields.len(), 1);
+        assert_eq!(contracts[1].fields[0].name, "name");
     }
 }

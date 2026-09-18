@@ -17,6 +17,12 @@ Feature: Data contracts describe tables to users and to the model
     Then the page names the contract "orders"
     And the page lists the field "id"
 
+  Scenario: A real ODCS v3.2 yaml contract is listed
+    Given a contract file "orders.odcs.yaml" written in ODCS v3.2 with an "orders" schema of three properties
+    When "alice" opens /contracts
+    Then the page names the contract "orders"
+    And the page lists the field "total" marked as a "measure"
+
   Scenario: Contracts are visible over the API
     When "alice" requests /api/contracts
     Then the response contains a contract named "orders"
@@ -32,10 +38,10 @@ Feature: Data contracts describe tables to users and to the model
     Then the server logs a warning naming "broken.json"
     And the server still serves the remaining contracts
 
-  Scenario: A yaml contract is reported as unsupported
-    Given a contract file "people.yaml"
+  Scenario: A non-contract file is ignored
+    Given a contract directory containing "notes.txt"
     When the server starts
-    Then the server logs that yaml contracts are not supported yet
+    Then no contract is loaded from it
 
   Scenario: A contract named in the cell is offered to the model
     Given "alice" has registered an llm endpoint
