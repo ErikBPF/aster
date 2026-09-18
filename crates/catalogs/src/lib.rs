@@ -175,6 +175,146 @@ impl Catalog for PolarisCatalog {
     }
 }
 
+/// Cube's semantic layer, browsed read-only through `/v1/meta`.
+///
+/// `endpoint` is the Cube base URL and the configured `catalog` value is the base
+/// path (`cubejs-api` by default). A cube and a view are both queryable, so they
+/// are browsed as two namespaces; each member (measure or dimension) becomes a
+/// column, named exactly as Cube's own SQL API exposes it.
+/// ponytail: no credential yet — Cube API tokens are JWTs signed with
+/// `CUBEJS_API_SECRET`, and nothing in `CatalogConfig` can carry one. Decide where
+/// the secret lives when a Cube instance is actually deployed (D6).
+pub struct CubeCatalog {
+    id: CatalogId,
+    client: reqwest::Client,
+    endpoint: String,
+    base_path: String,
+}
+
+impl CubeCatalog {
+    pub fn new(
+        id: impl Into<String>,
+        endpoint: impl Into<String>,
+        base_path: impl Into<String>,
+    ) -> Self {
+        Self {
+            id: CatalogId::new(id),
+            client: reqwest::Client::new(),
+            endpoint: endpoint.into(),
+            base_path: base_path.into(),
+        }
+    }
+
+    /// The compiled model: cubes and views, each with its measures and dimensions.
+    async fn meta(&self) -> Result<serde_json::Value> {
+        let url = format!(
+            "{}/{}/v1/meta",
+            self.endpoint.trim_end_matches('/'),
+            self.base_path.trim_matches('/')
+        );
+        self.client
+            .get(url)
+            .header("Accept", "application/json")
+            .send()
+            .await
+            .map_err(|error| CoreError::Catalog(error.to_string()))?
+            .json()
+            .await
+            .map_err(|error| CoreError::Catalog(error.to_string()))
+    }
+}
+
+/// One namespace's members, in the order Cube reports them.
+fn cube_members<'a>(
+    meta: &'a serde_json::Value,
+    namespace: &str,
+) -> Vec<(&'a str, &'a serde_json::Value)> {
+    meta.get(namespace)
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| Some((item.get("name")?.as_str()?, item)))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Cube puts measures and dimensions in separate lists; a browser wants one column list.
+fn cube_columns(member: &serde_json::Value) -> Vec<ColumnSchema> {
+    ["measures", "dimensions"]
+        .iter()
+        .filter_map(|section| member.get(section).and_then(|value| value.as_array()))
+        .flatten()
+        .filter_map(|column| {
+            Some(ColumnSchema {
+                name: column.get("name")?.as_str()?.to_string(),
+                data_type: column
+                    .get("type")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("unknown")
+                    .to_string(),
+                // Cube's model carries no nullability.
+                nullable: true,
+            })
+        })
+        .collect()
+}
+
+#[async_trait]
+impl Catalog for CubeCatalog {
+    fn id(&self) -> &CatalogId {
+        &self.id
+    }
+
+    fn kind(&self) -> &str {
+        "cube"
+    }
+
+    async fn health(&self) -> Health {
+        match self.meta().await {
+            Ok(_) => Health::Healthy,
+            Err(CoreError::Catalog(_)) => Health::Degraded,
+            Err(_) => Health::Unavailable,
+        }
+    }
+
+    async fn list_namespaces(&self) -> Result<Vec<Namespace>> {
+        let meta = self.meta().await?;
+        Ok(["cubes", "views"]
+            .iter()
+            .filter(|namespace| !cube_members(&meta, namespace).is_empty())
+            .map(|namespace| Namespace {
+                name: (*namespace).to_string(),
+            })
+            .collect())
+    }
+
+    async fn list_tables(&self, namespace: &str) -> Result<Vec<TableRef>> {
+        let meta = self.meta().await?;
+        Ok(cube_members(&meta, namespace)
+            .iter()
+            .map(|(name, _)| TableRef {
+                namespace: namespace.to_string(),
+                name: (*name).to_string(),
+            })
+            .collect())
+    }
+
+    async fn table_schema(&self, table: &TableRef) -> Result<TableSchema> {
+        let meta = self.meta().await?;
+        let member = cube_members(&meta, &table.namespace)
+            .into_iter()
+            .find(|(name, _)| *name == table.name)
+            .map(|(_, member)| member)
+            .ok_or_else(|| CoreError::NotFound(format!("unknown cube: {}", table.name)))?;
+        Ok(TableSchema {
+            table: table.clone(),
+            columns: cube_columns(member),
+        })
+    }
+}
+
 macro_rules! stub_catalog {
     ($name:ident, $kind:literal) => {
         pub struct $name {
@@ -364,6 +504,15 @@ pub fn catalog_from_config(config: &CatalogConfig) -> Result<Arc<dyn Catalog>> {
         )),
         "nessie" => Arc::new(NessieCatalog::new(&config.id, &config.endpoint)),
         "unity" => Arc::new(UnityCatalog::new(&config.id, &config.endpoint)),
+        // A semantic layer browsed read-only; `catalog` carries the base path.
+        "cube" => Arc::new(CubeCatalog::new(
+            &config.id,
+            &config.endpoint,
+            config
+                .catalog
+                .clone()
+                .unwrap_or_else(|| "cubejs-api".into()),
+        )),
         // Demo provider: canned metadata, for local UI work only.
         "mock" => Arc::new(MockCatalog::new(&config.id)),
         other => return Err(CoreError::Invalid(format!("unknown catalog kind: {other}"))),
@@ -394,10 +543,66 @@ mod tests {
 
     #[test]
     fn every_declared_kind_resolves_to_a_provider() {
-        for kind in ["polaris", "nessie", "unity", "mock"] {
+        for kind in ["polaris", "nessie", "unity", "cube", "mock"] {
             let catalog = catalog_from_config(&catalog_config(kind)).expect(kind);
             assert_eq!(catalog.kind(), kind);
         }
+    }
+
+    /// The compiled-model document as Cube serves it, trimmed to the fields we read.
+    fn cube_meta() -> serde_json::Value {
+        serde_json::json!({
+            "cubes": [
+                {
+                    "name": "Orders",
+                    "measures": [
+                        {"name": "Orders.count", "type": "number"},
+                        {"name": "Orders.total", "type": "number"}
+                    ],
+                    "dimensions": [
+                        {"name": "Orders.status", "type": "string"},
+                        {"name": "Orders.placed_at", "type": "time"}
+                    ]
+                }
+            ],
+            "views": [{"name": "Sales", "measures": [], "dimensions": [{"name": "Sales.region", "type": "string"}]}],
+            "compilerId": "abc"
+        })
+    }
+
+    #[test]
+    fn a_cube_model_becomes_namespaces_tables_and_columns() {
+        let meta = cube_meta();
+
+        let namespaces: Vec<_> = ["cubes", "views"]
+            .iter()
+            .filter(|namespace| !cube_members(&meta, namespace).is_empty())
+            .collect();
+        assert_eq!(namespaces.len(), 2);
+
+        let cubes = cube_members(&meta, "cubes");
+        assert_eq!(cubes.len(), 1);
+        assert_eq!(cubes[0].0, "Orders");
+
+        let columns = cube_columns(cubes[0].1);
+        assert_eq!(
+            columns
+                .iter()
+                .map(|column| column.name.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "Orders.count",
+                "Orders.total",
+                "Orders.status",
+                "Orders.placed_at"
+            ]
+        );
+        assert_eq!(columns[2].data_type, "string");
+    }
+
+    #[test]
+    fn a_namespace_cube_does_not_have_is_empty() {
+        assert!(cube_members(&cube_meta(), "models").is_empty());
     }
 
     #[tokio::test]
