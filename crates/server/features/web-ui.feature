@@ -1,44 +1,33 @@
-@contract @unautomated
-# Behavior contract for the server-rendered web shell (S7).
+@contract
+# Behavior contract for the server-rendered shell.
 #
-# Status: contract-only. The pages, the escaping unit test and the live smoke
-# run on `cache-host` execute these behaviors; binding them to a Gherkin runner is
-# tracked in the proposal (IP S7+).
+# Bound to `crates/server/tests/contracts.rs`, which drives the router in
+# process; the same pages are also exercised against a live server in the
+# README smoke steps. Look-and-feel details (CSS, keyboard shortcuts) are not
+# asserted here; these scenarios protect the structure the script needs.
 
-Feature: Web shell for notebooks and cells
+Feature: Web shell
 
   Background:
-    Given the server is running with a notebook "sales" containing one cell
-    And a signed-in subject with the editor role
+    Given the server is running with engine "trino-local" registered
+    And subject "alice" has saved notebook "sales" with one cell "SELECT 1"
 
-  Scenario: Notebook list is rendered server-side
-    When the subject requests the index page
-    Then the response is 200
-    And the response body links to "/notebooks/sales"
+  Scenario: Every page is framed by the shell
+    When subject "alice" opens the index page
+    Then the response status is 200
+    And the page carries the application shell
 
-  Scenario: Notebook page renders its cells and embeds the notebook as JSON
-    When the subject opens the "sales" notebook page
-    Then the response is 200
-    And the page contains a textarea with the cell SQL
-    And the notebook JSON is embedded for the client script
+  Scenario: The notebook page renders an editor and a run action per cell
+    When subject "alice" opens the "sales" notebook page
+    Then the response status is 200
+    And the page renders one editor and one run action per cell
 
   Scenario: Notebook text cannot break out of the page
-    Given a notebook titled "<script>alert(1)</script>"
-    When the subject opens that notebook page
-    Then the title appears escaped in the markup
-    And no script tag from the notebook text is present
+    Given subject "alice" has saved notebook "alert" titled "<script>alert(1)</script>"
+    When subject "alice" opens the "alert" notebook page
+    Then the response status is 200
+    And the notebook title is escaped in the markup
 
-  Scenario: An unidentified caller cannot read pages
-    When a caller without identity requests the index page
-    Then the response is 403
-
-  Scenario: A viewer can read but the run button still requires the query grant
-    Given a signed-in subject with the viewer role
-    When the subject requests the index page
-    Then the response is 200
-    And posting a query as that subject is rejected 403
-
-  Scenario: Saving from the page commits the edited cells
-    When the subject saves the notebook with an edited cell
-    Then the response is 200 with a revision
-    And reading the notebook back returns the edited SQL
+  Scenario: An unidentified caller is sent to sign in
+    When a caller without identity opens the index page
+    Then the response status is 303

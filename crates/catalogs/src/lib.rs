@@ -232,6 +232,129 @@ macro_rules! stub_catalog {
 stub_catalog!(NessieCatalog, "nessie");
 stub_catalog!(UnityCatalog, "unity");
 
+/// Canned namespaces and schemas for local UI work, so the catalog tab can be
+/// exercised without a metastore. Never register it in a deployment.
+pub struct MockCatalog {
+    id: CatalogId,
+}
+
+impl MockCatalog {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self {
+            id: CatalogId::new(id),
+        }
+    }
+
+    fn tables(namespace: &str) -> Vec<(&'static str, &'static [(&'static str, &'static str)])> {
+        match namespace {
+            "aster_demo" => vec![
+                (
+                    "orders",
+                    &[
+                        ("order_id", "bigint"),
+                        ("customer", "varchar"),
+                        ("region", "varchar"),
+                        ("total", "decimal(12,2)"),
+                        ("placed_at", "timestamp"),
+                    ],
+                ),
+                (
+                    "customers",
+                    &[
+                        ("customer_id", "bigint"),
+                        ("name", "varchar"),
+                        ("email", "varchar"),
+                        ("created_at", "timestamp"),
+                    ],
+                ),
+            ],
+            "aster_demo.sales" => vec![(
+                "daily_revenue",
+                &[
+                    ("day", "date"),
+                    ("region", "varchar"),
+                    ("revenue", "decimal(18,2)"),
+                ],
+            )],
+            "aster_raw" => vec![
+                (
+                    "events",
+                    &[
+                        ("event_id", "varchar"),
+                        ("kind", "varchar"),
+                        ("payload", "json"),
+                        ("seen_at", "timestamp"),
+                    ],
+                ),
+                (
+                    "clickstream",
+                    &[
+                        ("session_id", "varchar"),
+                        ("path", "varchar"),
+                        ("country", "varchar"),
+                    ],
+                ),
+            ],
+            _ => Vec::new(),
+        }
+    }
+}
+
+#[async_trait]
+impl Catalog for MockCatalog {
+    fn id(&self) -> &CatalogId {
+        &self.id
+    }
+
+    fn kind(&self) -> &str {
+        "mock"
+    }
+
+    async fn health(&self) -> Health {
+        Health::Healthy
+    }
+
+    async fn list_namespaces(&self) -> Result<Vec<Namespace>> {
+        Ok(["aster_demo", "aster_demo.sales", "aster_raw"]
+            .iter()
+            .map(|name| Namespace {
+                name: (*name).into(),
+            })
+            .collect())
+    }
+
+    async fn list_tables(&self, namespace: &str) -> Result<Vec<TableRef>> {
+        Ok(Self::tables(namespace)
+            .iter()
+            .map(|(name, _)| TableRef {
+                namespace: namespace.into(),
+                name: (*name).into(),
+            })
+            .collect())
+    }
+
+    async fn table_schema(&self, table: &TableRef) -> Result<TableSchema> {
+        let columns = Self::tables(&table.namespace)
+            .iter()
+            .find(|(name, _)| *name == table.name)
+            .map(|(_, columns)| {
+                columns
+                    .iter()
+                    .map(|(name, data_type)| ColumnSchema {
+                        name: (*name).into(),
+                        data_type: (*data_type).into(),
+                        nullable: true,
+                    })
+                    .collect()
+            })
+            .ok_or_else(|| CoreError::NotFound(format!("unknown table: {}", table.name)))?;
+        Ok(TableSchema {
+            table: table.clone(),
+            columns,
+        })
+    }
+}
+
 pub fn catalog_from_config(config: &CatalogConfig) -> Result<Arc<dyn Catalog>> {
     let catalog: Arc<dyn Catalog> = match config.kind.as_str() {
         "polaris" => Arc::new(PolarisCatalog::new(
@@ -241,6 +364,8 @@ pub fn catalog_from_config(config: &CatalogConfig) -> Result<Arc<dyn Catalog>> {
         )),
         "nessie" => Arc::new(NessieCatalog::new(&config.id, &config.endpoint)),
         "unity" => Arc::new(UnityCatalog::new(&config.id, &config.endpoint)),
+        // Demo provider: canned metadata, for local UI work only.
+        "mock" => Arc::new(MockCatalog::new(&config.id)),
         other => return Err(CoreError::Invalid(format!("unknown catalog kind: {other}"))),
     };
     Ok(catalog)
@@ -269,9 +394,37 @@ mod tests {
 
     #[test]
     fn every_declared_kind_resolves_to_a_provider() {
-        for kind in ["polaris", "nessie", "unity"] {
+        for kind in ["polaris", "nessie", "unity", "mock"] {
             let catalog = catalog_from_config(&catalog_config(kind)).expect(kind);
             assert_eq!(catalog.kind(), kind);
         }
+    }
+
+    #[tokio::test]
+    async fn the_mock_catalog_walks_namespaces_tables_and_schemas() {
+        let catalog = catalog_from_config(&catalog_config("mock")).expect("mock");
+
+        let namespaces = catalog.list_namespaces().await.expect("namespaces");
+        assert!(namespaces.iter().any(|ns| ns.name == "aster_demo"));
+
+        let tables = catalog.list_tables("aster_demo").await.expect("tables");
+        assert!(tables.iter().any(|table| table.name == "orders"));
+
+        let schema = catalog
+            .table_schema(&TableRef {
+                namespace: "aster_demo".into(),
+                name: "orders".into(),
+            })
+            .await
+            .expect("schema");
+        assert_eq!(schema.columns[0].name, "order_id");
+
+        let miss = catalog
+            .table_schema(&TableRef {
+                namespace: "aster_demo".into(),
+                name: "nope".into(),
+            })
+            .await;
+        assert!(miss.is_err());
     }
 }

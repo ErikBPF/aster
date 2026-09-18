@@ -573,7 +573,15 @@ pub fn app(state: Arc<AppState>) -> Router {
             "/settings/llm",
             get(web::llm_settings).post(ai::put_config_form),
         )
-        .route("/api/llm", get(ai::get_config).put(ai::put_config))
+        .route(
+            "/settings/llm/{id}/delete",
+            axum::routing::post(ai::remove_config_form),
+        )
+        .route("/api/llm", get(ai::list_configs))
+        .route(
+            "/api/llm/{id}",
+            axum::routing::put(ai::put_config).delete(ai::remove_config),
+        )
         .route("/api/ai", post(ai::generate))
         .route("/catalog/{id}/{namespace}", get(web::catalog_namespace))
         .route("/catalog/{id}/{namespace}/{table}", get(web::catalog_table))

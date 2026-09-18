@@ -1,39 +1,66 @@
 @contract @unautomated
-# Contract-only: the equivalent Rust tests plus the server smoke path execute
-# these behaviors today; binding them to a Gherkin runner is tracked in the
-# proposal under the S11/S10 follow-up work.
-Feature: User-registered LLM endpoints
-  Users bring their own OpenAI-compatible endpoint, model and token. The token is
-  held server-side and every completion is proxied, so no client ever sees it.
+# Contract-only: the unit tests in crates/core/src/llm.rs and crates/server/src/ai.rs
+# execute these behaviors today; binding them to a Gherkin runner is tracked in the
+# proposal under the S10 follow-up work.
+Feature: User-registered LLM helpers
+  Users bring their own OpenAI-compatible endpoints. Several may be registered per
+  subject, each under a short name, and a notebook picks one. The token is held
+  server-side and every completion is proxied, so no client ever sees it.
 
   Background:
     Given the server is running
     And subject "alice" is signed in with role "editor"
 
-  Scenario: Registering an endpoint
-    When alice posts a base url, a model and a token to /api/llm
-    Then the response reports the base url and model
-    And the stored configuration belongs to alice
+  Scenario: Registering several helpers
+    When alice puts "lab-qwen" to /api/llm/lab-qwen with a base url, a model and a token
+    And alice puts "cloud" to /api/llm/cloud with a base url, a model and a token
+    Then listing /api/llm reports "cloud" and "lab-qwen"
+    And each entry names its base url and model
+
+  Scenario: A helper name is a safe path segment
+    When alice puts "../escape" to /api/llm
+    Then the request is refused with 400
 
   Scenario: The token is never returned
-    Given alice has registered an endpoint with token "secret-token"
+    Given alice has registered "lab-qwen" with token "secret-token"
     When alice reads /api/llm
     Then the response names the base url and model
     And the response contains no token
 
-  Scenario: Generating SQL reuses the registered endpoint
-    Given alice has registered a working endpoint
-    When alice posts a prompt to /api/ai
-    Then the server calls the endpoint's chat completions path with the stored token
+  Scenario: Another subject's helper of the same name is invisible
+    Given alice has registered "lab-qwen"
+    And subject "bob" is signed in with role "editor"
+    When bob reads /api/llm
+    Then the response lists no helpers
+
+  Scenario: Removing a helper
+    Given alice has registered "lab-qwen" and "cloud"
+    When alice deletes /api/llm/lab-qwen
+    Then listing /api/llm reports only "cloud"
+
+  Scenario: Generating SQL with a named helper
+    Given alice has registered "lab-qwen" and "cloud"
+    When alice posts a prompt to /api/ai with helper "cloud"
+    Then the server calls the cloud endpoint's chat completions path with its token
     And the response carries the model's SQL as "sql"
 
-  Scenario: Generation without an endpoint
-    Given alice has registered no endpoint
+  Scenario: Generating SQL without naming a helper uses the first registered one
+    Given alice has registered only "lab-qwen"
+    When alice posts a prompt to /api/ai
+    Then the server calls the lab-qwen endpoint
+
+  Scenario: Generating without any helper
+    Given alice has registered no helper
     When alice posts a prompt to /api/ai
     Then the request is refused with 404 and mentions the missing endpoint
 
+  Scenario: An unregistered helper name is refused
+    Given alice has registered only "lab-qwen"
+    When alice posts a prompt to /api/ai with helper "missing"
+    Then the request is refused with 404 and names "missing"
+
   Scenario: Viewers cannot spend a token
     Given subject "bob" is signed in with role "viewer"
-    And bob has registered an endpoint
+    And bob has registered "lab-qwen"
     When bob posts a prompt to /api/ai
     Then the request is refused with 403

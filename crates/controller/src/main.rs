@@ -34,7 +34,8 @@ async fn main() -> anyhow::Result<()> {
     sqlx::raw_sql(concat!(
         include_str!("../../../migrations/0001_init.sql"),
         include_str!("../../../migrations/0002_controller.sql"),
-        include_str!("../../../migrations/0003_llm.sql")
+        include_str!("../../../migrations/0003_llm.sql"),
+        include_str!("../../../migrations/0004_llm_helpers.sql")
     ))
     .execute(&pool)
     .await?;
