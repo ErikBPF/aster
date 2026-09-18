@@ -68,10 +68,15 @@ features:
 repo-check: features
     bash tests/repo-setup.sh
 
+# Binding for docs/provider-matrix.md: every port is classified there and every
+# selection site refuses an unknown provider name.
+providers-check:
+    bash tests/provider-matrix.sh
+
 # ------------------------------------------------------------------ aggregates
 
-ci: format-check lint test features repo-check
-    @echo "CI GREEN (fmt + clippy + tests + features + repo)"
+ci: format-check lint test features repo-check providers-check
+    @echo "CI GREEN (fmt + clippy + tests + features + repo + providers)"
 
 # ------------------------------------------------------------------- containers
 
@@ -132,4 +137,4 @@ fmt-remote: sync
 # Full gate on the build host.
 remote-ci: sync
     ssh {{host}} 'cd ~/aster && {{remote}} just ci'
-    @echo "REMOTE CI GREEN (fmt + clippy + tests + features + repo)"
+    @echo "REMOTE CI GREEN (fmt + clippy + tests + features + repo + providers)"

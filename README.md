@@ -90,6 +90,12 @@ grpcurl -plaintext -import-path proto -proto aster.proto \
 
 - `ASTER_BIND` (default `0.0.0.0:8080`), `DATABASE_URL` (unset = in-memory grants,
   audit and LLM configs).
+- Provider selection, each refusing an unknown name at startup:
+  `ASTER_SECRET_STORE` (`env`|`memory`, default `env`), `ASTER_METADATA_STORE`
+  (`postgres`|`memory`, default `postgres` when `DATABASE_URL` is set),
+  `ASTER_STATE_STORE` (`valkey`|`memory`, default `valkey` when
+  `ASTER_STATE_URL` is set), `ASTER_NOTEBOOK_STORE` (`git`). The full matrix is
+  in [docs/provider-matrix.md](docs/provider-matrix.md).
 - `ASTER_ENGINES` = `id;kind;endpoint[;routing_group]` comma-separated;
   `ASTER_CATALOGS` = `id;kind;endpoint[;catalog]`.
   `ASTER_DEFAULT_ENGINE`, `ASTER_DEFAULT_CATALOG`. `TRINO_ENDPOINT` and

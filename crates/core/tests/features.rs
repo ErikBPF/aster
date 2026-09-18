@@ -5,9 +5,10 @@
 //! Cargo.toml as a `harness = false` test target).
 
 use aster_core::{
-    authorize, authorize_engine, Action, Cell, CoreError, EngineId, HandshakeStore, InMemoryGrants,
-    InMemoryHandshakes, InMemorySessions, InMemoryUserState, Notebook, Principal, Role,
-    SessionRecord, SessionRegistry, UserState, WorkingState,
+    authorize, authorize_engine, require, Action, Cell, CoreError, EngineId, HandshakeStore,
+    InMemoryGrants, InMemoryHandshakes, InMemorySecrets, InMemorySessions, InMemoryUserState,
+    Notebook, Principal, Role, SecretStore, SessionRecord, SessionRegistry, UserState,
+    WorkingState,
 };
 use cucumber::{given, then, when, World};
 
@@ -26,6 +27,9 @@ struct App {
     record: Option<SessionRecord>,
     listed: Vec<SessionRecord>,
     redeemed: Option<String>,
+    secrets: Option<InMemorySecrets>,
+    secret: Option<Result<String, CoreError>>,
+    looked_up: Option<Option<String>>,
 }
 
 impl App {
@@ -39,6 +43,10 @@ impl App {
 
     fn user_state(&self) -> &InMemoryUserState {
         self.user_state.as_ref().expect("a user state store exists")
+    }
+
+    fn secrets(&self) -> &InMemorySecrets {
+        self.secrets.as_ref().expect("a secret store exists")
     }
 }
 
@@ -359,6 +367,49 @@ async fn no_recorded_state(world: &mut App, subject: String) {
         .await
         .expect("the store answers");
     assert!(state.is_none(), "expected nothing recorded, got {state:?}");
+}
+
+#[given("a secret store")]
+async fn a_secret_store(world: &mut App) {
+    world.secrets = Some(InMemorySecrets::new());
+}
+
+#[given(expr = "the secret store holds {string} = {string}")]
+async fn secret_holds(world: &mut App, key: String, value: String) {
+    world.secrets().set(&key, &value);
+}
+
+#[when(expr = "the server requires {string}")]
+async fn requires_secret(world: &mut App, key: String) {
+    world.secret = Some(require(world.secrets(), &key).await);
+}
+
+#[then(expr = "it receives {string}")]
+async fn receives_secret(world: &mut App, expected: String) {
+    let secret = world.secret.as_ref().expect("a secret was required");
+    match secret {
+        Ok(value) => assert_eq!(value, &expected),
+        Err(error) => panic!("expected {expected}, got {error}"),
+    }
+}
+
+#[then(expr = "it is refused naming {string}")]
+async fn refused_naming(world: &mut App, key: String) {
+    let secret = world.secret.as_ref().expect("a secret was required");
+    let error = secret.as_ref().expect_err("expected a refusal").to_string();
+    assert!(error.contains(&key), "expected the key in {error}");
+}
+
+#[when(expr = "the server looks up {string}")]
+async fn looks_up_secret(world: &mut App, key: String) {
+    let looked_up = world.secrets().get(&key).await.expect("the store answers");
+    world.looked_up = Some(looked_up);
+}
+
+#[then("the lookup reports nothing configured")]
+async fn lookup_reports_nothing(world: &mut App) {
+    let looked_up = world.looked_up.as_ref().expect("a lookup happened");
+    assert!(looked_up.is_none(), "expected nothing, got {looked_up:?}");
 }
 
 #[tokio::main]

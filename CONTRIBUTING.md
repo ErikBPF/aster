@@ -47,7 +47,13 @@ just ci               # fmt + clippy + test + features + repo
 8. **Keep `main.rs` a composition root.** Routing, handlers, and identity live
    in modules (`web.rs`, `ai.rs`, `oidc.rs`, …), not in the entrypoint.
 9. **One way to add a plugin.** A new engine/catalog implements the core trait
-   and is registered by kind; do not branch on kind anywhere else.
+   and is registered by kind; do not branch on kind anywhere else. Every domain
+   that talks to an external system is listed in
+   [docs/provider-matrix.md](docs/provider-matrix.md) with its trait, providers
+   and selection site; `just providers-check` fails if a trait is missing from
+   that table or a selection site stops refusing unknown names. Adding a
+   provider means a new implementation plus one arm in the selection function —
+   never a `match` at a call site.
 10. **No new dependency without a reason in the PR.** Stdlib or an
     already-present crate first.
 11. **An endpoint is declared once, in `proto/aster.proto`.** The generated

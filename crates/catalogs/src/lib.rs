@@ -245,3 +245,33 @@ pub fn catalog_from_config(config: &CatalogConfig) -> Result<Arc<dyn Catalog>> {
     };
     Ok(catalog)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn catalog_config(kind: &str) -> CatalogConfig {
+        CatalogConfig {
+            id: "catalog-1".into(),
+            kind: kind.into(),
+            endpoint: "http://catalog.invalid:8181".into(),
+            catalog: None,
+        }
+    }
+
+    #[test]
+    fn an_unknown_kind_is_refused_at_startup() {
+        let Err(error) = catalog_from_config(&catalog_config("glue")) else {
+            panic!("expected a refusal");
+        };
+        assert!(error.to_string().contains("unknown catalog kind"));
+    }
+
+    #[test]
+    fn every_declared_kind_resolves_to_a_provider() {
+        for kind in ["polaris", "nessie", "unity"] {
+            let catalog = catalog_from_config(&catalog_config(kind)).expect(kind);
+            assert_eq!(catalog.kind(), kind);
+        }
+    }
+}

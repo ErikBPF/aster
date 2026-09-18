@@ -1,4 +1,4 @@
-use aster_core::{CoreError, Result, Role};
+use aster_core::{CoreError, Result, Role, SecretStore};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 use base64::Engine;
 use openidconnect::core::{CoreAuthenticationFlow, CoreClient, CoreProviderMetadata};
@@ -47,13 +47,19 @@ impl std::fmt::Debug for OidcConfig {
 }
 
 impl OidcConfig {
-    /// `None` when `ASTER_OIDC_ISSUER` is unset.
-    pub fn from_env() -> Option<Self> {
+    /// `None` when `ASTER_OIDC_ISSUER` is unset. Non-secret settings come from
+    /// the environment; the client secret comes from the secret provider.
+    pub async fn from_env(secrets: &dyn SecretStore) -> Option<Self> {
         let issuer = std::env::var("ASTER_OIDC_ISSUER").ok()?;
         Some(Self {
             issuer,
             client_id: std::env::var("ASTER_OIDC_CLIENT_ID").unwrap_or_default(),
-            client_secret: std::env::var("ASTER_OIDC_CLIENT_SECRET").unwrap_or_default(),
+            client_secret: secrets
+                .get("ASTER_OIDC_CLIENT_SECRET")
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or_default(),
             redirect_uri: std::env::var("ASTER_OIDC_REDIRECT_URI")
                 .unwrap_or_else(|_| "http://localhost:8080/callback".into()),
             admin_group: std::env::var("ASTER_OIDC_ADMIN_GROUP")
