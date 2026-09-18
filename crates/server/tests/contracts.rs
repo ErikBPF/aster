@@ -17,7 +17,7 @@ use aster_core::{
     InMemoryHandshakes, InMemoryLlm, InMemorySessions, InMemoryUserState, Namespace, NotebookStore,
     QueryEngine, QueryRequest, QueryResult, TableRef, TableSchema, UserState, WorkingState,
 };
-use aster_server::{app, AppState, GitNotebookStore};
+use aster_server::{app_recorded, AppState, GitNotebookStore};
 use axum::body::Body;
 use axum::http::{header, Request, StatusCode};
 use axum::Router;
@@ -142,6 +142,12 @@ impl Contract {
     }
 
     fn build(&mut self) -> Router {
+        app_recorded(self.state())
+    }
+
+    /// The shared state, reused when a scenario drives a second router (the
+    /// metrics listener) against the same process.
+    fn state(&mut self) -> Arc<AppState> {
         let mut engines = EngineRegistry::new();
         let id = self.engine.clone().unwrap_or_else(|| "trino-local".into());
         engines.register(Arc::new(StubEngine {
@@ -187,7 +193,7 @@ impl Contract {
             GitNotebookStore::open(self.checkout(), "session/alice".to_string())
                 .expect("notebook store"),
         );
-        let state = Arc::new(AppState {
+        Arc::new(AppState {
             config,
             engines,
             catalogs,
@@ -202,10 +208,10 @@ impl Contract {
             session_ttl_seconds: 3600,
             user_state: user_state_dyn(self),
             secrets: Arc::new(aster_core::InMemorySecrets::new()),
-            oidc: None,
+            identity: None,
             dev_login: true,
-        });
-        app(state)
+            metrics: Arc::new(aster_server::Metrics::new()),
+        })
     }
 
     /// Sends a request through the router and records status, body and JSON.
@@ -217,6 +223,31 @@ impl Contract {
             .await
             .expect("body");
         self.status = Some(status);
+        self.body = String::from_utf8_lossy(&bytes).to_string();
+        self.json = serde_json::from_slice(&bytes).ok();
+    }
+
+    /// Drives the public router once, then scrapes the metrics listener of the
+    /// same state, so the counters have something to report.
+    async fn scrape(&mut self) {
+        let state = self.state();
+        let public = app_recorded(Arc::clone(&state));
+        let request = Request::builder()
+            .uri("/healthz")
+            .body(Body::empty())
+            .expect("healthz request");
+        let _ = public.oneshot(request).await.expect("healthz");
+
+        let metrics = aster_server::metrics_router(state);
+        let request = Request::builder()
+            .uri("/metrics")
+            .body(Body::empty())
+            .expect("metrics request");
+        let response = metrics.oneshot(request).await.expect("metrics");
+        self.status = Some(response.status());
+        let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .expect("body");
         self.body = String::from_utf8_lossy(&bytes).to_string();
         self.json = serde_json::from_slice(&bytes).ok();
     }
@@ -849,6 +880,41 @@ async fn invalid_input(world: &mut Contract) {
         world.body
     );
     assert_eq!(world.rpc_json()["code"], "invalid_argument");
+}
+
+#[when(expr = "metrics are requested from the public router")]
+async fn public_metrics(world: &mut Contract) {
+    let request = world.get("/metrics");
+    world.send(request).await;
+}
+
+#[when(expr = "the metrics listener is scraped")]
+async fn scrape_metrics(world: &mut Contract) {
+    world.scrape().await;
+}
+
+#[then(expr = "the scrape names {string}")]
+async fn scrape_names(world: &mut Contract, metric: String) {
+    assert!(
+        world.body.contains(&metric),
+        "{metric} missing from {}",
+        world.body
+    );
+}
+
+#[then(expr = "the scrape carries a route label")]
+async fn scrape_has_route_label(world: &mut Contract) {
+    assert!(
+        world.body.contains("route="),
+        "no route label in {}",
+        world.body
+    );
+}
+
+#[then(expr = "the call does not succeed")]
+async fn call_does_not_succeed(world: &mut Contract) {
+    let status = world.status.expect("response");
+    assert!(!status.is_success(), "unexpected {status}: {}", world.body);
 }
 
 /// Saves through the JSON API, so the git store sees the same path the page uses.

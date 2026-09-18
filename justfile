@@ -78,6 +78,11 @@ providers-check:
 ci: format-check lint test features repo-check providers-check
     @echo "CI GREEN (fmt + clippy + tests + features + repo + providers)"
 
+# Run the server on this host (the Keycloak recipe in the README needs it, since
+# the issuer the browser sees must be the one discovery returns).
+run:
+    cargo run -p aster-server
+
 # ------------------------------------------------------------------- containers
 
 build:

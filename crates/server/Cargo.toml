@@ -25,6 +25,12 @@ base64.workspace = true
 redis.workspace = true
 buffa.workspace = true
 connectrpc.workspace = true
+opentelemetry.workspace = true
+opentelemetry_sdk.workspace = true
+opentelemetry-otlp.workspace = true
+tracing-opentelemetry.workspace = true
+prometheus-client.workspace = true
+prometheus-client-derive-encode.workspace = true
 
 [build-dependencies]
 connectrpc-build = "0.9"

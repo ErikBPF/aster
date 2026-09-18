@@ -11,6 +11,7 @@ pub mod engine;
 pub mod error;
 pub mod grants;
 pub mod health;
+pub mod identity;
 pub mod llm;
 pub mod notebook;
 pub mod registry;
@@ -26,6 +27,7 @@ pub use engine::{Column, EngineId, EngineInfo, QueryEngine, QueryRequest, QueryR
 pub use error::{CoreError, Result};
 pub use grants::{authorize_engine, Grants, InMemoryGrants};
 pub use health::Health;
+pub use identity::{Identity, IdentityHandshake, IdentityProvider};
 pub use llm::{InMemoryLlm, LlmConfig, LlmStore};
 pub use notebook::{Cell, Notebook, NotebookStore};
 pub use registry::{CatalogRegistry, EngineRegistry};

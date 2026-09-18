@@ -9,12 +9,13 @@
 use std::sync::Arc;
 
 use aster_core::{
-    AuditSink, CoreError, EnvSecrets, Grants, HandshakeStore, InMemoryAudit, InMemoryGrants,
-    InMemoryHandshakes, InMemoryLlm, InMemorySecrets, InMemorySessions, InMemoryUserState,
-    LlmStore, NotebookStore, Result, SecretStore, SessionRegistry, UserState,
+    AuditSink, CoreError, EnvSecrets, Grants, HandshakeStore, IdentityProvider, InMemoryAudit,
+    InMemoryGrants, InMemoryHandshakes, InMemoryLlm, InMemorySecrets, InMemorySessions,
+    InMemoryUserState, LlmStore, NotebookStore, Result, SecretStore, SessionRegistry, UserState,
 };
 
 use crate::gitstore::GitNotebookStore;
+use crate::identity::OidcProvider;
 use crate::state as valkey;
 use crate::store::PgStore;
 
@@ -140,6 +141,27 @@ pub fn notebooks(kind: &str, dir: String, branch: String) -> Result<Arc<dyn Note
     }
 }
 
+/// Authentication. `oidc` covers every OpenID Connect vendor (Authentik,
+/// Keycloak, ...) through one implementation; `none` is the unconfigured dev
+/// case and leaves the dev identity seam available.
+pub fn identity(
+    kind: &str,
+    config: Option<crate::identity::OidcConfig>,
+) -> Result<Option<Arc<dyn IdentityProvider>>> {
+    match kind {
+        "oidc" => {
+            let config = config.ok_or_else(|| {
+                CoreError::Invalid("identity provider oidc needs an issuer".into())
+            })?;
+            Ok(Some(Arc::new(OidcProvider::new(config))))
+        }
+        "none" => Ok(None),
+        other => Err(CoreError::Invalid(format!(
+            "unknown identity provider {other}: expected oidc or none"
+        ))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,6 +187,11 @@ mod tests {
             panic!("expected a refusal");
         };
         assert!(notebooks.to_string().contains("unknown notebook provider"));
+
+        let Err(identity) = identity("ldap", None) else {
+            panic!("expected a refusal");
+        };
+        assert!(identity.to_string().contains("unknown identity provider"));
     }
 
     #[tokio::test]
@@ -180,5 +207,10 @@ mod tests {
             panic!("expected a refusal");
         };
         assert!(state.to_string().contains("valkey needs a state url"));
+
+        let Err(identity) = identity("oidc", None) else {
+            panic!("expected a refusal");
+        };
+        assert!(identity.to_string().contains("oidc needs an issuer"));
     }
 }

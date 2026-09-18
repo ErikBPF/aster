@@ -1,4 +1,13 @@
-use aster_core::{CoreError, Result, Role, SecretStore};
+//! OIDC implementation of the identity port.
+//!
+//! Works against any OpenID Connect provider; Authentik and Keycloak differ
+//! only in the claim that carries group membership, which is configuration
+//! (`ASTER_IDP_GROUPS_CLAIM`) rather than code.
+
+use aster_core::{
+    CoreError, Identity, IdentityHandshake, IdentityProvider, Result, Role, SecretStore,
+};
+use async_trait::async_trait;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 use base64::Engine;
 use openidconnect::core::{CoreAuthenticationFlow, CoreClient, CoreProviderMetadata};
@@ -30,6 +39,12 @@ pub struct OidcConfig {
     pub redirect_uri: String,
     pub admin_group: String,
     pub editor_group: String,
+    /// Claim carrying group membership. Authentik emits `groups`; a Keycloak
+    /// realm gets the same claim from its group-membership mapper.
+    pub groups_claim: String,
+    /// Scopes to request. Keycloak rejects a scope the realm does not define,
+    /// so this is deployment configuration rather than a constant.
+    pub scopes: Vec<String>,
 }
 
 /// Redacted on purpose: `client_secret` must never reach a log line.
@@ -42,6 +57,8 @@ impl std::fmt::Debug for OidcConfig {
             .field("redirect_uri", &self.redirect_uri)
             .field("admin_group", &self.admin_group)
             .field("editor_group", &self.editor_group)
+            .field("groups_claim", &self.groups_claim)
+            .field("scopes", &self.scopes)
             .finish()
     }
 }
@@ -66,27 +83,29 @@ impl OidcConfig {
                 .unwrap_or_else(|_| "aster-admins".into()),
             editor_group: std::env::var("ASTER_OIDC_EDITOR_GROUP")
                 .unwrap_or_else(|_| "aster-editors".into()),
+            groups_claim: std::env::var("ASTER_IDP_GROUPS_CLAIM")
+                .unwrap_or_else(|_| "groups".into()),
+            scopes: std::env::var("ASTER_IDP_SCOPES")
+                .map(|value| {
+                    value
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|scope| !scope.is_empty())
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_else(|_| vec!["openid".to_string(), "groups".to_string()]),
         })
     }
 }
 
-/// Values that must survive the round trip to the IdP. They wait in the shared
-/// handshake store, keyed by the state parameter, so any replica can finish the
-/// login (D20).
-pub struct Handshake {
-    pub url: String,
-    pub state: String,
-    pub nonce: String,
-    pub verifier: String,
-}
-
-pub struct Oidc {
+pub struct OidcProvider {
     config: OidcConfig,
     metadata: RwLock<Option<CoreProviderMetadata>>,
     http: reqwest::Client,
 }
 
-impl Oidc {
+impl OidcProvider {
     pub fn new(config: OidcConfig) -> Self {
         // ponytail: redirects are disabled because following them during
         // discovery or token exchange is an SSRF vector (oauth2 docs). The
@@ -142,21 +161,27 @@ impl Oidc {
                 .map_err(|e| invalid(e.to_string()))?,
         ))
     }
+}
 
-    pub async fn handshake(&self) -> Result<Handshake> {
+#[async_trait]
+impl IdentityProvider for OidcProvider {
+    fn kind(&self) -> &'static str {
+        "oidc"
+    }
+
+    async fn begin(&self) -> Result<IdentityHandshake> {
         let client = self.client().await?;
         let (challenge, verifier) = PkceCodeChallenge::new_random_sha256();
-        let (url, state, nonce) = client
-            .authorize_url(
-                CoreAuthenticationFlow::AuthorizationCode,
-                CsrfToken::new_random,
-                Nonce::new_random,
-            )
-            .add_scope(Scope::new("openid".into()))
-            .add_scope(Scope::new("groups".into()))
-            .set_pkce_challenge(challenge)
-            .url();
-        Ok(Handshake {
+        let mut request = client.authorize_url(
+            CoreAuthenticationFlow::AuthorizationCode,
+            CsrfToken::new_random,
+            Nonce::new_random,
+        );
+        for scope in &self.config.scopes {
+            request = request.add_scope(Scope::new(scope.clone()));
+        }
+        let (url, state, nonce) = request.set_pkce_challenge(challenge).url();
+        Ok(IdentityHandshake {
             url: url.to_string(),
             state: state.secret().clone(),
             nonce: nonce.secret().clone(),
@@ -166,12 +191,7 @@ impl Oidc {
 
     /// Exchanges the authorization code, validates the ID token, and derives the
     /// subject plus its aster roles from the group claim.
-    pub async fn complete(
-        &self,
-        code: &str,
-        verifier: &str,
-        nonce: &str,
-    ) -> Result<(String, Vec<Role>)> {
+    async fn complete(&self, code: &str, verifier: &str, nonce: &str) -> Result<Identity> {
         let client = self.client().await?;
         let response = client
             .exchange_code(AuthorizationCode::new(code.to_string()))
@@ -188,31 +208,40 @@ impl Oidc {
             .claims(&client.id_token_verifier(), &Nonce::new(nonce.to_string()))
             .map_err(|e| CoreError::Unauthorized(format!("id token rejected: {e}")))?;
 
-        let groups = groups_from_jwt(&id_token.to_string());
-        Ok((
-            claims.subject().to_string(),
-            map_roles(&groups, &self.config.admin_group, &self.config.editor_group),
-        ))
+        let groups = groups_from_jwt(&id_token.to_string(), &self.config.groups_claim);
+        Ok(Identity {
+            subject: claims.subject().to_string(),
+            roles: map_roles(&groups, &self.config.admin_group, &self.config.editor_group),
+        })
     }
 }
 
 /// Highest matching group wins; everyone else is a viewer.
+///
+/// A group is compared by exact name and by its trailing path segment, so a
+/// Keycloak realm left at the default `full.path=true` emits `/aster-admins`
+/// and still maps, without a second configuration knob.
 pub fn map_roles(groups: &[String], admin_group: &str, editor_group: &str) -> Vec<Role> {
-    if groups.iter().any(|group| group == admin_group) {
+    let has = |wanted: &str| {
+        groups
+            .iter()
+            .any(|group| group == wanted || group.ends_with(&format!("/{wanted}")))
+    };
+    if has(admin_group) {
         vec![Role::Admin]
-    } else if groups.iter().any(|group| group == editor_group) {
+    } else if has(editor_group) {
         vec![Role::Editor]
     } else {
         vec![Role::Viewer]
     }
 }
 
-/// Read the `groups` claim out of an ID token that `openidconnect` has already
+/// Read a group claim out of an ID token that `openidconnect` has already
 /// validated. ponytail: the core client type erases custom claims
 /// (`EmptyAdditionalClaims`); decode the verified payload rather than hand-roll
 /// a second ID token type. Signature, issuer, audience and nonce are the
 /// library's job, not this function's.
-fn groups_from_jwt(jwt: &str) -> Vec<String> {
+fn groups_from_jwt(jwt: &str, claim: &str) -> Vec<String> {
     let Some(payload) = jwt.split('.').nth(1) else {
         return Vec::new();
     };
@@ -226,7 +255,7 @@ fn groups_from_jwt(jwt: &str) -> Vec<String> {
         return Vec::new();
     };
     value
-        .get("groups")
+        .get(claim)
         .and_then(|groups| groups.as_array())
         .map(|groups| {
             groups
@@ -276,15 +305,33 @@ mod tests {
     fn reads_groups_from_a_verified_payload() {
         let jwt = jwt_with(r#"{"sub":"alice","groups":["aster-editors","x"]}"#);
         assert_eq!(
-            groups_from_jwt(&jwt),
+            groups_from_jwt(&jwt, "groups"),
             vec!["aster-editors".to_string(), "x".to_string()]
         );
     }
 
     #[test]
+    fn reads_the_configured_claim_and_maps_full_paths() {
+        let jwt = jwt_with(r#"{"sub":"alice","realm_access":["/aster-admins"]}"#);
+        assert_eq!(
+            groups_from_jwt(&jwt, "realm_access"),
+            vec!["/aster-admins".to_string()]
+        );
+        let cfg = ("aster-admins", "aster-editors");
+        assert_eq!(
+            map_roles(&["/aster-editors".into()], cfg.0, cfg.1),
+            vec![Role::Editor]
+        );
+        assert_eq!(
+            map_roles(&["/aster-admins".into()], cfg.0, cfg.1),
+            vec![Role::Admin]
+        );
+    }
+
+    #[test]
     fn tolerates_tokens_without_groups() {
-        assert!(groups_from_jwt(&jwt_with(r#"{"sub":"alice"}"#)).is_empty());
-        assert!(groups_from_jwt("not-a-jwt").is_empty());
-        assert!(groups_from_jwt("").is_empty());
+        assert!(groups_from_jwt(&jwt_with(r#"{"sub":"alice"}"#), "groups").is_empty());
+        assert!(groups_from_jwt("not-a-jwt", "groups").is_empty());
+        assert!(groups_from_jwt("", "groups").is_empty());
     }
 }
