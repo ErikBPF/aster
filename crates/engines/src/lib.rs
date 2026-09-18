@@ -250,6 +250,31 @@ pub fn engine_from_config(config: &EngineConfig) -> Result<Arc<dyn QueryEngine>>
 mod tests {
     use super::*;
 
+    fn engine_config(kind: &str) -> EngineConfig {
+        EngineConfig {
+            id: "engine-1".into(),
+            kind: kind.into(),
+            endpoint: "http://engine.invalid:8080".into(),
+            routing_group: None,
+        }
+    }
+
+    #[test]
+    fn an_unknown_kind_is_refused_at_startup() {
+        let Err(error) = engine_from_config(&engine_config("clickhouse")) else {
+            panic!("expected a refusal");
+        };
+        assert!(error.to_string().contains("unknown engine kind"));
+    }
+
+    #[test]
+    fn every_declared_kind_resolves_to_a_provider() {
+        for kind in ["trino", "spark", "starrocks"] {
+            let engine = engine_from_config(&engine_config(kind)).expect(kind);
+            assert_eq!(engine.info().kind, kind);
+        }
+    }
+
     #[test]
     fn routing_group_becomes_a_gateway_header() {
         let scoped = EngineInfo {

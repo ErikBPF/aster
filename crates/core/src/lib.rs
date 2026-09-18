@@ -14,6 +14,7 @@ pub mod health;
 pub mod llm;
 pub mod notebook;
 pub mod registry;
+pub mod secrets;
 pub mod state;
 
 pub use audit::{AuditEvent, AuditSink, InMemoryAudit};
@@ -28,6 +29,7 @@ pub use health::Health;
 pub use llm::{InMemoryLlm, LlmConfig, LlmStore};
 pub use notebook::{Cell, Notebook, NotebookStore};
 pub use registry::{CatalogRegistry, EngineRegistry};
+pub use secrets::{require, EnvSecrets, InMemorySecrets, SecretStore};
 pub use state::{
     new_sid, HandshakeStore, InMemoryHandshakes, InMemorySessions, InMemoryUserState,
     SessionRecord, SessionRegistry, UserState, WorkingState,

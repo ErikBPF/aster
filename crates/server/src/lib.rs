@@ -10,10 +10,9 @@ use std::time::Instant;
 
 use aster_core::{
     authorize, authorize_engine, AppConfig, AuditEvent, AuditSink, CatalogId, CatalogRegistry,
-    CoreError, DataContract, EngineId, EngineRegistry, Grants, HandshakeStore, Health,
-    InMemoryAudit, InMemoryGrants, InMemoryHandshakes, InMemoryLlm, InMemorySessions,
-    InMemoryUserState, LlmStore, Notebook, NotebookStore, Principal, QueryRequest, Role,
-    SessionRegistry, UserState, WorkingState,
+    CoreError, DataContract, EngineId, EngineRegistry, Grants, HandshakeStore, Health, LlmStore,
+    Notebook, NotebookStore, Principal, QueryRequest, Role, SecretStore, SessionRegistry,
+    UserState, WorkingState,
 };
 
 mod ai;
@@ -21,6 +20,7 @@ mod api;
 mod contracts;
 mod gitstore;
 mod oidc;
+mod providers;
 mod state;
 mod store;
 mod web;
@@ -34,7 +34,6 @@ use axum::{
 };
 use oidc::{Oidc, OidcConfig};
 use serde::{Deserialize, Serialize};
-use store::PgStore;
 use tower_http::trace::TraceLayer;
 
 /// Also exported for integration tests, which build a state with a temporary
@@ -61,6 +60,8 @@ pub struct AppState {
     pub session_ttl_seconds: i64,
     /// Where each subject left off, shared across containers (D18).
     pub user_state: Arc<dyn UserState>,
+    /// Secret resolution: environment today, Vault/OpenBao or a file next.
+    pub secrets: Arc<dyn SecretStore>,
     pub oidc: Option<Arc<Oidc>>,
     /// Accepts the pre-SSO header/cookie identity seam. Off whenever OIDC is
     /// configured, unless explicitly forced for local development.
@@ -79,69 +80,54 @@ async fn build_state(config: AppConfig) -> anyhow::Result<Arc<AppState>> {
     }
 
     let seeds = parse_grants(&std::env::var("ASTER_GRANTS").unwrap_or_default());
-    let (grants, audit, llm): (Arc<dyn Grants>, Arc<dyn AuditSink>, Arc<dyn LlmStore>) =
-        match std::env::var("DATABASE_URL") {
-            Ok(url) => {
-                let store = Arc::new(PgStore::connect(&url).await?);
-                for (subject, engine) in &seeds {
-                    store.seed_grant(subject, engine).await?;
-                }
-                (store.clone(), store.clone(), store)
-            }
-            Err(_) => {
-                tracing::warn!(
-                    "DATABASE_URL unset; grants, audit and llm configs are in-memory only"
-                );
-                let grants = InMemoryGrants::new();
-                for (subject, engine) in seeds {
-                    grants.grant(subject, engine);
-                }
-                (
-                    Arc::new(grants),
-                    Arc::new(InMemoryAudit::new()),
-                    Arc::new(InMemoryLlm::new()),
-                )
-            }
-        };
+
+    // Where a secret lives is a provider decision; the process asks for a key.
+    let secrets = providers::secret_store(&providers::kind("ASTER_SECRET_STORE", "env"))?;
+    let database_url = secrets.get("DATABASE_URL").await?;
+    let state_url = secrets.get("ASTER_STATE_URL").await?;
+
+    let metadata_kind = providers::kind(
+        "ASTER_METADATA_STORE",
+        if database_url.is_some() {
+            "postgres"
+        } else {
+            "memory"
+        },
+    );
+    let metadata = providers::metadata(&metadata_kind, database_url.as_deref(), &seeds).await?;
 
     let notebook_dir =
         std::env::var("ASTER_NOTEBOOK_DIR").unwrap_or_else(|_| "data/notebooks".into());
     let notebook_branch =
         std::env::var("ASTER_NOTEBOOK_BRANCH").unwrap_or_else(|_| "session".into());
-    let notebooks: Arc<dyn NotebookStore> =
-        Arc::new(GitNotebookStore::open(notebook_dir, notebook_branch)?);
+    let notebooks = providers::notebooks(
+        &providers::kind("ASTER_NOTEBOOK_STORE", "git"),
+        notebook_dir,
+        notebook_branch,
+    )?;
 
     // Sessions are opaque ids resolved in a shared store (D20), so a session
     // created by one container is accepted by the next and survives a restart.
     let session_ttl = env_seconds("ASTER_SESSION_TTL_SECONDS", 28_800);
     let handshake_ttl = env_seconds("ASTER_HANDSHAKE_TTL_SECONDS", 300);
     let user_ttl = env_seconds("ASTER_USER_STATE_TTL_SECONDS", 2_592_000);
-    let (sessions, handshakes, user_state): (
-        Arc<dyn SessionRegistry>,
-        Arc<dyn HandshakeStore>,
-        Arc<dyn UserState>,
-    ) = match std::env::var("ASTER_STATE_URL") {
-        Ok(url) => {
-            let (sessions, handshakes, user_state) =
-                state::connect(&url, session_ttl, handshake_ttl, user_ttl).await?;
-            (
-                Arc::new(sessions),
-                Arc::new(handshakes),
-                Arc::new(user_state),
-            )
-        }
-        Err(_) => {
-            tracing::warn!(
-                "ASTER_STATE_URL unset; session state is per-process, so a second replica \
-                 will not see it"
-            );
-            (
-                Arc::new(InMemorySessions::new(session_ttl)),
-                Arc::new(InMemoryHandshakes::new(handshake_ttl)),
-                Arc::new(InMemoryUserState::new()),
-            )
-        }
-    };
+    let state_kind = providers::kind(
+        "ASTER_STATE_STORE",
+        if state_url.is_some() {
+            "valkey"
+        } else {
+            "memory"
+        },
+    );
+    let stores = providers::state(
+        &state_kind,
+        state_url.as_deref(),
+        session_ttl,
+        handshake_ttl,
+        user_ttl,
+    )
+    .await?;
+    tracing::info!(metadata = %metadata_kind, state = %state_kind, "providers selected");
 
     let contract_dir = std::env::var("ASTER_CONTRACTS_DIR").unwrap_or_else(|_| "contracts".into());
     let contracts = contracts::load(std::path::Path::new(&contract_dir));
@@ -150,7 +136,9 @@ async fn build_state(config: AppConfig) -> anyhow::Result<Arc<AppState>> {
         contracts.len()
     );
 
-    let oidc = OidcConfig::from_env().map(|config| Arc::new(Oidc::new(config)));
+    let oidc = OidcConfig::from_env(&*secrets)
+        .await
+        .map(|config| Arc::new(Oidc::new(config)));
     let dev_login = oidc.is_none() || std::env::var("ASTER_DEV_LOGIN").is_ok();
     if oidc.is_none() {
         tracing::warn!("ASTER_OIDC_ISSUER unset; using the header/cookie dev identity seam");
@@ -162,10 +150,10 @@ async fn build_state(config: AppConfig) -> anyhow::Result<Arc<AppState>> {
         config,
         engines,
         catalogs,
-        grants,
-        audit,
+        grants: metadata.grants,
+        audit: metadata.audit,
         notebooks,
-        llm,
+        llm: metadata.llm,
         contracts: Arc::new(contracts),
         // ponytail: no redirects on the outbound client; add per-host allowlisting
         // if users ever register endpoints outside the lab.
@@ -173,10 +161,11 @@ async fn build_state(config: AppConfig) -> anyhow::Result<Arc<AppState>> {
             .redirect(reqwest::redirect::Policy::none())
             .timeout(std::time::Duration::from_secs(60))
             .build()?,
-        sessions,
-        handshakes,
+        sessions: stores.sessions,
+        handshakes: stores.handshakes,
         session_ttl_seconds: session_ttl,
-        user_state,
+        user_state: stores.user_state,
+        secrets,
         oidc,
         dev_login,
     }))

@@ -73,11 +73,18 @@ and the harness in `crates/server/tests/contracts.rs`.
 
 ## Adding a second plugin (the risk map that matters)
 
+The provider seam is now enforced: [provider-matrix.md](provider-matrix.md)
+lists every port with its providers and selection site, and
+`just providers-check` fails if a trait is missing from that table, a contract
+path is gone, or a selection site stops refusing unknown names. The earlier
+"remaining known seam" for the stores is closed — every store domain is chosen
+in `crates/server/src/providers.rs`.
+
 | To add a… | Touch |
 |---|---|
-| engine | one type + match arm in `crates/engines/src/lib.rs`; nothing in `core`, `server` or `controller` call sites |
+| engine | one type + match arm in `crates/engines/src/lib.rs`; nothing else |
 | catalog | one type + match arm in `crates/catalogs/src/lib.rs` |
-| notebook store / audit sink / grants / LLM store / user state | `build_state` in `crates/server/src/lib.rs` and `AppState` — the remaining known seam |
+| secret / metadata / state / notebook provider | one type + one arm in `crates/server/src/providers.rs` |
 | role | `core/auth.rs`, `server` role parsing, `server/oidc.rs` mapping, TUI default — the worst seam, deferred above |
 | RPC endpoint | `proto/aster.proto` plus one method in `crates/server/src/api.rs`; the route, client and JSON encoding are generated |
 

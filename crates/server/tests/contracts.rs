@@ -201,6 +201,7 @@ impl Contract {
             handshakes: Arc::new(InMemoryHandshakes::new(300)),
             session_ttl_seconds: 3600,
             user_state: user_state_dyn(self),
+            secrets: Arc::new(aster_core::InMemorySecrets::new()),
             oidc: None,
             dev_login: true,
         });

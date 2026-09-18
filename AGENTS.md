@@ -18,6 +18,8 @@ and `aster-catalogs` are adapters. `aster-server`, `aster-controller` and
 | Domain type, port trait, policy | `crates/core/src/*.rs` |
 | Engine adapter | `crates/engines/src/lib.rs` |
 | Catalog adapter | `crates/catalogs/src/lib.rs` |
+| Secret, metadata, state or notebook provider | `crates/server/src/providers.rs` (one arm per provider) |
+| Provider inventory | `docs/provider-matrix.md`, checked by `just providers-check` |
 | HTTP route or handler | `crates/server/src/{main,web,ai,oidc}.rs` |
 | Endpoint declaration | `proto/aster.proto` (one definition serves gRPC, Connect and gRPC-Web) |
 | RPC service implementation | `crates/server/src/api.rs` |
@@ -36,6 +38,9 @@ contract is `pub(crate)`.
   `std::fs`, `std::process`).
 - Blocking calls (git CLI, filesystem, large loops) go through
   `tokio::task::spawn_blocking`.
+- Every external dependency is a port in `aster-core` with one implementation
+  per provider, chosen by name in a selection function; no `match` on a provider
+  kind at a call site, and an unknown name is refused at startup.
 - No `#[derive(Debug)]` where the struct holds a secret; hand-write `Debug` and
   print `<redacted>`.
 - Never return raw internal errors above 4xx; log detail with `tracing`, return
