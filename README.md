@@ -98,10 +98,12 @@ grpcurl -plaintext -import-path proto -proto aster.proto \
   in [docs/provider-matrix.md](docs/provider-matrix.md).
 - `ASTER_ENGINES` = `id;kind;endpoint[;routing_group]` comma-separated;
   `ASTER_CATALOGS` = `id;kind;endpoint[;catalog]`. Kinds are `trino`, `spark`,
-  `starrocks`, `mock` (engines) and `polaris`, `cube`, `nessie`, `unity`, `mock`
-  (catalogs). For `polaris` the `catalog` field is the warehouse/prefix; for
-  `cube` it is the base path (default `cubejs-api`), and the semantic model is
-  browsed read-only from `/v1/meta`. `ASTER_DEFAULT_ENGINE`,
+  `starrocks`, `mock` (engines) and `polaris`, `cube`, `openmetadata`, `nessie`,
+  `unity`, `mock` (catalogs). For `polaris` the `catalog` field is the
+  warehouse/prefix; for `cube` it is the base path (default `cubejs-api`) and the
+  semantic model is browsed read-only from `/v1/meta`; for `openmetadata` it is
+  an optional database fully-qualified name to narrow the schemas to, read from
+  `/api/v1/databaseSchemas` and `/api/v1/tables`. `ASTER_DEFAULT_ENGINE`,
   `ASTER_DEFAULT_CATALOG`. `TRINO_ENDPOINT`
   and `POLARIS_ENDPOINT`/`POLARIS_CATALOG` still configure the single default
   entry.

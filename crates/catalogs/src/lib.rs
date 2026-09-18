@@ -315,6 +315,178 @@ impl Catalog for CubeCatalog {
     }
 }
 
+/// OpenMetadata as a metadata *source* we read from: schemas become namespaces and
+/// tables become tables, with their columns and nullability. Descriptions, owners,
+/// glossary terms and lineage are richer than our `TableSchema`, so they are not
+/// read here — enriching the UI from this same API is a separate server-side step.
+///
+/// `endpoint` is the OpenMetadata base URL; the optional `catalog` is a database
+/// fully-qualified name to restrict the schemas to.
+/// ponytail: the bot token is a parameter rather than config because where the
+/// credential lives (secret store key, per-catalog name) is a decision to make when
+/// a real instance exists.
+pub struct OpenMetadataCatalog {
+    id: CatalogId,
+    client: reqwest::Client,
+    endpoint: String,
+    database: Option<String>,
+    token: Option<String>,
+}
+
+impl OpenMetadataCatalog {
+    pub fn new(
+        id: impl Into<String>,
+        endpoint: impl Into<String>,
+        database: Option<String>,
+        token: Option<String>,
+    ) -> Self {
+        Self {
+            id: CatalogId::new(id),
+            client: reqwest::Client::new(),
+            endpoint: endpoint.into(),
+            database,
+            token,
+        }
+    }
+
+    async fn get(&self, path: &str) -> Result<serde_json::Value> {
+        let url = format!("{}/api/v1/{}", self.endpoint.trim_end_matches('/'), path);
+        let builder = self.client.get(url).header("Accept", "application/json");
+        let builder = match &self.token {
+            Some(token) => builder.bearer_auth(token),
+            None => builder,
+        };
+        builder
+            .send()
+            .await
+            .map_err(|error| CoreError::Catalog(error.to_string()))?
+            .json()
+            .await
+            .map_err(|error| CoreError::Catalog(error.to_string()))
+    }
+
+    /// Schemas, optionally restricted to the configured database.
+    async fn schemas(&self) -> Result<serde_json::Value> {
+        let path = match &self.database {
+            Some(database) => format!("databaseSchemas?limit=200&database={database}"),
+            None => "databaseSchemas?limit=200".to_string(),
+        };
+        self.get(&path).await
+    }
+
+    /// The tables of a schema, with their columns.
+    async fn tables(&self, namespace: &str) -> Result<serde_json::Value> {
+        self.get(&format!(
+            "tables?limit=200&fields=columns&databaseSchema={namespace}"
+        ))
+        .await
+    }
+}
+
+/// OpenMetadata answers with `{"data": [...], "paging": {...}}`; tolerate a bare array too.
+fn om_list(payload: &serde_json::Value) -> &[serde_json::Value] {
+    payload
+        .get("data")
+        .or(Some(payload))
+        .and_then(|value| value.as_array())
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+}
+
+fn om_name(entity: &serde_json::Value) -> Option<String> {
+    entity
+        .get("fullyQualifiedName")
+        .or_else(|| entity.get("name"))
+        .and_then(|value| value.as_str())
+        .map(str::to_string)
+}
+
+/// One entity's columns, in ordinal order as OpenMetadata reports them.
+fn om_columns(table: &serde_json::Value) -> Vec<ColumnSchema> {
+    table
+        .get("columns")
+        .and_then(|value| value.as_array())
+        .map(|columns| {
+            columns
+                .iter()
+                .filter_map(|column| {
+                    let constraint = column.get("constraint").and_then(|value| value.as_str());
+                    Some(ColumnSchema {
+                        name: column.get("name")?.as_str()?.to_string(),
+                        data_type: column
+                            .get("dataTypeDisplay")
+                            .or_else(|| column.get("dataType"))
+                            .and_then(|value| value.as_str())
+                            .unwrap_or("unknown")
+                            .to_string(),
+                        nullable: !matches!(constraint, Some("NOT_NULL" | "PRIMARY_KEY")),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[async_trait]
+impl Catalog for OpenMetadataCatalog {
+    fn id(&self) -> &CatalogId {
+        &self.id
+    }
+
+    fn kind(&self) -> &str {
+        "openmetadata"
+    }
+
+    async fn health(&self) -> Health {
+        match self.get("databases?limit=1").await {
+            Ok(_) => Health::Healthy,
+            Err(CoreError::Catalog(_)) => Health::Degraded,
+            Err(_) => Health::Unavailable,
+        }
+    }
+
+    async fn list_namespaces(&self) -> Result<Vec<Namespace>> {
+        let payload = self.schemas().await?;
+        Ok(om_list(&payload)
+            .iter()
+            .filter_map(|schema| {
+                Some(Namespace {
+                    name: om_name(schema)?,
+                })
+            })
+            .collect())
+    }
+
+    async fn list_tables(&self, namespace: &str) -> Result<Vec<TableRef>> {
+        let payload = self.tables(namespace).await?;
+        Ok(om_list(&payload)
+            .iter()
+            .filter_map(|table| {
+                Some(TableRef {
+                    namespace: namespace.to_string(),
+                    name: om_name(table)?.rsplit('.').next()?.to_string(),
+                })
+            })
+            .collect())
+    }
+
+    async fn table_schema(&self, table: &TableRef) -> Result<TableSchema> {
+        let payload = self.tables(&table.namespace).await?;
+        let entity = om_list(&payload)
+            .iter()
+            .find(|entity| {
+                om_name(entity)
+                    .map(|name| name == table.name || name.ends_with(&format!(".{}", table.name)))
+                    .unwrap_or(false)
+            })
+            .ok_or_else(|| CoreError::NotFound(format!("unknown table: {}", table.name)))?;
+        Ok(TableSchema {
+            table: table.clone(),
+            columns: om_columns(entity),
+        })
+    }
+}
+
 macro_rules! stub_catalog {
     ($name:ident, $kind:literal) => {
         pub struct $name {
@@ -513,6 +685,13 @@ pub fn catalog_from_config(config: &CatalogConfig) -> Result<Arc<dyn Catalog>> {
                 .clone()
                 .unwrap_or_else(|| "cubejs-api".into()),
         )),
+        // A metadata source we read from; `catalog` optionally narrows to one database.
+        "openmetadata" => Arc::new(OpenMetadataCatalog::new(
+            &config.id,
+            &config.endpoint,
+            config.catalog.clone(),
+            None,
+        )),
         // Demo provider: canned metadata, for local UI work only.
         "mock" => Arc::new(MockCatalog::new(&config.id)),
         other => return Err(CoreError::Invalid(format!("unknown catalog kind: {other}"))),
@@ -543,7 +722,7 @@ mod tests {
 
     #[test]
     fn every_declared_kind_resolves_to_a_provider() {
-        for kind in ["polaris", "nessie", "unity", "cube", "mock"] {
+        for kind in ["polaris", "cube", "openmetadata", "nessie", "unity", "mock"] {
             let catalog = catalog_from_config(&catalog_config(kind)).expect(kind);
             assert_eq!(catalog.kind(), kind);
         }
@@ -603,6 +782,58 @@ mod tests {
     #[test]
     fn a_namespace_cube_does_not_have_is_empty() {
         assert!(cube_members(&cube_meta(), "models").is_empty());
+    }
+
+    /// A list response as OpenMetadata serves it, trimmed to the fields we read.
+    fn om_tables_response() -> serde_json::Value {
+        serde_json::json!({
+            "data": [{
+                "name": "orders",
+                "fullyQualifiedName": "trino.platform.sales.orders",
+                "columns": [
+                    {"name": "order_id", "dataType": "BIGINT", "constraint": "PRIMARY_KEY"},
+                    {"name": "customer_id", "dataType": "BIGINT", "constraint": "NOT_NULL"},
+                    {"name": "total", "dataType": "DECIMAL", "dataTypeDisplay": "DECIMAL(12,2)"},
+                    {"name": "placed_at", "dataType": "TIMESTAMP", "constraint": "NULL"}
+                ]
+            }],
+            "paging": {"total": 1}
+        })
+    }
+
+    #[test]
+    fn openmetadata_schemas_and_tables_become_namespaces_and_table_refs() {
+        let schemas = serde_json::json!({
+            "data": [
+                {"name": "sales", "fullyQualifiedName": "trino.platform.sales"},
+                {"name": "raw", "fullyQualifiedName": "trino.platform.raw"}
+            ]
+        });
+        let names: Vec<_> = om_list(&schemas).iter().filter_map(om_name).collect();
+        assert_eq!(names, vec!["trino.platform.sales", "trino.platform.raw"]);
+
+        // A bare array is tolerated as well as the data envelope.
+        let bare = serde_json::json!([{"name": "raw"}]);
+        assert_eq!(om_list(&bare).len(), 1);
+    }
+
+    #[test]
+    fn openmetadata_columns_carry_types_and_nullability() {
+        let response = om_tables_response();
+        let table = &om_list(&response)[0];
+        let columns = om_columns(table);
+
+        assert_eq!(
+            columns
+                .iter()
+                .map(|column| column.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["order_id", "customer_id", "total", "placed_at"]
+        );
+        assert_eq!(columns[2].data_type, "DECIMAL(12,2)");
+        assert!(!columns[0].nullable, "a primary key is not nullable");
+        assert!(!columns[1].nullable, "NOT_NULL is not nullable");
+        assert!(columns[2].nullable, "no constraint means nullable");
     }
 
     #[tokio::test]
