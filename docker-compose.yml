@@ -1,6 +1,7 @@
-# Local stack: metadata database, session state, API server and the reconcile
-# controller. Images are fully qualified so podman short-name resolution never
-# bites.
+# Local stack: metadata database, session state, API server, the reconcile
+# controller and a Keycloak used only to evaluate the identity port. Images are
+# fully qualified so podman short-name resolution never bites; Keycloak comes
+# from quay.io and has no Harbor proxy yet, which is why it is local-only.
 services:
   valkey:
     image: docker.io/valkey/valkey:9.1.2-alpine
@@ -31,6 +32,21 @@ services:
       timeout: 3s
       retries: 10
 
+  # The second identity provider, for the port evaluation. Dev mode, realm
+  # imported from keycloak/aster-realm.json. Start-dev leaves the hostname
+  # dynamic, so the browser and a host-run server both reach it as
+  # http://localhost:${ASTER_IDP_PORT:-8090}. See README for the login recipe.
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.7.4
+    command: ["start-dev", "--import-realm", "--http-port=8080"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KC_ADMIN_USER:-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KC_ADMIN_PASSWORD:-aster-dev-admin}
+    ports:
+      - "${ASTER_IDP_PORT:-8090}:8080"
+    volumes:
+      - ./keycloak:/opt/keycloak/data/import:ro
+
   server:
     build:
       context: .
@@ -49,8 +65,13 @@ services:
       ASTER_HANDSHAKE_TTL_SECONDS: ${ASTER_HANDSHAKE_TTL_SECONDS:-300}
       ASTER_USER_STATE_TTL_SECONDS: ${ASTER_USER_STATE_TTL_SECONDS:-2592000}
       ASTER_DEV_LOGIN: ${ASTER_DEV_LOGIN:-1}
+      ASTER_METRICS_BIND: 0.0.0.0:9090
+      # Empty keeps traces on stdout; set it to the collector, e.g.
+      # http://otel-collector:4318 for the lab.
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
     ports:
       - "${ASTER_PORT:-8080}:8080"
+      - "${ASTER_METRICS_PORT:-9090}:9090"
     volumes:
       - notebooks:/data/notebooks
       - ./contracts:/etc/aster/contracts:ro

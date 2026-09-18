@@ -68,9 +68,36 @@
         "replicas": { "type": "integer", "minimum": 1 },
         "contractsDir": { "type": "string" },
         "notebookDir": { "type": "string" },
+        "metricsPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "otlpEndpoint": { "type": "string" },
+        "identity": {
+          "type": "object",
+          "properties": {
+            "kind": { "type": "string", "enum": ["oidc", "none"] },
+            "issuer": { "type": "string" },
+            "clientId": { "type": "string" },
+            "scopes": { "type": "string" },
+            "groupsClaim": { "type": "string" },
+            "redirectUri": { "type": "string" },
+            "adminGroup": { "type": "string" },
+            "editorGroup": { "type": "string" }
+          }
+        },
         "sessionTtlSeconds": { "type": "integer", "minimum": 60 },
         "handshakeTtlSeconds": { "type": "integer", "minimum": 30 },
         "userStateTtlSeconds": { "type": "integer", "minimum": 60 }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "properties": {
+        "serviceMonitor": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "labels": { "type": "object" }
+          }
+        }
       }
     },
     "controller": {

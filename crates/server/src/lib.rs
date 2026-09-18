@@ -10,19 +10,20 @@ use std::time::Instant;
 
 use aster_core::{
     authorize, authorize_engine, AppConfig, AuditEvent, AuditSink, CatalogId, CatalogRegistry,
-    CoreError, DataContract, EngineId, EngineRegistry, Grants, HandshakeStore, Health, LlmStore,
-    Notebook, NotebookStore, Principal, QueryRequest, Role, SecretStore, SessionRegistry,
-    UserState, WorkingState,
+    CoreError, DataContract, EngineId, EngineRegistry, Grants, HandshakeStore, Health,
+    IdentityProvider, LlmStore, Notebook, NotebookStore, Principal, QueryRequest, Role,
+    SecretStore, SessionRegistry, UserState, WorkingState,
 };
 
 mod ai;
 mod api;
 mod contracts;
 mod gitstore;
-mod oidc;
+mod identity;
 mod providers;
 mod state;
 mod store;
+mod telemetry;
 mod web;
 
 use axum::{
@@ -32,13 +33,15 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use oidc::{Oidc, OidcConfig};
+use identity::OidcConfig;
 use serde::{Deserialize, Serialize};
-use tower_http::trace::TraceLayer;
+use tower_http::trace::{DefaultOnResponse, TraceLayer};
+use tracing::Level;
 
 /// Also exported for integration tests, which build a state with a temporary
 /// checkout.
 pub use gitstore::GitNotebookStore;
+pub use telemetry::{metrics_router, Metrics};
 
 /// Everything a request needs. Public so integration tests can build one with
 /// in-memory stores and a stub engine.
@@ -62,10 +65,14 @@ pub struct AppState {
     pub user_state: Arc<dyn UserState>,
     /// Secret resolution: environment today, Vault/OpenBao or a file next.
     pub secrets: Arc<dyn SecretStore>,
-    pub oidc: Option<Arc<Oidc>>,
-    /// Accepts the pre-SSO header/cookie identity seam. Off whenever OIDC is
-    /// configured, unless explicitly forced for local development.
+    /// The identity provider, when one is configured.
+    pub identity: Option<Arc<dyn IdentityProvider>>,
+    /// Accepts the pre-SSO header/cookie identity seam. Off whenever an
+    /// identity provider is configured, unless explicitly forced for local
+    /// development.
     pub dev_login: bool,
+    /// Request counters and latency, rendered by the metrics listener.
+    pub metrics: Arc<Metrics>,
 }
 
 async fn build_state(config: AppConfig) -> anyhow::Result<Arc<AppState>> {
@@ -136,16 +143,24 @@ async fn build_state(config: AppConfig) -> anyhow::Result<Arc<AppState>> {
         contracts.len()
     );
 
-    let oidc = OidcConfig::from_env(&*secrets)
-        .await
-        .map(|config| Arc::new(Oidc::new(config)));
-    let dev_login = oidc.is_none() || std::env::var("ASTER_DEV_LOGIN").is_ok();
-    if oidc.is_none() {
+    let identity_kind = providers::kind(
+        "ASTER_IDP_KIND",
+        if std::env::var("ASTER_OIDC_ISSUER").is_ok() {
+            "oidc"
+        } else {
+            "none"
+        },
+    );
+    let identity = providers::identity(&identity_kind, OidcConfig::from_env(&*secrets).await)?;
+    let dev_login = identity.is_none() || std::env::var("ASTER_DEV_LOGIN").is_ok();
+    tracing::info!(identity = %identity_kind, "identity provider selected");
+    if identity.is_none() {
         tracing::warn!("ASTER_OIDC_ISSUER unset; using the header/cookie dev identity seam");
     } else if dev_login {
         tracing::warn!("ASTER_DEV_LOGIN set; the dev identity seam is accepted alongside SSO");
     }
 
+    let metrics = Arc::new(Metrics::new());
     Ok(Arc::new(AppState {
         config,
         engines,
@@ -166,8 +181,9 @@ async fn build_state(config: AppConfig) -> anyhow::Result<Arc<AppState>> {
         session_ttl_seconds: session_ttl,
         user_state: stores.user_state,
         secrets,
-        oidc,
+        identity,
         dev_login,
+        metrics,
     }))
 }
 
@@ -575,31 +591,61 @@ pub fn app(state: Arc<AppState>) -> Router {
             "/api/catalogs/{id}/namespaces/{namespace}/tables",
             get(list_tables),
         )
-        .layer(TraceLayer::new_for_http())
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(telemetry::http_span)
+                .on_response(DefaultOnResponse::new().level(Level::INFO)),
+        )
         .fallback_service(rpc)
         .with_state(state)
+}
+
+/// The public router with the request recorder attached. `run` and the tests
+/// share it, so a scenario counts the same requests production counts.
+pub fn app_recorded(state: Arc<AppState>) -> Router {
+    app(Arc::clone(&state)).layer(axum::middleware::from_fn_with_state(
+        Arc::clone(&state),
+        telemetry::record,
+    ))
 }
 
 /// Reads configuration from the environment, builds the state and serves until
 /// SIGTERM or ctrl-c.
 pub async fn run() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info,tower_http=info".into()),
-        )
-        .init();
+    let telemetry = telemetry::Telemetry::init("aster-server");
 
     let config = AppConfig::from_env();
     let bind = config.bind.clone();
     let state = build_state(config).await?;
-    let app = app(state);
+    let app = app_recorded(Arc::clone(&state));
+
+    // Metrics live on their own listener, next to the app rather than inside it.
+    let metrics_bind =
+        std::env::var("ASTER_METRICS_BIND").unwrap_or_else(|_| "0.0.0.0:9090".into());
+    let metrics_listener = match metrics_bind.trim() {
+        "" => None,
+        _ => Some(tokio::net::TcpListener::bind(&metrics_bind).await?),
+    };
 
     let listener = tokio::net::TcpListener::bind(&bind).await?;
     tracing::info!("aster-server listening on {bind}");
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    match metrics_listener {
+        Some(metrics_listener) => {
+            tracing::info!("metrics listening on {metrics_bind}");
+            let metrics_app = telemetry::metrics_router(Arc::clone(&state));
+            tokio::select! {
+                result = axum::serve(listener, app).with_graceful_shutdown(shutdown_signal()) => result?,
+                result = axum::serve(metrics_listener, metrics_app).with_graceful_shutdown(shutdown_signal()) => result?,
+            }
+        }
+        None => {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(shutdown_signal())
+                .await?;
+        }
+    }
+
+    telemetry.shutdown();
     Ok(())
 }
 

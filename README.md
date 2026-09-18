@@ -109,15 +109,77 @@ grpcurl -plaintext -import-path proto -proto aster.proto \
   and handshake state. Unset means per-process memory, so a second replica would
   not see the first one's sessions.
 - `ASTER_SESSION_TTL_SECONDS` (28800), `ASTER_HANDSHAKE_TTL_SECONDS` (300).
-  `ASTER_OIDC_ISSUER`, `ASTER_OIDC_CLIENT_ID`, `ASTER_OIDC_CLIENT_SECRET`,
-  `ASTER_OIDC_REDIRECT_URI`, `ASTER_OIDC_ADMIN_GROUP`, `ASTER_OIDC_EDITOR_GROUP`.
+  `ASTER_USER_STATE_TTL_SECONDS` (2592000).
+- Identity: `ASTER_IDP_KIND` (`oidc`|`none`, default `oidc` when
+  `ASTER_OIDC_ISSUER` is set), `ASTER_OIDC_ISSUER`, `ASTER_OIDC_CLIENT_ID`,
+  `ASTER_OIDC_CLIENT_SECRET`, `ASTER_OIDC_REDIRECT_URI`, `ASTER_IDP_SCOPES`
+  (default `openid,groups`), `ASTER_IDP_GROUPS_CLAIM` (default `groups`),
+  `ASTER_OIDC_ADMIN_GROUP`, `ASTER_OIDC_EDITOR_GROUP`. `oidc` covers Authentik
+  and Keycloak; the group claim may be a bare name or a full path
+  (`/aster-admins`), so Authentik and Keycloak both map.
   Without an issuer the header/cookie dev seam (`x-aster-subject`, `x-aster-roles`,
   `/dev-login`) is accepted; `ASTER_DEV_LOGIN` keeps it on alongside SSO.
+- Telemetry: `ASTER_METRICS_BIND` (default `0.0.0.0:9090`, empty disables the
+  second listener) serves `/metrics` in OpenMetrics text on a port separate from
+  the public one, so the ingress never exposes it. Per-request counters and a
+  latency histogram are labelled by method, route and status, with the route
+  taken from the matched pattern so cardinality stays bounded.
+  `OTEL_EXPORTER_OTLP_ENDPOINT` exports spans over OTLP/HTTP; unset it and
+  tracing stays on stdout. Sampling follows `OTEL_TRACES_SAMPLER` /
+  `OTEL_TRACES_SAMPLER_ARG`, with `service.name` from `OTEL_SERVICE_NAME`.
 - Controller: `ASTER_RECONCILE_SECONDS` (30), `ASTER_AUDIT_RETENTION_DAYS` (30).
 - TUI: `ASTER_SERVER`, `ASTER_SUBJECT`, `ASTER_ROLES`.
 
 There is no `.env` file in the repository; export these or set them in the
 deployment.
+
+## Identity providers
+
+The server signs users in through an `IdentityProvider` port
+(`crates/core/src/identity.rs`). `oidc` implements it, and Authentik (the fleet
+IdP) and Keycloak differ only in configuration: Authentik defines a `groups`
+client scope, so the default `ASTER_IDP_SCOPES=openid,groups` fits, while
+Keycloak needs a client scope of that name or `ASTER_IDP_SCOPES=openid`. Group
+values may be bare names or full paths (`/aster-admins`), so both IdPs map.
+
+### Evaluating with Keycloak
+
+`docker compose up -d keycloak` starts Keycloak 26.7.4 in dev mode and imports
+`keycloak/aster-realm.json`: realm `aster`, groups `aster-admins` and
+`aster-editors`, users `root` (admin), `alice` (editor) and `bob` (viewer), and
+the confidential client `aster` with the group-membership mapper. The
+credentials in that file are development values. Keycloak has no Harbor proxy
+yet, which is why this service is local-only.
+
+Run the server on the host, not in compose: the issuer it discovers has to be
+the one the browser sees.
+
+```sh
+docker compose up -d keycloak
+ASTER_BIND=127.0.0.1:8080 \
+ASTER_IDP_KIND=oidc \
+ASTER_OIDC_ISSUER=http://localhost:8090/realms/aster \
+ASTER_OIDC_CLIENT_ID=aster \
+ASTER_OIDC_CLIENT_SECRET=aster-dev-secret \
+ASTER_OIDC_REDIRECT_URI=http://localhost:8080/callback \
+ASTER_IDP_SCOPES=openid \
+ASTER_IDP_GROUPS_CLAIM=groups \
+ASTER_METRICS_BIND=127.0.0.1:9090 \
+just run
+```
+
+Open http://localhost:8080: `/` redirects to `/login`, which redirects to
+Keycloak. Sign in as `alice` for editor, `root` for admin, `bob` for viewer.
+
+Headless check of the same wiring:
+
+```sh
+curl -s http://localhost:9090/metrics | grep aster_http_requests
+curl -s -X POST http://localhost:8090/realms/aster/protocol/openid-connect/token \
+  -d grant_type=password -d client_id=aster -d client_secret=aster-dev-secret \
+  -d username=alice -d password=aster-dev-alice |
+  jq -r .id_token | cut -d. -f2 | base64 -d | jq .groups
+```
 
 ## Status
 

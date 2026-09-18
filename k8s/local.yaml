@@ -191,9 +191,13 @@ spec:
               value: /data/notebooks
             - name: ASTER_CONTRACTS_DIR
               value: /etc/aster/contracts
+            - name: ASTER_METRICS_BIND
+              value: 0.0.0.0:9090
           ports:
             - name: http
               containerPort: 8080
+            - name: metrics
+              containerPort: 9090
           readinessProbe:
             httpGet:
               path: /healthz

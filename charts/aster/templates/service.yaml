@@ -18,3 +18,7 @@ spec:
     - name: http
       port: {{ .Values.service.port }}
       targetPort: http
+    # Scraped by the ServiceMonitor; still gated by the NetworkPolicy.
+    - name: metrics
+      port: {{ .Values.server.metricsPort }}
+      targetPort: metrics

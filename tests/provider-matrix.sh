@@ -38,7 +38,7 @@ check "engine kinds are validated" grep -q 'unknown engine kind' crates/engines/
 check "catalog kinds are validated" grep -q 'unknown catalog kind' crates/catalogs/src/lib.rs
 check "store providers are validated" grep -q 'unknown secret provider' crates/server/src/providers.rs
 check "every store domain is selected in one module" bash -c \
-  'for kind in secret_store metadata state notebooks; do grep -q "pub .*fn $kind" crates/server/src/providers.rs || exit 1; done'
+  'for kind in secret_store metadata state notebooks identity; do grep -q "pub .*fn $kind" crates/server/src/providers.rs || exit 1; done'
 
 # The ports that carry per-provider behaviour keep at least one real and one
 # in-memory implementation, so the contract tests never need a live dependency.
@@ -48,6 +48,8 @@ check "sessions ship a valkey and a memory provider" bash -c \
 check "secrets ship an env and a memory provider" bash -c \
   'grep -q "impl SecretStore for EnvSecrets" crates/core/src/secrets.rs &&
    grep -q "impl SecretStore for InMemorySecrets" crates/core/src/secrets.rs'
+check "identity ships a real provider behind the port" grep -q \
+  'impl IdentityProvider for OidcProvider' crates/server/src/identity.rs
 
 if [ "$failures" -eq 0 ]; then
   echo "provider-matrix OK"

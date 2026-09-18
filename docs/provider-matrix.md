@@ -18,6 +18,7 @@ must exist, and every selection site must refuse unknown names.
 | Catalog | `Catalog` (`crates/core/src/catalog.rs`) | `polaris`, `nessie` (stub), `unity` (stub) | `catalog_from_config` on the `kind` field of `ASTER_CATALOGS` | `crates/catalogs/features/polaris-catalog.feature` |
 | Notebook store | `NotebookStore` (`crates/core/src/notebook.rs`) | `git` | `providers::notebooks` on `ASTER_NOTEBOOK_STORE` | `crates/server/features/notebooks.feature` |
 | Secret store | `SecretStore` (`crates/core/src/secrets.rs`) | `env`, `memory` | `providers::secret_store` on `ASTER_SECRET_STORE` | `crates/core/features/secrets.feature` |
+| Identity provider | `IdentityProvider` (`crates/core/src/identity.rs`) | `oidc` (Authentik and Keycloak differ only in configuration), `none` | `providers::identity` on `ASTER_IDP_KIND` | `crates/server/features/sso.feature` (draft; the group/claim mapping is covered by the unit tests in `crates/server/src/identity.rs` and the Keycloak eval in the README) |
 | Engine grants | `Grants` (`crates/core/src/grants.rs`) | `postgres`, `memory` | `providers::metadata` on `ASTER_METADATA_STORE` | `crates/core/features/authorization.feature` |
 | Audit sink | `AuditSink` (`crates/core/src/audit.rs`) | `postgres`, `memory` | `providers::metadata` on `ASTER_METADATA_STORE` | `crates/server/features/audit-persistence.feature` |
 | LLM endpoint store | `LlmStore` (`crates/core/src/llm.rs`) | `postgres`, `memory` | `providers::metadata` on `ASTER_METADATA_STORE` | `crates/server/features/ai-assist.feature` |
@@ -38,7 +39,6 @@ instead of implicit.
 |---|---|---|
 | Object storage | nothing stores blobs; notebooks are a git working tree and contracts are files | a second notebook/blob backend is wanted — add the arm in `providers::notebooks` |
 | Metadata DB internals for the controller | the controller issues its two statements directly (`crates/controller/src/main.rs`) | a second metadata database must be supported |
-| Identity provider | one OIDC relying party (`crates/server/src/oidc.rs`); the dev seam covers local runs | a second IdP or a non-OIDC provider lands |
 | Clock | `aster-core` ports already take `now`; the server layer calls `SystemTime::now()` | a server-level scenario must freeze time |
 | Telemetry | process-wide `tracing` subscriber, chosen in each binary | a second exporter or sink is required |
 | Migration runner | idempotent `migrations/*.sql` applied with `sqlx::raw_sql` at boot | the schema starts evolving (move to `sqlx::migrate!`) |

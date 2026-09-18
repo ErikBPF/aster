@@ -33,6 +33,8 @@ spec:
           ports:
             - name: http
               containerPort: 8080
+            - name: metrics
+              containerPort: {{ .Values.server.metricsPort }}
           env:
             - name: ASTER_BIND
               value: {{ .Values.server.bind | quote }}
@@ -48,16 +50,26 @@ spec:
               value: {{ include "aster.engines" . }}
             - name: ASTER_CATALOGS
               value: {{ include "aster.catalogs" . }}
+            - name: ASTER_IDP_KIND
+              value: {{ .Values.server.identity.kind | quote }}
             - name: ASTER_OIDC_ISSUER
-              value: {{ .Values.server.oidc.issuer | quote }}
+              value: {{ .Values.server.identity.issuer | quote }}
             - name: ASTER_OIDC_CLIENT_ID
-              value: {{ .Values.server.oidc.clientId | quote }}
+              value: {{ .Values.server.identity.clientId | quote }}
+            - name: ASTER_IDP_SCOPES
+              value: {{ .Values.server.identity.scopes | quote }}
+            - name: ASTER_IDP_GROUPS_CLAIM
+              value: {{ .Values.server.identity.groupsClaim | quote }}
             - name: ASTER_OIDC_REDIRECT_URI
-              value: {{ .Values.server.oidc.redirectUri | quote }}
+              value: {{ .Values.server.identity.redirectUri | quote }}
             - name: ASTER_OIDC_ADMIN_GROUP
-              value: {{ .Values.server.oidc.adminGroup | quote }}
+              value: {{ .Values.server.identity.adminGroup | quote }}
             - name: ASTER_OIDC_EDITOR_GROUP
-              value: {{ .Values.server.oidc.editorGroup | quote }}
+              value: {{ .Values.server.identity.editorGroup | quote }}
+            - name: ASTER_METRICS_BIND
+              value: {{ printf "0.0.0.0:%v" .Values.server.metricsPort | quote }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.server.otlpEndpoint | quote }}
             - name: ASTER_SESSION_TTL_SECONDS
               value: {{ .Values.server.sessionTtlSeconds | quote }}
             - name: ASTER_HANDSHAKE_TTL_SECONDS

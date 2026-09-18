@@ -288,15 +288,16 @@ fn notebook_body(notebook: &Notebook) -> String {
 
 const SESSION_COOKIE: &str = "aster_session";
 
-/// Starts the OIDC authorization-code flow, or falls back to the dev login form
-/// when no identity provider is configured.
+/// Starts the authorization-code flow, or falls back to the dev login form when
+/// no identity provider is configured.
 pub async fn login(State(state): State<Arc<AppState>>) -> Result<Response, ApiError> {
-    let Some(oidc) = state.oidc.as_ref() else {
+    let Some(identity) = state.identity.as_ref() else {
         return Ok(Redirect::to("/dev-login").into_response());
     };
-    let handshake = oidc.handshake().await?;
-    // The PKCE verifier and nonce wait in the shared store, keyed by the OIDC
-    // state parameter, and are redeemed exactly once by the callback (D20).
+    let handshake = identity.begin().await?;
+    // The PKCE verifier and nonce wait in the shared store, keyed by the
+    // provider's state parameter, and are redeemed exactly once by the callback
+    // (D20).
     state
         .handshakes
         .put(
@@ -343,16 +344,16 @@ pub async fn callback(
         .split_once(':')
         .ok_or_else(|| CoreError::Unauthorized("incomplete handshake payload".into()))?;
 
-    let oidc = state
-        .oidc
+    let identity_provider = state
+        .identity
         .as_ref()
-        .ok_or_else(|| CoreError::NotFound("oidc not configured".into()))?;
-    let (subject, roles) = oidc.complete(&code, verifier, nonce).await?;
+        .ok_or_else(|| CoreError::NotFound("identity provider not configured".into()))?;
+    let identity = identity_provider.complete(&code, verifier, nonce).await?;
     let record = state
         .sessions
         .create(
-            &subject,
-            roles,
+            &identity.subject,
+            identity.roles,
             headers
                 .get(header::USER_AGENT)
                 .and_then(|value| value.to_str().ok())
@@ -364,7 +365,11 @@ pub async fn callback(
     let mut response = Redirect::to("/").into_response();
     // Secure only once SSO is configured: the dev seam runs over plain HTTP on
     // localhost, where a Secure cookie would never be stored.
-    let secure = if state.oidc.is_some() { "; Secure" } else { "" };
+    let secure = if state.identity.is_some() {
+        "; Secure"
+    } else {
+        ""
+    };
     set_cookie(
         &mut response,
         &format!(

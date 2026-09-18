@@ -46,9 +46,20 @@ server:
   # Development-only identity seam; leave empty in a real deployment so SSO is
   # the only way in.
   grants: ""
-  oidc:
+  metricsPort: 9090
+  # OTLP endpoint for traces. Empty keeps tracing on stdout; the lab collector
+  # is otel-collector-opentelemetry-collector.observability.svc.cluster.local:4318.
+  otlpEndpoint: ""
+  # `oidc` covers Authentik and Keycloak; the two differ only in these values.
+  # `none` accepts the development seam and is refused in a real deployment.
+  identity:
+    kind: oidc
     issuer: ""
     clientId: aster
+    # Space for Keycloak (it refuses a scope it does not define); Authentik
+    # defines a `groups` scope so `openid,groups` also works there.
+    scopes: openid
+    groupsClaim: groups
     redirectUri: https://aster.example.invalid/callback
     adminGroup: aster-admins
     editorGroup: aster-editors
@@ -100,6 +111,9 @@ externalSecret:
 networkPolicy:
   enabled: true
   ingressNamespace: traefik
+  # Prometheus scrapes the pod IP, so the namespace that owns the metric port
+  # must be allowed in explicitly.
+  metricsNamespace: monitoring
   # Egress targets the data plane; keep it as narrow as the runtime allows.
   egressPorts:
     - 8080
@@ -107,6 +121,15 @@ networkPolicy:
     - 5432
     - 6379
     - 443
+
+# Prometheus scraping. The ServiceMonitor must carry the release label that
+# kube-prometheus-stack selects on; the platform contract forbids adding
+# scrape configs to the monitoring chart instead.
+metrics:
+  serviceMonitor:
+    enabled: true
+    labels:
+      release: monitoring
 
 # Session and handshake state (D18/D20). One instance for aster alone; its
 # credential comes from Vault through the ExternalSecret below, never from here.

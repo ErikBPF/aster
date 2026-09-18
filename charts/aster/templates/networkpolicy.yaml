@@ -25,6 +25,15 @@ spec:
       ports:
         - port: 8080
           protocol: TCP
+    # Prometheus targets the pod directly, so the target namespace opens the
+    # metrics port to the monitoring namespace itself.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.metricsNamespace }}
+      ports:
+        - port: {{ .Values.server.metricsPort }}
+          protocol: TCP
   egress:
     # DNS.
     - ports:
