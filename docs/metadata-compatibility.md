@@ -82,27 +82,37 @@ for**. Both fit the existing port model; neither needs a new core abstraction in
    `semanticType`, YAML through `serde_norway` and JSON unchanged; `contracts/orders.yaml`
    is a real v3.2 example, and the loader reads `*.json`/`*.yaml`/`*.yml`. Bound by
    `crates/core/features/data-contracts.feature`.
-2. **`kind=cube` catalog provider.** `GET /v1/meta` → namespaces (cube groups/views),
-   tables (cubes/views), schema (measures/dimensions as `ColumnSchema`). Touches
-   `crates/catalogs/src/lib.rs` plus a provider-matrix row; no core change.
-3. **`kind=openmetadata` enrichment.** Read table/column descriptions, owners and glossary
-   terms for the catalog tab and the AI context. **Decided 2026-09-18: OpenMetadata is a
-   source we also read from**, not the system of record, so enrichment stays a server-side
-   read path and does not change the core `TableSchema`.
+2. **`kind=cube` catalog provider. — done 2026-09-18.** Cubes and views are the two
+   namespaces, measures and dimensions become columns named as Cube's SQL API names
+   them, and the configured `catalog` carries the base path (default `cubejs-api`).
+   Verified against a stub serving `/cubejs-api/v1/meta`; contract in
+   `crates/catalogs/features/cube-catalog.feature`.
+3. **`kind=openmetadata` enrichment. — read path done 2026-09-18.** Schemas and tables
+   are browsable, with column types (`dataTypeDisplay` preferred) and nullability from
+   the column `constraint`. **Decided: OpenMetadata is a source we also read from**, not
+   the system of record, so descriptions/owners/glossary/lineage enrichment stays a
+   separate server-side step and the core `TableSchema` is unchanged. Endpoints grounded
+   in upstream source: `/v1/databaseSchemas?database=`, `/v1/tables?databaseSchema=&fields=columns`.
+   Contract in `crates/catalogs/features/openmetadata-catalog.feature`.
+4. **Credentials for the read-only providers — open.** Cube API tokens are JWTs signed
+   with `CUBEJS_API_SECRET` and OpenMetadata needs a bot token; neither has a home yet
+   (`CatalogConfig` carries no secret, and the providers take an optional token only).
+   This is one decision for both, and it belongs with the `SecretStore` port rather than
+   in `ASTER_CATALOGS`.
 
 ### Phase 2 — write/emit behind a new port
 
-4. **`SemanticModelStore` port** in core, selected by `ASTER_SEMANTIC_STORE`: emit Cube
+5. **`SemanticModelStore` port** in core, selected by `ASTER_SEMANTIC_STORE`: emit Cube
    YAML models (dimensions from `TableSchema`, measures from ODCS `semanticType: measure`)
    and ODCS v3.2 documents validated with `jsonschema`. An `aster-ctl` command is the
    smaller alternative if only file emission is wanted. Generation must not go into the
    `Catalog` trait — that trait is deliberately navigation-only.
-5. **Optional `kind=cube` query engine** (`POST /v1/cubesql` first, Postgres wire later),
+6. **Optional `kind=cube` query engine** (`POST /v1/cubesql` first, Postgres wire later),
    giving semantic queries first-class execution.
 
 ### Phase 3 — governance
 
-6. OpenMetadata as the contract authority (publish our contracts to
+7. OpenMetadata as the contract authority (publish our contracts to
    `/api/v1/dataContracts/odcs`), lineage-aware AI context, and a decision on whether the
    Cube MCP server is worth its plan.
 
@@ -112,9 +122,12 @@ for**. Both fit the existing port model; neither needs a new core abstraction in
   The Cube catalog provider and the OpenMetadata enrichment remain open, in that order.
 - **Q2 — answered 2026-09-18:** OpenMetadata is a second metadata **source** we read from,
   not the system of record, so no core `TableSchema` change is implied.
-- **Q3** Cube: read-only semantic browsing now, or semantic queries as an engine too?
+- **Q3 — answered 2026-09-18 in practice:** Cube stays read-only semantic browsing for
+  now (the provider is built); semantic queries as an engine are phase 2, item 6.
 - **Q4** Does any of this belong in the current milestone, or does it wait for the live
   Trino/Polaris runtime (D6) that the catalog providers would otherwise be pointed at?
+  The read-only providers are built and stub-verified; what is genuinely blocked on D6 is
+  pointing them at real deployments, plus the credential decision (phase 1, item 4).
 
 ## Deliberately not proposed
 
