@@ -51,7 +51,7 @@ crates/controller  reconcile loop: health mirror + audit retention
 crates/tui         ratatui client over the same API
 proto/             aster.proto + the vendored google/api annotations it imports
 crates/*/features/ behavior contracts, colocated with the crate they validate
-contracts/         example ODCS-shaped data contracts
+contracts/         example data contracts; a real ODCS v3.2 yaml document
 migrations/        metadata schema (grants, audit, engines/catalogs, llm configs)
 docker/            dev + server + tui images
 ```
@@ -107,7 +107,7 @@ grpcurl -plaintext -import-path proto -proto aster.proto \
 - `ASTER_GRANTS` = `subject:engine,...` seeds grants at boot (dev).
 - `ASTER_NOTEBOOK_DIR` (default `data/notebooks`), `ASTER_NOTEBOOK_BRANCH`
   (default `session`).
-- `ASTER_CONTRACTS_DIR` (default `contracts`) — JSON contracts; yaml is skipped
+- `ASTER_CONTRACTS_DIR` (default `contracts`) — data contracts; `.json`, `.yaml` and `.yml` are read, and a real ODCS v3.2 document (name or `id`, `team.name`, `schema[].properties[]`, `semanticType`) is understood
   with a warning.
 - `ASTER_STATE_URL` (Valkey URL, e.g. `redis://:password@valkey:6379`) — session
   and handshake state. Unset means per-process memory, so a second replica would

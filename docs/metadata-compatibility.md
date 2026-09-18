@@ -42,12 +42,16 @@ for**. Both fit the existing port model; neither needs a new core abstraction in
   merge or replace, attached by `entityId` + `entityType`) are documented against
   **v3.1.0**, so the standard is currently ahead of OpenMetadata. The Data Contract CLI
   is the practical bridge for validation and conversion.
-- Our `crates/core/src/contract.rs` parses a **flat JSON subset**: it ignores
-  `version`/`apiVersion`/`kind`/`id`, reads `owner` (nonstandard; real ODCS uses
-  `team: {name, members[]}`), and expects flat `schema[]` entries. Real ODCS `schema`
+- Our `crates/core/src/contract.rs` used to parse a **flat JSON subset**: it ignored
+  `version`/`apiVersion`/`kind`/`id`, read `owner` (nonstandard; real ODCS uses
+  `team: {name, members[]}`), and expected flat `schema[]` entries. Real ODCS `schema`
   entries are objects with nested `properties[]`, and v3.2 adds
-  `semanticType: column | measure | dimension`. A real ODCS document therefore yields
-  few or no fields today, and YAML is skipped outright.
+  `semanticType: column | measure | dimension`. A real ODCS document therefore yielded
+  few or no fields, and YAML was skipped outright. **Fixed on 2026-09-18** (phase 1,
+  item 1 below): the parser now reads YAML or JSON through `serde_norway`, accepts
+  `name` or `id`, `team.name`, nested `properties[]` and `semanticType`, and keeps the
+  flat shape working. Validation against the published JSON Schema is deliberately
+  deferred to the emit phase, where conformance actually has to be proven.
 - Rust crates: `serde_yaml` is archived; `serde_norway` `0.9.42` is the maintained
   successor; `jsonschema` `0.56.0` can validate against the published v3.2 schema.
 
@@ -73,17 +77,18 @@ for**. Both fit the existing port model; neither needs a new core abstraction in
 
 ### Phase 1 — read-only, no new core abstraction
 
-1. **Accept real ODCS (highest value, smallest diff).** Teach `contract.rs` the real
-   shape: `version`/`apiVersion`/`kind`/`id`, `team.name`, nested `properties[]`,
-   `semanticType`, and YAML through `serde_norway`; keep JSON working. Touches
-   `crates/core/src/contract.rs` only, and gives OpenMetadata round-tripping a chance.
+1. **Accept real ODCS (highest value, smallest diff). — done 2026-09-18.** `contract.rs`
+   reads the real shape: name or `id`, `team.name`, nested `properties[]`,
+   `semanticType`, YAML through `serde_norway` and JSON unchanged; `contracts/orders.yaml`
+   is a real v3.2 example, and the loader reads `*.json`/`*.yaml`/`*.yml`. Bound by
+   `crates/core/features/data-contracts.feature`.
 2. **`kind=cube` catalog provider.** `GET /v1/meta` → namespaces (cube groups/views),
    tables (cubes/views), schema (measures/dimensions as `ColumnSchema`). Touches
    `crates/catalogs/src/lib.rs` plus a provider-matrix row; no core change.
 3. **`kind=openmetadata` enrichment.** Read table/column descriptions, owners and glossary
-   terms for the catalog tab and the AI context. Needs a decision: does `TableSchema`
-   gain `description`/`owner` fields (a core struct change) or does OpenMetadata stay a
-   separate read path in the server.
+   terms for the catalog tab and the AI context. **Decided 2026-09-18: OpenMetadata is a
+   source we also read from**, not the system of record, so enrichment stays a server-side
+   read path and does not change the core `TableSchema`.
 
 ### Phase 2 — write/emit behind a new port
 
@@ -103,11 +108,10 @@ for**. Both fit the existing port model; neither needs a new core abstraction in
 
 ## Decisions this needs from the human
 
-- **Q1** Which phase-1 item first: ODCS v3.2 acceptance, the Cube catalog provider, or the
-  OpenMetadata enrichment? (Recommendation: ODCS first — it is the smallest change and it
-  unblocks the other two.)
-- **Q2** Is OpenMetadata a second metadata *source* for the catalog tab, or the system of
-  record we publish to? That decides whether phase 1 grows a core `TableSchema` change.
+- **Q1 — answered 2026-09-18:** ODCS v3.2 acceptance first (built, see phase 1 item 1).
+  The Cube catalog provider and the OpenMetadata enrichment remain open, in that order.
+- **Q2 — answered 2026-09-18:** OpenMetadata is a second metadata **source** we read from,
+  not the system of record, so no core `TableSchema` change is implied.
 - **Q3** Cube: read-only semantic browsing now, or semantic queries as an engine too?
 - **Q4** Does any of this belong in the current milestone, or does it wait for the live
   Trino/Polaris runtime (D6) that the catalog providers would otherwise be pointed at?
