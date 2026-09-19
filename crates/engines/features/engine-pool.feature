@@ -20,6 +20,16 @@ Feature: Engine pool and routing groups
     When a cell runs on engine "standalone"
     Then the engine request carries no "X-Trino-Routing-Group" header
 
+  Scenario: Catalog and schema travel only when the cell asks for them
+    Given a cell asks for catalog "tpch" and schema "tiny" on engine "adhoc"
+    Then the engine request carries header "X-Trino-Catalog: tpch"
+    And the engine request carries header "X-Trino-Schema: tiny"
+
+  Scenario: A follow-up page is sent to the configured endpoint
+    Given engine "adhoc" points at "http://gateway:8080"
+    When the coordinator advertises a next page on its own address
+    Then the follow-up request goes to "http://gateway:8080"
+
   Scenario: An unknown engine kind is refused at startup
     Given ASTER_ENGINES is "x;duckdb;http://localhost:1"
     Then startup fails naming the unknown engine kind

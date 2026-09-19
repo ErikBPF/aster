@@ -79,6 +79,27 @@ just compose-up      # compose: valkey + postgres + server
 just chart-lint      # render charts/aster and validate with kubeconform
 ```
 
+### Live compute backends
+
+`features/live-backends.feature` is bound by `tests/live-backends.sh`, which
+runs a built server against the real platform Trino (through the Trino Gateway)
+and the platform-owned Spark Connect. It needs a reachable cluster and two
+port-forwards, so it is **not** part of `just ci`:
+
+```
+just build
+tests/live-backends.sh        # or: ASTER_SERVER_BIN=... tests/live-backends.sh
+```
+
+It points `ASTER_ENGINES` at `trino-gw;trino;http://127.0.0.1:<port>;lab` and
+`spark-live;spark;http://127.0.0.1:<port>`, forwards
+`svc/trino-gateway:8080` (namespace `trino`) and
+`svc/spark-connect-aster:15002` (namespace `spark-jobs`), and asserts rows from
+both engines, the gateway's routing group and absent-group fallback, the
+refused-grant path and the audit rows. The Spark engine sends the routing
+group's `lab` only to Trino; the Spark endpoint is rewritten to the client's
+`sc://host:port` form automatically.
+
 Calling a gRPC method with `grpcurl` (no reflection needed, the proto is in the
 repository):
 
