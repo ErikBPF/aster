@@ -67,6 +67,14 @@ service Aster {
       body: "*"
     };
   }
+
+  // Renders a table's metadata as the file a team commits: a Cube model for the
+  // semantic layer, or an Open Data Contract Standard document.
+  rpc RenderSemantic(RenderSemanticRequest) returns (RenderSemanticResponse) {
+    option (google.api.http) = {
+      get: "/v1/semantic/{target}/{catalog}/{namespace}/{table}"
+    };
+  }
 }
 
 message GetStateRequest {}
@@ -159,4 +167,19 @@ message QueryResult {
   // engines type their columns at runtime and not at compile time.
   repeated string rows_json = 2;
   bool truncated = 3;
+}
+
+message RenderSemanticRequest {
+  // "cube" or "odcs".
+  string target = 1;
+  string catalog = 2;
+  string namespace = 3;
+  string table = 4;
+}
+
+message RenderSemanticResponse {
+  string target = 1;
+  // Suggested repository path for the rendered file.
+  string path = 2;
+  string content = 3;
 }

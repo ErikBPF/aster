@@ -43,7 +43,8 @@ temporary local repository until the GitHub repository is created through
 
 ```
 crates/core        domain types, QueryEngine/Catalog/NotebookStore/Grants/AuditSink/LlmStore
-                   traits, registries, RBAC, text notebook format, data contracts
+                   traits, registries, RBAC, text notebook format, data contracts,
+                   semantic-model emission (Cube, ODCS)
 crates/engines     Trino (real, pool routing) + Spark/StarRocks (stubs)
 crates/catalogs    Polaris (real) + Nessie/Unity (stubs)
 crates/server      axum API + server-rendered UI, RPC surface, OIDC login, git store
@@ -85,6 +86,28 @@ repository):
 grpcurl -plaintext -import-path proto -proto aster.proto \
   -H 'x-aster-subject: alice' 127.0.0.1:8080 aster.v1.Aster/ListEngines
 ```
+
+## Semantic models
+
+A table's metadata can be rendered as the file a team commits: a Cube model for
+the semantic layer, or an Open Data Contract Standard document. The target is
+named per request (`cube` or `odcs`), and when a data contract with the same
+name is loaded it wins — its semantic types, required flags, owner and
+`transformLogic` reach the output. Without one, catalog columns become
+dimensions and every field is a plain ODCS `column`.
+
+```
+grpcurl -plaintext -import-path proto -proto aster.proto \
+  -H 'x-aster-subject: alice' -d '{"catalog":"polaris-local","namespace":"sales","table":"orders"}' \
+  127.0.0.1:8080 aster.v1.Aster/RenderSemantic   # add "target":"cube" or "odcs"
+```
+
+The response carries `content` and the suggested `path` (`model/cubes/<table>.yml`,
+`contracts/<table>.yaml`). Emission is pure — no store, no clock — so the output
+is reproducible; `crates/core/features/semantic-models.feature` covers it, and
+the ODCS side is checked by parsing the rendered document back. A Cube measure
+takes its aggregation from the contract's `transformLogic` and otherwise assumes
+`sum`, saying so in a comment instead of guessing quietly.
 
 ## Env
 
