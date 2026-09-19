@@ -5,10 +5,10 @@
 //! Cargo.toml as a `harness = false` test target).
 
 use aster_core::{
-    authorize, authorize_engine, relevant, require, Action, Cell, CoreError, DataContract,
-    EngineId, HandshakeStore, InMemoryGrants, InMemoryHandshakes, InMemorySecrets,
+    authorize, authorize_engine, relevant, require, Action, Cell, ColumnSchema, CoreError,
+    DataContract, EngineId, HandshakeStore, InMemoryGrants, InMemoryHandshakes, InMemorySecrets,
     InMemorySessions, InMemoryUserState, Notebook, Principal, Role, SecretStore, SessionRecord,
-    SessionRegistry, UserState, WorkingState,
+    SessionRegistry, TableModel, TableRef, TableSchema, UserState, WorkingState,
 };
 use cucumber::{given, then, when, World};
 
@@ -34,6 +34,8 @@ struct App {
     contract: Option<Result<DataContract, CoreError>>,
     contracts: Vec<DataContract>,
     selected: Vec<String>,
+    table: Option<TableSchema>,
+    model: Option<Result<String, CoreError>>,
 }
 
 impl App {
@@ -533,6 +535,117 @@ fn contract(world: &App) -> &DataContract {
         .expect("a contract was parsed")
         .as_ref()
         .expect("the contract parsed")
+}
+
+/* ---- semantic models -------------------------------------------------- */
+
+#[given(expr = "a table {string} {string} with columns {string}")]
+async fn a_table(world: &mut App, namespace: String, name: String, columns: String) {
+    let columns = columns
+        .split(',')
+        .map(str::trim)
+        .filter(|column| !column.is_empty())
+        .map(|column| {
+            let (name, data_type) = column.split_once(' ').unwrap_or((column, "varchar"));
+            ColumnSchema {
+                name: name.to_string(),
+                data_type: data_type.trim().to_string(),
+                nullable: true,
+            }
+        })
+        .collect();
+    world.table = Some(TableSchema {
+        table: TableRef { namespace, name },
+        columns,
+    });
+}
+
+#[when(expr = "the table is rendered as {string}")]
+async fn render_table(world: &mut App, target: String) {
+    let rendered = {
+        let schema = world.table.as_ref().expect("a table");
+        let contract = world
+            .contract
+            .as_ref()
+            .and_then(|contract| contract.as_ref().ok());
+        let model = TableModel { schema, contract };
+        aster_core::semantic::format(&target).and_then(|format| format.render(&model))
+    };
+    world.model = Some(rendered);
+}
+
+#[when("the rendered contract is parsed")]
+async fn parse_rendered_contract(world: &mut App) {
+    world.contract = Some(DataContract::parse("rendered.yaml", model(world)));
+}
+
+#[then(expr = "the model declares the cube {string}")]
+async fn model_declares_cube(world: &mut App, name: String) {
+    let text = model(world);
+    assert!(
+        text.contains(&format!("cubes:\n  - name: \"{name}\"")),
+        "model was:\n{text}"
+    );
+}
+
+#[then(expr = "the model names the table {string}")]
+async fn model_names_table(world: &mut App, table: String) {
+    let text = model(world);
+    assert!(
+        text.contains(&format!("sql_table: \"{table}\"")),
+        "model was:\n{text}"
+    );
+}
+
+#[then(expr = "the model declares the dimension {string}")]
+async fn model_declares_dimension(world: &mut App, name: String) {
+    let found = members(model(world), "dimensions");
+    assert!(
+        found.contains(&name.as_str()),
+        "expected {name} among {found:?} in:\n{}",
+        model(world)
+    );
+}
+
+#[then(expr = "the model declares the measure {string}")]
+async fn model_declares_measure(world: &mut App, name: String) {
+    let found = members(model(world), "measures");
+    assert!(
+        found.contains(&name.as_str()),
+        "expected {name} among {found:?} in:\n{}",
+        model(world)
+    );
+}
+
+/// The `- name: "..."` entries of one four-space-indented section.
+fn members<'a>(text: &'a str, header: &str) -> Vec<&'a str> {
+    let mut found = Vec::new();
+    let mut inside = false;
+    for line in text.lines() {
+        let indent = line.len() - line.trim_start().len();
+        if indent == 4 && line.trim_start().starts_with(&format!("{header}:")) {
+            inside = true;
+            continue;
+        }
+        if inside && indent <= 4 && !line.trim().is_empty() {
+            break;
+        }
+        if inside {
+            if let Some(rest) = line.trim_start().strip_prefix("- name: ") {
+                found.push(rest.trim_matches('"'));
+            }
+        }
+    }
+    found
+}
+
+fn model(world: &App) -> &str {
+    world
+        .model
+        .as_ref()
+        .expect("a table was rendered")
+        .as_ref()
+        .expect("the table rendered")
 }
 
 #[tokio::main]

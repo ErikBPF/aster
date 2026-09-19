@@ -46,3 +46,15 @@ Feature: Multiprotocol RPC surface
     Given the server has no default engine
     When "alice" calls RunQuery without selecting an engine
     Then the call fails as invalid input
+
+  Scenario: A table renders as the Cube model a team commits
+    When "alice" renders the "default" table "orders" as "cube"
+    Then the response names the cube "orders" and its path
+
+  Scenario: The same table renders as an ODCS contract
+    When "alice" renders the "default" table "orders" as "odcs"
+    Then the response carries an odcs contract with fields
+
+  Scenario: An unknown render target is refused
+    When "alice" renders the "default" table "orders" as "lookml"
+    Then the call fails as invalid input

@@ -12,10 +12,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use aster_core::{
-    AppConfig, AuditSink, Catalog, CatalogConfig, CatalogId, CatalogRegistry, Column, EngineConfig,
-    EngineId, EngineInfo, EngineRegistry, Grants, Health, InMemoryAudit, InMemoryGrants,
-    InMemoryHandshakes, InMemoryLlm, InMemorySessions, InMemoryUserState, Namespace, NotebookStore,
-    QueryEngine, QueryRequest, QueryResult, TableRef, TableSchema, UserState, WorkingState,
+    AppConfig, AuditSink, Catalog, CatalogConfig, CatalogId, CatalogRegistry, Column, ColumnSchema,
+    EngineConfig, EngineId, EngineInfo, EngineRegistry, Grants, Health, InMemoryAudit,
+    InMemoryGrants, InMemoryHandshakes, InMemoryLlm, InMemorySessions, InMemoryUserState,
+    Namespace, NotebookStore, QueryEngine, QueryRequest, QueryResult, TableRef, TableSchema,
+    UserState, WorkingState,
 };
 use aster_server::{app_recorded, AppState, GitNotebookStore};
 use axum::body::Body;
@@ -85,7 +86,18 @@ impl Catalog for StubCatalog {
     async fn table_schema(&self, table: &TableRef) -> aster_core::Result<TableSchema> {
         Ok(TableSchema {
             table: table.clone(),
-            columns: vec![],
+            columns: vec![
+                ColumnSchema {
+                    name: "order_id".into(),
+                    data_type: "bigint".into(),
+                    nullable: false,
+                },
+                ColumnSchema {
+                    name: "total".into(),
+                    data_type: "decimal(12,2)".into(),
+                    nullable: false,
+                },
+            ],
         })
     }
 }
@@ -606,6 +618,62 @@ async fn rpc_run_query_no_engine(world: &mut Contract, subject: String) {
     );
     world.send(request).await;
     world.rpc = world.json.clone();
+}
+
+#[when(expr = "{string} renders the {string} table {string} as {string}")]
+async fn render_semantic(
+    world: &mut Contract,
+    subject: String,
+    namespace: String,
+    table: String,
+    target: String,
+) {
+    let request = connect(
+        "RenderSemantic",
+        Some(&subject),
+        "editor",
+        json!({"target": target, "catalog": "polaris-local", "namespace": namespace, "table": table}),
+    );
+    world.send(request).await;
+    world.rpc = world.json.clone();
+}
+
+#[then(expr = "the response names the cube {string} and its path")]
+async fn response_names_cube(world: &mut Contract, name: String) {
+    let response = world.rpc_json();
+    let content = response
+        .get("content")
+        .and_then(Value::as_str)
+        .expect("content");
+    assert!(
+        content.contains(&format!("cubes:\n  - name: \"{name}\"")),
+        "content was:\n{content}"
+    );
+    assert_eq!(
+        response.get("path").and_then(Value::as_str),
+        Some("model/cubes/orders.yml")
+    );
+}
+
+#[then("the response carries an odcs contract with fields")]
+async fn response_carries_contract(world: &mut Contract) {
+    let response = world.rpc_json();
+    let content = response
+        .get("content")
+        .and_then(Value::as_str)
+        .expect("content");
+    assert!(
+        content.contains("kind: DataContract"),
+        "content was:\n{content}"
+    );
+    assert!(
+        content.contains("      - name: \"total\""),
+        "content was:\n{content}"
+    );
+    assert_eq!(
+        response.get("path").and_then(Value::as_str),
+        Some("contracts/orders.yaml")
+    );
 }
 
 #[then(expr = "the response status is {int}")]

@@ -6,9 +6,11 @@
 //! the earlier flat JSON shape. YAML and JSON both parse, because a real contract
 //! is usually YAML and YAML is a superset of JSON.
 //!
-//! We deliberately do not validate against the published JSON Schema: it pays off
-//! when we *emit* contracts, not when we tolerate them. Unknown sections are
-//! ignored, which is what `additionalProperties: false` would forbid.
+//! We deliberately do not validate against the published JSON Schema: it pays
+//! off when we *emit* contracts, not when we tolerate them, and the emitter's
+//! own check is that a rendered document parses back through this reader
+//! (`crate::semantic`). Unknown sections are ignored, which is what
+//! `additionalProperties: false` would forbid.
 
 use serde::Serialize;
 use serde_json::Value;
@@ -23,6 +25,9 @@ pub struct ContractField {
     /// ODCS v3.2 `semanticType`: `column`, `measure` or `dimension`. Carried
     /// through because a measure is what a Cube model will need.
     pub semantic_type: Option<String>,
+    /// ODCS v3.2 `transformLogic`, e.g. `SUM(total)`. The aggregation an
+    /// emitter has to reproduce when the field is a measure.
+    pub transform_logic: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -147,6 +152,17 @@ fn field(value: &Value) -> Option<ContractField> {
             .get("semanticType")
             .and_then(Value::as_str)
             .map(str::to_string),
+        transform_logic: value
+            .get("transformLogic")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+    })
+}
+
+/// The contract describing a table, matched by name or id, case-insensitively.
+pub fn for_table<'a>(contracts: &'a [DataContract], table: &str) -> Option<&'a DataContract> {
+    contracts.iter().find(|contract| {
+        contract.name.eq_ignore_ascii_case(table) || contract.id.eq_ignore_ascii_case(table)
     })
 }
 
@@ -237,6 +253,42 @@ schema:
         let contract = DataContract::parse("id-only.yaml", "id: customers\n").expect("parses");
         assert_eq!(contract.name, "customers");
         assert!(contract.fields.is_empty());
+    }
+
+    #[test]
+    fn a_measure_keeps_its_aggregation() {
+        let text = r#"version: 3.2.0
+apiVersion: v3.2.0
+kind: DataContract
+id: orders
+schema:
+  - name: orders
+    properties:
+      - name: total
+        logicalType: decimal(12,2)
+        semanticType: measure
+        transformLogic: SUM(total)
+"#;
+
+        let contract = DataContract::parse("orders.odcs.yaml", text).expect("parses");
+        assert_eq!(
+            contract.fields[0].transform_logic.as_deref(),
+            Some("SUM(total)")
+        );
+    }
+
+    #[test]
+    fn finds_the_contract_of_a_table_by_name_or_id() {
+        let contracts = vec![
+            DataContract::parse("people", r#"{"name":"people"}"#).expect("people"),
+            DataContract::parse("orders", r#"{"name":"orders"}"#).expect("orders"),
+        ];
+
+        assert_eq!(
+            for_table(&contracts, "ORDERS").map(|contract| contract.name.as_str()),
+            Some("orders")
+        );
+        assert!(for_table(&contracts, "sales").is_none());
     }
 
     #[test]

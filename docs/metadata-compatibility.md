@@ -1,8 +1,8 @@
 # Compatibility with OpenMetadata and Cube
 
 Status: findings and phased plan, 2026-09-18. Research grounded on 2026-09-18 against
-OpenMetadata `2.0.2-release`, ODCS `v3.2.0`, Cube `v1.7.42`. Nothing here is implemented;
-each phase names the seam it touches and the decision it needs.
+OpenMetadata `2.0.2-release`, ODCS `v3.2.0`, Cube `v1.7.42`. Phase 1 (read-only) and
+phase 2 item 5 (emit) are implemented; the open items are named per phase.
 
 The question: aster already reads catalog metadata through the `Catalog` port and
 formats a small ODCS-shaped subset of data contracts into its AI context. How do we
@@ -102,11 +102,22 @@ for**. Both fit the existing port model; neither needs a new core abstraction in
 
 ### Phase 2 — write/emit behind a new port
 
-5. **`SemanticModelStore` port** in core, selected by `ASTER_SEMANTIC_STORE`: emit Cube
-   YAML models (dimensions from `TableSchema`, measures from ODCS `semanticType: measure`)
-   and ODCS v3.2 documents validated with `jsonschema`. An `aster-ctl` command is the
-   smaller alternative if only file emission is wanted. Generation must not go into the
-   `Catalog` trait — that trait is deliberately navigation-only.
+5. **Emit Cube models and ODCS contracts. — done 2026-09-18, with two deliberate
+   deviations from the sketch.** The port is `SemanticFormat`
+   (`crates/core/src/semantic.rs`) with one implementation per target (`CubeFormat`,
+   `OdcsFormat`) and `semantic::format` as the selection function; the target is named
+   by the request (`RenderSemantic` over RPC), so there is no `ASTER_SEMANTIC_STORE`
+   environment variable — a render target is per request, not per deployment. Emission
+   reads a `TableSchema` plus the matching `DataContract` when one is loaded: Cube gets
+   `sql_table`, dimensions (type inferred from the engine's type name) and measures from
+   `semanticType: measure`, using the contract's `transformLogic` as the aggregation and
+   assuming `sum` (flagged in the file) when there is none; ODCS gets a v3.2 document
+   with `version`/`apiVersion`/`kind`/`id`, `team.name`, `schema[].properties[]`,
+   `required` and `semanticType`. The emitted contract is checked by parsing it back
+   through `contract.rs` rather than by dragging in `jsonschema`; validating against the
+   published schema stays a possible follow-up. Generation stays out of the `Catalog`
+   trait. Bound by `crates/core/features/semantic-models.feature`; the response also
+   carries the suggested path (`model/cubes/<table>.yml`, `contracts/<table>.yaml`).
 6. **Optional `kind=cube` query engine** (`POST /v1/cubesql` first, Postgres wire later),
    giving semantic queries first-class execution.
 

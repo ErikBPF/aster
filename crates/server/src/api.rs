@@ -297,4 +297,43 @@ impl api::Aster for AsterApi {
         }
         .into())
     }
+
+    async fn render_semantic(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, api::RenderSemanticRequest>,
+    ) -> ServiceResult<api::RenderSemanticResponse> {
+        let caller = caller(&self.state, &ctx).await?;
+        authorize(&caller, aster_core::Action::ReadNotebook).map_err(connect_error)?;
+        let requested = request.to_owned_message();
+
+        let catalog = self
+            .state
+            .catalogs
+            .get(&aster_core::CatalogId::new(requested.catalog.clone()))
+            .ok_or_else(|| {
+                ConnectError::not_found(format!("unknown catalog: {}", requested.catalog))
+            })?;
+        let table = aster_core::TableRef {
+            namespace: requested.namespace.clone(),
+            name: requested.table.clone(),
+        };
+        let schema = catalog.table_schema(&table).await.map_err(connect_error)?;
+        let contract = aster_core::for_table(&self.state.contracts, &table.name);
+        let format = aster_core::semantic::format(&requested.target).map_err(connect_error)?;
+        let content = format
+            .render(&aster_core::TableModel {
+                schema: &schema,
+                contract,
+            })
+            .map_err(connect_error)?;
+
+        Ok(api::RenderSemanticResponse {
+            target: format.target().to_string(),
+            path: format.path(&table),
+            content,
+            ..Default::default()
+        }
+        .into())
+    }
 }

@@ -25,6 +25,7 @@ must exist, and every selection site must refuse unknown names.
 | Sessions | `SessionRegistry` (`crates/core/src/state.rs`) | `valkey`, `memory` | `providers::state` on `ASTER_STATE_STORE` | `crates/core/features/session-state.feature` |
 | OIDC handshakes | `HandshakeStore` (`crates/core/src/state.rs`) | `valkey`, `memory` | `providers::state` on `ASTER_STATE_STORE` | `crates/core/features/session-state.feature` |
 | Working state | `UserState` (`crates/core/src/state.rs`) | `valkey`, `memory` | `providers::state` on `ASTER_STATE_STORE` | `crates/core/features/working-state.feature` |
+| Semantic format | `SemanticFormat` (`crates/core/src/semantic.rs`) | `cube` (semantic layer), `odcs` (data contract) | `semantic::format` on the `target` a render request names | `crates/core/features/semantic-models.feature` |
 
 Adding a provider = a new implementation plus one arm in the selection
 function (`crates/engines/src/lib.rs`, `crates/catalogs/src/lib.rs`, or
