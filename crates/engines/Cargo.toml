@@ -9,6 +9,9 @@ rust-version.workspace = true
 aster-core.workspace = true
 serde_json.workspace = true
 async-trait.workspace = true
+apache-spark-connect = "4.2.0"
+base64.workspace = true
+tokio.workspace = true
 reqwest.workspace = true
 
 [dev-dependencies]

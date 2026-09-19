@@ -13,7 +13,6 @@ use async_trait::async_trait;
 pub struct TrinoEngine {
     info: EngineInfo,
     client: reqwest::Client,
-    user: String,
 }
 
 impl TrinoEngine {
@@ -30,7 +29,6 @@ impl TrinoEngine {
                 routing_group,
             },
             client: reqwest::Client::new(),
-            user: "aster".into(),
         }
     }
 }
@@ -51,16 +49,14 @@ impl QueryEngine for TrinoEngine {
     }
 
     async fn execute(&self, request: QueryRequest) -> Result<QueryResult> {
-        let url = format!("{}/v1/statement", self.info.endpoint.trim_end_matches('/'));
+        let base = self.info.endpoint.trim_end_matches('/');
         let max_rows = request.max_rows.unwrap_or(1000);
+        let headers = statement_headers(&self.info, &request);
 
         let mut payload: serde_json::Value = self
             .client
-            .post(url)
-            .header("X-Trino-User", &self.user)
-            .header("X-Trino-Source", "aster")
-            .header("X-Trino-Client-Tags", "aster")
-            .headers(routing_headers(&self.info))
+            .post(format!("{base}/v1/statement"))
+            .headers(headers.clone())
             .body(request.sql)
             .send()
             .await
@@ -73,8 +69,6 @@ impl QueryEngine for TrinoEngine {
         let mut rows: Vec<Vec<serde_json::Value>> = Vec::new();
         let mut truncated = false;
 
-        // ponytail: follows nextUri but never issues the closing DELETE, so the
-        // engine may hold resources briefly. Add the DELETE when load matters.
         loop {
             if columns.is_empty() {
                 if let Some(found) = payload.get("columns").and_then(|value| value.as_array()) {
@@ -115,7 +109,8 @@ impl QueryEngine for TrinoEngine {
                 Some(next) => {
                     payload = self
                         .client
-                        .get(next)
+                        .get(engine_endpoint(&self.info, next))
+                        .headers(headers.clone())
                         .send()
                         .await
                         .map_err(|error| CoreError::Engine(error.to_string()))?
@@ -127,6 +122,19 @@ impl QueryEngine for TrinoEngine {
             }
         }
 
+        // A crawled page advertised more work; tell the coordinator to stop
+        // instead of leaving the query running after we stop reading it.
+        if truncated {
+            if let Some(next) = payload.get("nextUri").and_then(|value| value.as_str()) {
+                let _ = self
+                    .client
+                    .delete(engine_endpoint(&self.info, next))
+                    .headers(headers)
+                    .send()
+                    .await;
+            }
+        }
+
         Ok(QueryResult {
             columns,
             rows,
@@ -135,20 +143,56 @@ impl QueryEngine for TrinoEngine {
     }
 }
 
-/// Trino Gateway picks the backend pool from this header; without it the
-/// gateway uses its own default routing group.
-fn routing_headers(info: &EngineInfo) -> reqwest::header::HeaderMap {
+/// Trino Gateway picks the backend pool from the routing-group header; without
+/// it the gateway uses its own default. Catalog and schema are only sent when a
+/// cell asked for them, so the coordinator keeps its own defaults otherwise.
+fn statement_headers(info: &EngineInfo, request: &QueryRequest) -> reqwest::header::HeaderMap {
     let mut headers = reqwest::header::HeaderMap::new();
-    if let Some(group) = &info.routing_group {
-        if let Ok(value) = reqwest::header::HeaderValue::from_str(group) {
-            headers.insert("X-Trino-Routing-Group", value);
+    for (name, value) in [
+        ("X-Trino-User", Some("aster".to_string())),
+        ("X-Trino-Source", Some("aster".to_string())),
+        ("X-Trino-Client-Tags", Some("aster".to_string())),
+        ("X-Trino-Routing-Group", info.routing_group.clone()),
+        ("X-Trino-Catalog", request.catalog.clone()),
+        ("X-Trino-Schema", request.schema.clone()),
+    ] {
+        if let Some(value) = value {
+            if let Ok(value) = reqwest::header::HeaderValue::from_str(&value) {
+                headers.insert(name, value);
+            }
         }
     }
     headers
 }
 
+/// Follow-up pages come back as absolute URIs on the coordinator's own address,
+/// which is not reachable from (and would bypass) a gateway in front of it. Send
+/// them back to the endpoint the engine was configured with.
+fn engine_endpoint(info: &EngineInfo, advertised: &str) -> String {
+    let base = info.endpoint.trim_end_matches('/');
+    match reqwest::Url::parse(advertised) {
+        Ok(advertised) => match reqwest::Url::parse(&format!("{base}/")) {
+            Ok(mut url) => {
+                url.set_path(advertised.path());
+                url.set_query(advertised.query());
+                url.to_string()
+            }
+            Err(_) => advertised.to_string(),
+        },
+        Err(_) => {
+            let path = if advertised.starts_with('/') {
+                advertised.to_string()
+            } else {
+                format!("/{advertised}")
+            };
+            format!("{base}{path}")
+        }
+    }
+}
+
 pub struct SparkEngine {
     info: EngineInfo,
+    session: tokio::sync::OnceCell<spark_connect::SparkSession>,
 }
 
 impl SparkEngine {
@@ -164,7 +208,27 @@ impl SparkEngine {
                 endpoint: endpoint.into(),
                 routing_group,
             },
+            session: tokio::sync::OnceCell::new(),
         }
+    }
+
+    /// The client connects once per engine and reuses the session; the connect
+    /// itself is blocking, so it runs on the blocking pool.
+    async fn session(&self) -> Result<&spark_connect::SparkSession> {
+        self.session
+            .get_or_try_init(|| async {
+                let endpoint = connect_url(&self.info.endpoint);
+                let session = tokio::task::spawn_blocking(move || {
+                    spark_connect::SparkSession::builder()
+                        .remote(&endpoint)
+                        .get_or_create()
+                        .map_err(spark_error)
+                })
+                .await
+                .map_err(|error| CoreError::Engine(error.to_string()))?;
+                session
+            })
+            .await
     }
 }
 
@@ -175,13 +239,132 @@ impl QueryEngine for SparkEngine {
     }
 
     async fn health(&self) -> Health {
-        Health::Unavailable
+        match self.session().await {
+            Ok(_) => Health::Healthy,
+            Err(_) => Health::Unavailable,
+        }
     }
 
-    async fn execute(&self, _request: QueryRequest) -> Result<QueryResult> {
-        Err(CoreError::Engine(
-            "spark engine plugin not implemented yet".into(),
-        ))
+    async fn execute(&self, request: QueryRequest) -> Result<QueryResult> {
+        if let Some(catalog) = request.catalog.as_deref() {
+            if !catalog.is_empty() {
+                return Err(CoreError::Invalid(
+                    "the spark engine has no catalog switching yet".into(),
+                ));
+            }
+        }
+        let session = self.session().await?.clone();
+        let sql = request.sql;
+        let max_rows = request.max_rows.unwrap_or(1000);
+        tokio::task::spawn_blocking(move || run_spark_query(&session, &sql, max_rows))
+            .await
+            .map_err(|error| CoreError::Engine(error.to_string()))?
+    }
+}
+
+fn run_spark_query(
+    session: &spark_connect::SparkSession,
+    sql: &str,
+    max_rows: usize,
+) -> Result<QueryResult> {
+    let frame = session.sql(sql).map_err(spark_error)?;
+    let schema = frame.schema().map_err(spark_error)?;
+    let columns = match schema {
+        spark_connect::types::DataType::Struct { fields } => fields
+            .into_iter()
+            .map(|field| Column {
+                name: field.name,
+                data_type: field.data_type.simple_string(),
+            })
+            .collect(),
+        other => {
+            return Err(CoreError::Engine(format!(
+                "spark returned a non-tabular schema: {other}"
+            )))
+        }
+    };
+
+    // Ask for one row more than the cap so truncation is observable.
+    let cap = i32::try_from(max_rows).unwrap_or(i32::MAX - 1);
+    let rows = frame
+        .limit(cap.saturating_add(1))
+        .collect()
+        .map_err(spark_error)?;
+    let truncated = rows.len() > max_rows;
+    let rows = rows
+        .into_iter()
+        .take(max_rows)
+        .map(|row| row.into_values().iter().map(spark_value).collect())
+        .collect();
+
+    Ok(QueryResult {
+        columns,
+        rows,
+        truncated,
+    })
+}
+
+/// Spark values carry their own type; JSON is the wire shape the API already
+/// speaks, so the wider types keep their text form rather than losing precision.
+fn spark_value(value: &spark_connect::row::Value) -> serde_json::Value {
+    use spark_connect::row::Value;
+    match value {
+        Value::Null => serde_json::Value::Null,
+        Value::Bool(value) => (*value).into(),
+        Value::Byte(value) => (*value).into(),
+        Value::Short(value) => (*value).into(),
+        Value::Integer(value) => (*value).into(),
+        Value::Long(value) => (*value).into(),
+        Value::Float(value) => serde_json::Number::from_f64(f64::from(*value))
+            .map_or(serde_json::Value::Null, serde_json::Value::Number),
+        Value::Double(value) => serde_json::Number::from_f64(*value)
+            .map_or(serde_json::Value::Null, serde_json::Value::Number),
+        Value::String(value) => value.clone().into(),
+        Value::Binary(value) => {
+            use base64::Engine;
+            base64::engine::general_purpose::STANDARD
+                .encode(value)
+                .into()
+        }
+        Value::Date(days) => format!("{days} days since epoch").into(),
+        Value::Timestamp(micros) => format!("{micros} microseconds since epoch").into(),
+        Value::Decimal { value, .. } => value.clone().into(),
+        Value::List(values) => values.iter().map(spark_value).collect(),
+        Value::Map(entries) => entries
+            .iter()
+            .map(|(key, value)| (key.clone(), spark_value(value)))
+            .collect(),
+        Value::Struct(fields) => fields
+            .iter()
+            .map(|(name, value)| (name.clone(), spark_value(value)))
+            .collect(),
+        Value::Variant { value, .. } => {
+            use base64::Engine;
+            base64::engine::general_purpose::STANDARD
+                .encode(value)
+                .into()
+        }
+    }
+}
+
+fn spark_error(error: spark_connect::SparkError) -> CoreError {
+    CoreError::Engine(error.to_string())
+}
+
+/// The Spark client speaks its own `sc://host[:port][/;k=v]` connection string,
+/// while engine endpoints stay in the http(s) form every other engine uses.
+fn connect_url(endpoint: &str) -> String {
+    let (secure, authority) = match endpoint.split_once("://") {
+        Some(("sc", _)) => return endpoint.to_string(),
+        Some(("https", rest)) => (true, rest),
+        Some((_, rest)) => (false, rest),
+        None => (false, endpoint),
+    };
+    let authority = authority.trim_end_matches('/');
+    if secure {
+        format!("sc://{authority}/;use_ssl=true")
+    } else {
+        format!("sc://{authority}")
     }
 }
 
@@ -439,12 +622,136 @@ mod tests {
             endpoint: "http://gw:8080".into(),
             routing_group: Some("adhoc".into()),
         };
-        assert_eq!(routing_headers(&scoped)["x-trino-routing-group"], "adhoc");
+        let plain_request = QueryRequest {
+            sql: "select 1".into(),
+            catalog: None,
+            schema: None,
+            max_rows: None,
+        };
+        assert_eq!(
+            statement_headers(&scoped, &plain_request)["x-trino-routing-group"],
+            "adhoc"
+        );
 
         let plain = EngineInfo {
             routing_group: None,
             ..scoped.clone()
         };
-        assert!(routing_headers(&plain).is_empty());
+        let headers = statement_headers(&plain, &plain_request);
+        assert!(headers.get("x-trino-routing-group").is_none());
+        assert_eq!(headers["x-trino-user"], "aster");
+        assert_eq!(headers["x-trino-source"], "aster");
+    }
+
+    #[test]
+    fn catalog_and_schema_are_sent_only_when_asked_for() {
+        let info = EngineInfo {
+            id: EngineId::new("engine-1"),
+            kind: "trino".into(),
+            endpoint: "http://engine.invalid:8080".into(),
+            routing_group: None,
+        };
+        let scoped = QueryRequest {
+            sql: "select 1".into(),
+            catalog: Some("tpch".into()),
+            schema: Some("tiny".into()),
+            max_rows: None,
+        };
+        let headers = statement_headers(&info, &scoped);
+        assert_eq!(headers["x-trino-catalog"], "tpch");
+        assert_eq!(headers["x-trino-schema"], "tiny");
+
+        let unscoped = QueryRequest {
+            catalog: None,
+            schema: None,
+            ..scoped
+        };
+        let headers = statement_headers(&info, &unscoped);
+        assert!(headers.get("x-trino-catalog").is_none());
+        assert!(headers.get("x-trino-schema").is_none());
+    }
+
+    #[test]
+    fn spark_values_keep_their_type_on_the_wire() {
+        use spark_connect::row::Value;
+
+        assert_eq!(spark_value(&Value::Null), serde_json::Value::Null);
+        assert_eq!(spark_value(&Value::Bool(true)), serde_json::json!(true));
+        assert_eq!(spark_value(&Value::Long(42)), serde_json::json!(42));
+        assert_eq!(spark_value(&Value::Double(1.5)), serde_json::json!(1.5));
+        assert_eq!(spark_value(&Value::String("ada".into())), "ada");
+        assert_eq!(
+            spark_value(&Value::Decimal {
+                value: "12.30".into(),
+                precision: Some(12),
+                scale: Some(2),
+            }),
+            "12.30"
+        );
+        assert_eq!(
+            spark_value(&Value::Binary(vec![1, 2, 3])),
+            // Standard base64, as Spark's own JSON encoding uses.
+            "AQID"
+        );
+        assert_eq!(
+            spark_value(&Value::List(vec![Value::Long(1), Value::Null])),
+            serde_json::json!([1, null])
+        );
+        assert_eq!(
+            spark_value(&Value::Struct(vec![("n".into(), Value::Long(2))])),
+            serde_json::json!({"n": 2})
+        );
+    }
+
+    #[test]
+    fn spark_endpoints_become_connect_connection_strings() {
+        assert_eq!(
+            connect_url("http://spark-connect-aster:15002"),
+            "sc://spark-connect-aster:15002"
+        );
+        assert_eq!(
+            connect_url("https://spark.example.com:443/"),
+            "sc://spark.example.com:443/;use_ssl=true"
+        );
+        assert_eq!(connect_url("127.0.0.1:15002"), "sc://127.0.0.1:15002");
+        assert_eq!(connect_url("sc://host:15002"), "sc://host:15002");
+    }
+
+    #[tokio::test]
+    async fn a_spark_catalog_request_is_refused_before_connecting() {
+        let engine = SparkEngine::new("spark-live", "http://spark.invalid:15002", None);
+        let Err(error) = engine
+            .execute(QueryRequest {
+                sql: "select 1".into(),
+                catalog: Some("hive".into()),
+                schema: None,
+                max_rows: None,
+            })
+            .await
+        else {
+            panic!("expected a refusal");
+        };
+        assert!(error.to_string().contains("catalog"));
+    }
+
+    #[test]
+    fn a_foreign_next_uri_is_rerouted_to_the_configured_endpoint() {
+        let gateway = EngineInfo {
+            id: EngineId::new("engine-1"),
+            kind: "trino".into(),
+            endpoint: "http://gateway.invalid:8080/".into(),
+            routing_group: Some("lab".into()),
+        };
+        assert_eq!(
+            engine_endpoint(
+                &gateway,
+                "http://trino.trino.svc:8080/v1/statement/queued/2026_1/abc/1?slug=x",
+            ),
+            "http://gateway.invalid:8080/v1/statement/queued/2026_1/abc/1?slug=x"
+        );
+        assert_eq!(
+            engine_endpoint(&gateway, "/v1/statement/queued/2026_1/abc/1"),
+            "http://gateway.invalid:8080/v1/statement/queued/2026_1/abc/1"
+        );
     }
 }
