@@ -33,8 +33,9 @@ Feature: Repository conventions and starting setup
   Scenario: The chart renders valid Kubernetes resources
     Then the chart declares Chart.yaml, values.yaml and values.schema.json
     And every rendered resource validates against the Kubernetes schemas
-    And the values schema requires a Harbor repository and an immutable digest
+    And the values schema exposes a configurable image repository and accepts an immutable digest
+    And the chart names no private registry
 
   Scenario: Secrets never reach the repository or the values file
     Then no tracked *.secrets.json or .env file exists
-    And the chart takes secrets from an ExternalSecret rather than values
+    And the chart takes secrets from a Secret rather than values

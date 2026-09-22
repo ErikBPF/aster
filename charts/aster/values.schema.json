@@ -7,27 +7,51 @@
   "properties": {
     "image": {
       "type": "object",
-      "required": ["repository", "tag", "digest"],
+      "required": ["repository", "tag"],
       "properties": {
         "repository": {
           "type": "string",
-          "description": "Harbor project path; never a bare upstream registry.",
-          "pattern": "^harbor\\.platform\\.example\\.com/"
+          "minLength": 1,
+          "description": "Any image repository, local or remote. No registry is assumed."
         },
         "tag": { "type": "string", "minLength": 1 },
         "digest": {
           "type": "string",
-          "description": "Immutable image digest. The placeholder zero digest fails this pattern on purpose: a release must pin the published digest.",
-          "pattern": "^sha256:[0-9a-f]{64}$"
+          "description": "Optional immutable image digest; empty renders the tag alone.",
+          "anyOf": [
+            { "const": "" },
+            { "pattern": "^sha256:[0-9a-f]{64}$" }
+          ]
         },
         "pullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] }
       }
     },
+    "postgres": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "image": {
+          "type": "object",
+          "properties": {
+            "repository": { "type": "string", "minLength": 1 },
+            "tag": { "type": "string", "minLength": 1 }
+          }
+        },
+        "persistence": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "size": { "type": "string" },
+            "storageClassName": { "type": "string" }
+          }
+        }
+      }
+    },
     "database": {
       "type": "object",
-      "required": ["host", "port", "name", "user"],
+      "required": ["port", "name", "user"],
       "properties": {
-        "host": { "type": "string", "minLength": 1 },
+        "host": { "type": "string" },
         "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
         "name": { "type": "string", "minLength": 1 },
         "user": { "type": "string", "minLength": 1 },
@@ -124,12 +148,22 @@
         "size": { "type": "string" }
       }
     },
-    "externalSecret": {
+    "secrets": {
+      "type": "object",
+      "properties": {
+        "existingSecret": {
+          "type": "string",
+          "description": "Existing Secret to read database_url, state_url, oidc_client_secret and default from. Empty generates one."
+        }
+      }
+    },
+    "networkPolicy": {
       "type": "object",
       "properties": {
         "enabled": { "type": "boolean" },
-        "targetName": { "type": "string" },
-        "vaultPath": { "type": "string" }
+        "ingressNamespaces": { "type": "array", "items": { "type": "string" } },
+        "metricsNamespaces": { "type": "array", "items": { "type": "string" } },
+        "egressPorts": { "type": "array", "items": { "type": "integer" } }
       }
     }
   }

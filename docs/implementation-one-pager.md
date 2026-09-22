@@ -31,7 +31,7 @@ Notebook format is deliberate: a text `.aster` file (`# aster notebook v1`, `# t
 | Slice | Status | Note |
 |---|---|---|
 | S0 prerequisite runtime | **not started** | no Trino/Polaris/gateway in the platform (D6) |
-| S1 repo + identity scaffolding | **not started** | GitHub repo, Authentik client, OpenBao `lab/aster`, Harbor image |
+| S1 repo + identity scaffolding | **dropped (standalone)** | the GitHub repo exists; the Authentik client, OpenBao `lab/aster` and the Harbor image are out of scope because aster runs only on minikube |
 | S2 SSO | implemented | OIDC+PKCE; opaque session id in Valkey; dev seam only while no issuer is configured |
 | S3 git notebooks | implemented | branch-per-session, path-traversal guard, co-located unit tests |
 | S4 query authz + audit | implemented | one `execute_query` shared by REST and RPC; refusals audited with `ok:false` |
@@ -71,7 +71,7 @@ Still open and blocking: **D6** where Trino/Gateway/Polaris run (blocks S0 and t
 
 ## What continues / what waits
 
-Continues without a human decision: binding the remaining 12 drafts (the harness selects by tag, so removing `@unautomated` is the whole change), the S10 evaluation metric, editor polish, and Cube definition generation. Waits on the human: D6, D9, D10. Waits on S1: the Harbor image publish, then the S5 digest pin and the first Argo sync.
+Continues without a human decision: binding the remaining 12 drafts (the harness selects by tag, so removing `@unautomated` is the whole change), the S10 evaluation metric, editor polish, and Cube definition generation. Waits on the human: D6, D9, D10. S1 (Authentik, OpenBao, Harbor) and the S5 Argo sync are out of scope: aster is a standalone experiment that runs on minikube.
 
 ## Risks and recovery
 

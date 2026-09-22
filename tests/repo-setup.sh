@@ -60,11 +60,13 @@ check "the compose file is valid for the container engine" \
 for file in charts/aster/Chart.yaml charts/aster/values.yaml charts/aster/values.schema.json; do
   check "${file} exists" test -f "$file"
 done
-check "the chart ships an ExternalSecret template" test -f charts/aster/templates/externalsecret.yaml
+check "the chart ships a Secret template" test -f charts/aster/templates/secret.yaml
 check "the justfile renders and validates the chart" contains justfile 'kubeconform'
-check "the values schema requires a Harbor repository" \
-  bash -c 'grep -q "harbor" charts/aster/values.schema.json && grep -q "example" charts/aster/values.schema.json'
-check "the values schema requires an immutable digest" \
+check "the chart exposes a configurable image repository" \
+  contains charts/aster/values.schema.json '"repository"'
+check "the chart names no private registry" \
+  bash -c '! grep -qiE "harbor" charts/aster/values.yaml charts/aster/values.schema.json charts/aster/templates/*.yaml'
+check "the values schema accepts an immutable digest" \
   contains charts/aster/values.schema.json 'sha256:\[0-9a-f\]\{64\}'
 
 # --- secrets -----------------------------------------------------------------

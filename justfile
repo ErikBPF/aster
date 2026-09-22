@@ -1,14 +1,14 @@
 # aster workflows. Recipes are the single source of truth: CI, devenv's
 # `enterTest`, and humans all call into this file.
 #
-# The workspace compiles on the remote build host (`just remote-*`), which owns
-# the toolchain; devenv also provides it locally for quick edits and CI.
+# devenv provides the whole toolchain locally, so `just ci` needs nothing else.
+# The `just remote-*` recipes are an optional way to offload a build over ssh.
 default:
     @just --list
 
 root := justfile_directory()
 dev_image := "aster-dev:latest"
-host := env_var_or_default("ASTER_BUILD_HOST", "cache-host")
+host := env_var_or_default("ASTER_BUILD_HOST", "")
 remote := "devenv shell --"
 container_engine := env_var_or_default("CONTAINER_ENGINE", `command -v podman >/dev/null 2>&1 && echo podman || echo docker`)
 chart := "charts/aster"
@@ -121,6 +121,14 @@ chart-lint:
 
 chart-diff:
     helm template aster {{chart}}
+
+# Install the chart into the minikube cluster with the side-loaded image. The
+# engine and catalog pools must point at endpoints reachable from the namespace.
+chart-install: require-minikube
+    helm upgrade --install aster {{chart}} --namespace aster --create-namespace
+
+chart-uninstall:
+    helm uninstall aster --namespace aster || true
 
 # ------------------------------------------------------- local stack (minikube)
 # A self-contained development stack on a throwaway minikube cluster: aster
@@ -258,12 +266,16 @@ stack-status: require-minikube
 
 
 # ------------------------------------------------------------- remote build host
-# Building happens on {{host}} (32 cores) through its declared devenv; the local
-# checkout stays the source of truth and `sync` mirrors it with --delete so stale
-# files cannot survive. Build artefacts, devenv state and local run data are
-# excluded, and both sides ignore them.
+# Optional: offload a build to another host over ssh (`ASTER_BUILD_HOST`). The
+# local checkout stays the source of truth and `sync` mirrors it with --delete so
+# stale files cannot survive. Build artefacts, devenv state and local run data
+# are excluded, and both sides ignore them.
 
-sync:
+# Clear failure when the optional host is not configured.
+require-build-host:
+    @test -n "{{host}}" || { echo "ASTER_BUILD_HOST is unset: run 'just ci' locally, or set it to offload the build"; exit 1; }
+
+sync: require-build-host
     rsync -a --delete --exclude target --exclude .devenv --exclude data {{root}}/ {{host}}:~/aster/
 
 remote-check: sync

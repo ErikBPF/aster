@@ -1,23 +1,47 @@
-# Defaults are intentional placeholders: `just chart-lint` renders them, a
-# release must fill the ones marked TODO for release.
+# Defaults are intentional placeholders: `just chart-lint` renders them, and a
+# default install runs on any cluster with no private registry and no external
+# secret store. Credentials are never values: the chart generates them at
+# install time and keeps them in the Secret below, or reads an existing one.
 
 image:
-  repository: registry.example.invalid/library/aster
-  tag: "0.0.1"
-  # TODO for release: 64-hex digest of the published image.
-  digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  # Any registry/repository. The default is the image `just build-minikube`
+  # builds and side-loads, so a minikube install needs no registry at all.
+  repository: aster-server
+  tag: local
+  # Optional immutable digest; when set it wins over the tag.
+  digest: ""
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
 
 nameOverride: ""
 
+# In-chart Postgres for a self-contained install. A real deployment points
+# `database.host` at a managed instance and sets `postgres.enabled: false`.
+postgres:
+  enabled: true
+  image:
+    repository: postgres
+    tag: "17-alpine"
+  persistence:
+    enabled: true
+    size: 1Gi
+    # Empty uses the cluster's default StorageClass.
+    storageClassName: ""
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
 database:
-  host: postgres
+  # Empty points at the in-chart Postgres service; set a host to use your own.
+  host: ""
   port: 5432
   name: aster
   user: aster
-  # TODO for release: point at the managed Postgres.
   sslMode: disable
 
 engines:
@@ -47,20 +71,17 @@ server:
   # the only way in.
   grants: ""
   metricsPort: 9090
-  # OTLP endpoint for traces. Empty keeps tracing on stdout; the lab collector
-  # is otel-collector-opentelemetry-collector.observability.svc.cluster.local:4318.
+  # OTLP endpoint for traces. Empty keeps tracing on stdout.
   otlpEndpoint: ""
-  # `oidc` covers Authentik and Keycloak; the two differ only in these values.
+  # `oidc` is any OpenID Connect provider; the values below differ per IdP.
   # `none` accepts the development seam and is refused in a real deployment.
   identity:
     kind: oidc
     issuer: ""
     clientId: aster
-    # Space for Keycloak (it refuses a scope it does not define); Authentik
-    # defines a `groups` scope so `openid,groups` also works there.
     scopes: openid
     groupsClaim: groups
-    redirectUri: https://aster.example.invalid/callback
+    redirectUri: http://localhost:8080/callback
     adminGroup: aster-admins
     editorGroup: aster-editors
   resources:
@@ -87,34 +108,30 @@ service:
   port: 80
 
 ingress:
-  enabled: true
-  className: traefik
-  host: aster.example.invalid
+  enabled: false
+  className: ""
+  host: aster.local
 
 persistence:
   enabled: true
   size: 2Gi
-  # Platform contract: a PVC without storageClassName fails validation.
-  storageClassName: nfs-slow
+  # Empty uses the cluster's default StorageClass.
+  storageClassName: ""
   accessModes:
-    - ReadWriteMany
+    - ReadWriteOnce
 
-externalSecret:
-  enabled: true
-  targetName: aster-secret
-  secretStore:
-    name: vault-discovery
-    kind: ClusterSecretStore
-  vaultPath: lab/aster
-  refreshInterval: 1h
+secrets:
+  # Name of an existing Secret holding the database URL, the state URL and the
+  # OIDC client credential. When empty the chart generates its own, so a
+  # default install needs no external secret store.
+  existingSecret: ""
 
 networkPolicy:
-  enabled: true
-  ingressNamespace: traefik
-  # Prometheus scrapes the pod IP, so the namespace that owns the metric port
-  # must be allowed in explicitly.
-  metricsNamespace: monitoring
-  # Egress targets the data plane; keep it as narrow as the runtime allows.
+  enabled: false
+  # Namespaces allowed to reach the server port (for example an ingress
+  # controller) and the metrics port (for example a Prometheus operator).
+  ingressNamespaces: []
+  metricsNamespaces: []
   egressPorts:
     - 8080
     - 8181
@@ -122,31 +139,25 @@ networkPolicy:
     - 6379
     - 443
 
-# Prometheus scraping. The ServiceMonitor must carry the release label that
-# kube-prometheus-stack selects on; the platform contract forbids adding
-# scrape configs to the monitoring chart instead.
+# Prometheus scraping. Off by default because it needs the prometheus-operator
+# CRDs; the labels are the release selector kube-prometheus-stack looks for.
 metrics:
   serviceMonitor:
-    enabled: true
-    labels:
-      release: monitoring
+    enabled: false
+    labels: {}
 
-# Session and handshake state (D18/D20). One instance for aster alone; its
-# credential comes from Vault through the ExternalSecret below, never from here.
+# Session and handshake state (D18/D20). One instance for aster alone. The dev
+# default has no auth (reachable only inside the cluster); a shared deployment
+# sets `auth.enabled: true` and points `usersExistingSecret` at a Secret.
 valkey:
   enabled: true
   auth:
-    enabled: true
-    usersExistingSecret: aster-valkey-auth
-    # The chart requires the default user to be declared; its credential comes
-    # from the ExternalSecret (usersExistingSecret wins over an inline value).
-    aclUsers:
-      default:
-        permissions: "~* &* +@all"
+    enabled: false
   dataStorage:
     enabled: true
     requestedSize: 1Gi
-    className: local-path
+    # Empty uses the cluster's default StorageClass.
+    className: ""
   resources:
     requests:
       cpu: 20m

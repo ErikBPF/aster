@@ -267,8 +267,7 @@ values may be bare names or full paths (`/aster-admins`), so both IdPs map.
 `keycloak/aster-realm.json`: realm `aster`, groups `aster-admins` and
 `aster-editors`, users `root` (admin), `alice` (editor) and `bob` (viewer), and
 the confidential client `aster` with the group-membership mapper. The
-credentials in that file are development values. Keycloak has no Harbor proxy
-yet, which is why this service is local-only.
+credentials in that file are development values, and the service is local-only.
 
 Run the server on the host, not in compose: the issuer it discovers has to be
 the one the browser sees.
@@ -306,6 +305,6 @@ Thin vertical is implemented: SSO (or the dev seam) -> git-backed notebook ->
 pooled engine execution with per-subject grants -> audit row, plus catalog
 browsing, the controller, the TUI, LLM-assisted cells, data contracts, shared
 session/working state in Valkey and the gRPC/Connect RPC surface in
-`proto/aster.proto`. The deployment manifests live in `platform-gitops` under
-`apps/platform/aster` and stay unsynced until the prerequisite runtime (proposal
-D6) and the published Harbor image exist.
+`proto/aster.proto`. aster is a standalone experiment: it runs on minikube from
+`charts/aster` or the `k8s/stack/` manifests, pulling only public upstream
+images, and it is not deployed to the platform cluster.

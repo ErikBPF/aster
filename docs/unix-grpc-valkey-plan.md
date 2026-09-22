@@ -79,9 +79,9 @@ Consequences to accept:
 - Git remains the source of truth for notebook content; the Valkey working state
   is a draft buffer that a save promotes into a commit.
 - Deployment: a **dedicated Valkey for aster** (D18) — its own deployment in the
-  `aster` namespace from the official `valkey-io/valkey-helm` chart, auth via
-  `ExternalSecret` from `lab/aster`, digest-pinned Harbor image, NetworkPolicy
-  scoped to aster pods; compose and `k8s/stack/aster.yaml` gain a valkey service for
+  `aster` namespace from the official `valkey-io/valkey-helm` chart, its auth
+  secret rendered by the chart itself, a public image, NetworkPolicy scoped to
+  aster pods; compose and `k8s/stack/aster.yaml` gain a valkey service for
   local runs.
 
 ## 3. gRPC-native communication
