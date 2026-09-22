@@ -1,0 +1,139 @@
+# Single-node Trino so `aster` has a real engine: a coordinator that also
+# schedules work, with only the built-in tpch and memory catalogs. Its working
+# data lives in an emptyDir, so no storage class is involved. This is the
+# self-contained dev engine; the shared-cluster deployment lives in the Helm
+# chart. Shared tables (Iceberg/HMS/Delta) are a later slice.
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: trino-config}
+data:
+  config.properties: |
+    coordinator=true
+    node-scheduler.include-coordinator=true
+    http-server.http.port=8080
+    discovery.uri=http://localhost:8080
+    catalog.management=static
+    query.max-memory=1GB
+    query.max-memory-per-node=512MB
+  node.properties: |
+    node.environment=lab
+    node.id=trino-1
+    node.data-dir=/data/trino
+  jvm.config: |
+    -server
+    -Xmx2G
+    -XX:+UseG1GC
+    -XX:G1HeapRegionSize=32M
+    -XX:+ExplicitGCInvokesConcurrent
+    -XX:+HeapDumpOnOutOfMemoryError
+    -XX:+ExitOnOutOfMemoryError
+    -Djdk.attach.allowAttachSelf=true
+  tpch.properties: |
+    connector.name=tpch
+  memory.properties: |
+    connector.name=memory
+  polaris.properties: |
+    connector.name=iceberg
+    iceberg.catalog.type=rest
+    iceberg.rest-catalog.uri=http://polaris.polaris.svc.cluster.local:8181/api/catalog
+    iceberg.rest-catalog.security=OAUTH2
+    iceberg.rest-catalog.oauth2.credential=${ENV:CLIENT_ID}:${ENV:CLIENT_SECRET}
+    iceberg.rest-catalog.oauth2.scope=PRINCIPAL_ROLE:ALL
+    iceberg.rest-catalog.warehouse=quickstart_catalog
+    iceberg.rest-catalog.http-headers=Polaris-Realm: POLARIS
+    fs.s3.enabled=true
+    s3.endpoint=http://rustfs.polaris.svc.cluster.local:9000
+    s3.path-style-access=true
+    s3.region=us-west-2
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: trino, labels: {app: trino}}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: trino}}
+  template:
+    metadata: {labels: {app: trino}}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: trino
+          image: docker.io/trinodb/trino:483@sha256:db58cc93e593a2706553745f276bb119c9810e69918be56ecde088ba7ccb0534
+          ports: [{name: http, containerPort: 8080}]
+          env:
+            - {name: JAVA_TOOL_OPTIONS, value: "-Dfile.encoding=UTF-8"}
+            # Credentials for the Polaris Iceberg REST catalog (the `polaris`
+            # connector reads them from the properties file) and the static S3
+            # keys RustFS accepts.
+            - {name: CLIENT_ID, value: root}
+            - {name: CLIENT_SECRET, value: s3cr3t}
+            - {name: AWS_ACCESS_KEY_ID, value: rustfsadmin}
+            - {name: AWS_SECRET_ACCESS_KEY, value: rustfsadmin}
+            - {name: AWS_REGION, value: us-west-2}
+          volumeMounts:
+            - {name: config, mountPath: /etc/trino}
+            - {name: data, mountPath: /data/trino}
+          readinessProbe: {httpGet: {path: /v1/info, port: http}, initialDelaySeconds: 20, periodSeconds: 10, timeoutSeconds: 3}
+          livenessProbe: {httpGet: {path: /v1/info, port: http}, initialDelaySeconds: 60, periodSeconds: 20, timeoutSeconds: 3}
+          startupProbe: {httpGet: {path: /v1/info, port: http}, periodSeconds: 5, failureThreshold: 60}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          resources:
+            requests: {cpu: 500m, memory: 2Gi}
+            limits: {cpu: "2", memory: 3Gi}
+      volumes:
+        - name: config
+          configMap:
+            name: trino-config
+            items:
+              - {key: config.properties, path: config.properties}
+              - {key: node.properties, path: node.properties}
+              - {key: jvm.config, path: jvm.config}
+              - {key: tpch.properties, path: catalog/tpch.properties}
+              - {key: memory.properties, path: catalog/memory.properties}
+              - {key: polaris.properties, path: catalog/polaris.properties}
+        - name: data
+          emptyDir: {sizeLimit: 2Gi}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: trino}
+spec:
+  selector: {app: trino}
+  ports: [{name: http, port: 8080, targetPort: http}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: default-deny}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: trino-runtime}
+spec:
+  podSelector: {matchLabels: {app: trino}}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    # The gateway is in this namespace; aster and the TPC-H loader live in their
+    # own namespaces but query Trino over the same port.
+    - from:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: trino}}
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: aster}}
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: polaris}}
+      ports: [{protocol: TCP, port: 8080}]
+  egress:
+    - to:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}}
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+    # Polaris REST (8181) and the RustFS S3 endpoint (9000) for the Iceberg catalog.
+    - to:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: polaris}}
+      ports: [{protocol: TCP, port: 8181}, {protocol: TCP, port: 9000}]

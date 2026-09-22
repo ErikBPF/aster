@@ -83,7 +83,7 @@ impl QueryEngine for TrinoEngine {
             }
 
             if let Some(error) = payload.get("error") {
-                return Err(CoreError::Engine(
+                return Err(CoreError::Query(
                     error["message"]
                         .as_str()
                         .unwrap_or("trino error")
@@ -238,6 +238,12 @@ impl QueryEngine for SparkEngine {
         &self.info
     }
 
+    /// Spark Connect exposes no session catalog here, so aster must not push its
+    /// configured default onto a Spark cell — the engine would refuse it.
+    fn uses_catalog(&self) -> bool {
+        false
+    }
+
     async fn health(&self) -> Health {
         match self.session().await {
             Ok(_) => Health::Healthy,
@@ -347,8 +353,16 @@ fn spark_value(value: &spark_connect::row::Value) -> serde_json::Value {
     }
 }
 
+/// A gRPC-layer failure is a backend problem; anything the server answered with
+/// (analysis, parse, runtime) is the caller's statement and is surfaced as such.
 fn spark_error(error: spark_connect::SparkError) -> CoreError {
-    CoreError::Engine(error.to_string())
+    match error.kind {
+        spark_connect_core::error::SparkErrorKind::Connect
+        | spark_connect_core::error::SparkErrorKind::ConnectGrpc => {
+            CoreError::Engine(error.to_string())
+        }
+        _ => CoreError::Query(error.to_string()),
+    }
 }
 
 /// The Spark client speaks its own `sc://host[:port][/;k=v]` connection string,
@@ -753,5 +767,20 @@ mod tests {
             engine_endpoint(&gateway, "/v1/statement/queued/2026_1/abc/1"),
             "http://gateway.invalid:8080/v1/statement/queued/2026_1/abc/1"
         );
+    }
+
+    #[test]
+    fn a_statement_error_is_surfaced_and_a_transport_error_is_not() {
+        // The server answered with a classified error: the statement is at fault,
+        // so the caller sees the engine's own wording.
+        let statement = spark_error(spark_connect::SparkError::value(
+            "TABLE_OR_VIEW_NOT_FOUND",
+            &[],
+        ));
+        assert!(matches!(statement, CoreError::Query(_)));
+
+        // The gRPC layer never got an answer: a backend problem, kept generic.
+        let transport = spark_error(spark_connect::SparkError::connect_msg("connection refused"));
+        assert!(matches!(transport, CoreError::Engine(_)));
     }
 }

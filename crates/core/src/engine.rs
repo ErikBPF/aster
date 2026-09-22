@@ -59,6 +59,12 @@ pub struct QueryResult {
 #[async_trait]
 pub trait QueryEngine: Send + Sync {
     fn info(&self) -> &EngineInfo;
+    /// Whether the engine has a session catalog a bare `schema.table` resolves
+    /// against. Trino does; Spark Connect has none, so a default catalog must
+    /// not be pushed onto it.
+    fn uses_catalog(&self) -> bool {
+        true
+    }
     async fn health(&self) -> Health;
     async fn execute(&self, request: QueryRequest) -> Result<QueryResult>;
 }

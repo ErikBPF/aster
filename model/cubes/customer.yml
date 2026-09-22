@@ -1,0 +1,39 @@
+# Hand-authored Cube semantic model for the TPC-H seed table sales.customer.
+cubes:
+  - name: "customer"
+    sql_table: "sales.customer"
+    description: "TPC-H customer; one row per buying account"
+    dimensions:
+      - name: "custkey"
+        sql: "custkey"
+        type: number
+        primary_key: true
+      - name: "name"
+        sql: "name"
+        type: string
+      - name: "address"
+        sql: "address"
+        type: string
+      - name: "nationkey"
+        sql: "nationkey"
+        type: number
+      - name: "phone"
+        sql: "phone"
+        type: string
+      - name: "mktsegment"
+        sql: "mktsegment"
+        type: string
+      - name: "comment"
+        sql: "comment"
+        type: string
+    measures:
+      - name: "count"
+        type: count
+      - name: "total_account_balance"
+        sql: "acctbal"
+        type: sum
+        format: currency
+      - name: "average_account_balance"
+        sql: "acctbal"
+        type: avg
+        format: currency

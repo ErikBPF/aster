@@ -1,0 +1,43 @@
+# YuniKorn for the self-contained dev stack. DEV-ONLY: a cluster install uses
+# the Helm chart with its own values, and is not this stack's concern.
+#
+# Local images are side-loaded or pulled once, so IfNotPresent everywhere — the
+# chart default `Always` re-pulls on every restart and fails on a cold network.
+embedAdmissionController: true
+
+image:
+  pullPolicy: IfNotPresent
+pluginImage:
+  pullPolicy: IfNotPresent
+web:
+  image:
+    pullPolicy: IfNotPresent
+
+admissionController:
+  replicaCount: 1
+  image:
+    pullPolicy: IfNotPresent
+
+yunikornDefaults:
+  service.placeholderImage: registry.k8s.io/pause:3.10.1
+  # Only the Spark compute namespace goes through YuniKorn; nothing else in the
+  # cluster should have its scheduling hijacked.
+  admissionController.filtering.processNamespaces: "^spark-jobs$"
+
+  # One leaf per workload class. The Spark Connect server and its executor both
+  # ask for root.main, matching k8s/stack/spark-connect.yaml.
+  queues.yaml: |
+    partitions:
+      - name: default
+        # `provided` rule + create:false honours the submitted queue and refuses
+        # an unknown one instead of silently placing it at the root.
+        placementrules:
+          - name: provided
+            create: false
+        queues:
+          - name: root
+            submitacl: "*"   # required, else submissions are denied
+            queues:
+              - name: main
+                properties:
+                  application.sort.policy: fifo

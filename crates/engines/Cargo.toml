@@ -10,6 +10,9 @@ aster-core.workspace = true
 serde_json.workspace = true
 async-trait.workspace = true
 apache-spark-connect = "4.2.0"
+# For SparkErrorKind: the client crate re-exports SparkError but not the kind, and
+# the kind is what tells a statement error from a gRPC-layer failure.
+apache-spark-connect-core = "4.2.0"
 base64.workspace = true
 tokio.workspace = true
 reqwest.workspace = true

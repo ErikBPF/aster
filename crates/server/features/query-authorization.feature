@@ -28,6 +28,26 @@ Feature: Query authorization and audit
     Then the request is forwarded to the engine
     And an audit event is recorded for subject "alice"
 
+  Scenario: A statement the engine refuses is surfaced as a query error
+    Given subject "alice" is granted engine "trino-local"
+    And the engine refuses the statement with "Catalog must be specified when session catalog is not set"
+    When subject "alice" sends a query to "trino-local"
+    Then the response status is 400
+    And the error names the engine's reason
+
+  Scenario: The configured default catalog becomes the engine's session catalog
+    Given subject "alice" is granted engine "trino-local"
+    And the default catalog is "polaris"
+    When subject "alice" sends a query to "trino-local"
+    Then the query ran with catalog "polaris"
+
+  Scenario: An engine with no session catalog is not given the default
+    Given subject "alice" is granted engine "trino-local"
+    And the default catalog is "polaris"
+    And the engine has no session catalog
+    When subject "alice" sends a query to "trino-local"
+    Then the query ran without a catalog
+
   Scenario: Viewer role may not run queries
     Given subject "carol" has only the "viewer" role
     When subject "carol" sends a query

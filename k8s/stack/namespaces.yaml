@@ -1,0 +1,31 @@
+# Namespaces for the self-contained dev stack. A cluster install gets them from
+# its own manifests instead.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: aster
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: trino
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: spark-jobs
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: spark-operator
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: yunikorn
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: polaris

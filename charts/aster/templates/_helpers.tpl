@@ -18,3 +18,18 @@
 {{- end -}}
 {{- join "," $items -}}
 {{- end -}}
+
+{{/* Secret holding database_url, state_url, oidc_client_secret. */}}
+{{- define "aster.secretName" -}}
+{{- default (printf "%s-aster" .Release.Name) .Values.secrets.existingSecret -}}
+{{- end -}}
+
+{{/* Host of the metadata database: the in-chart service, or database.host. */}}
+{{- define "aster.databaseHost" -}}
+{{- default (printf "%s-postgres" .Release.Name) .Values.database.host -}}
+{{- end -}}
+
+{{/* Host of the bundled valkey service. */}}
+{{- define "aster.stateHost" -}}
+{{- printf "%s-valkey" .Release.Name -}}
+{{- end -}}

@@ -1,6 +1,6 @@
-# A real Open Data Contract Standard document (v3.2), which is what teams write.
-# aster reads name/id, team.name, schema[].properties[] and semanticType; every
-# other section is ignored on purpose.
+# ODCS v3.2 contract for the TPC-H seed table `polaris.sales.orders`
+# (oracle: TPC-H dbgen; types as Trino/Iceberg exposes them).
+# aster reads name/id, team.name, schema[].properties[] and semanticType.
 version: 3.2.0
 apiVersion: v3.2.0
 kind: DataContract
@@ -15,20 +15,33 @@ schema:
   - name: orders
     logicalType: object
     properties:
-      - name: order_id
+      - name: orderkey
         logicalType: bigint
         required: true
         primaryKey: true
         semanticType: column
-      - name: customer_id
+      - name: custkey
         logicalType: bigint
         required: true
         semanticType: dimension
-      - name: total
-        logicalType: decimal(12,2)
-        required: true
+      - name: orderstatus
+        logicalType: varchar
+        semanticType: dimension
+      - name: totalprice
+        logicalType: double
         semanticType: measure
-      - name: placed_at
-        logicalType: timestamp
-        required: true
+      - name: orderdate
+        logicalType: date
+        semanticType: dimension
+      - name: orderpriority
+        logicalType: varchar
+        semanticType: dimension
+      - name: clerk
+        logicalType: varchar
+        semanticType: dimension
+      - name: shippriority
+        logicalType: integer
+        semanticType: measure
+      - name: comment
+        logicalType: varchar
         semanticType: dimension

@@ -1,0 +1,34 @@
+# ODCS v3.2 contract for the TPC-H seed table `polaris.sales.partsupp`.
+version: 3.2.0
+apiVersion: v3.2.0
+kind: DataContract
+id: partsupp
+name: partsupp
+status: active
+description: one row per part-supplier pair; the composite key is (partkey, suppkey)
+team:
+  name: data-team
+domain: sales
+schema:
+  - name: partsupp
+    logicalType: object
+    properties:
+      - name: partkey
+        logicalType: bigint
+        required: true
+        primaryKey: true
+        semanticType: column
+      - name: suppkey
+        logicalType: bigint
+        required: true
+        primaryKey: true
+        semanticType: column
+      - name: availqty
+        logicalType: integer
+        semanticType: measure
+      - name: supplycost
+        logicalType: double
+        semanticType: measure
+      - name: comment
+        logicalType: varchar
+        semanticType: dimension

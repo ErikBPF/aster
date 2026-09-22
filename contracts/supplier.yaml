@@ -1,0 +1,38 @@
+# ODCS v3.2 contract for the TPC-H seed table `polaris.sales.supplier`.
+version: 3.2.0
+apiVersion: v3.2.0
+kind: DataContract
+id: supplier
+name: supplier
+status: active
+description: one row per supplier
+team:
+  name: data-team
+domain: sales
+schema:
+  - name: supplier
+    logicalType: object
+    properties:
+      - name: suppkey
+        logicalType: bigint
+        required: true
+        primaryKey: true
+        semanticType: column
+      - name: name
+        logicalType: varchar
+        semanticType: dimension
+      - name: address
+        logicalType: varchar
+        semanticType: dimension
+      - name: nationkey
+        logicalType: bigint
+        semanticType: dimension
+      - name: phone
+        logicalType: varchar
+        semanticType: dimension
+      - name: acctbal
+        logicalType: double
+        semanticType: measure
+      - name: comment
+        logicalType: varchar
+        semanticType: dimension

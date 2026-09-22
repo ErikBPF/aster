@@ -294,6 +294,40 @@ table.res td.num { text-align: right; }
 .list li { padding: 0.3rem 0; border-bottom: 1px solid var(--border); }
 .list li:last-child { border-bottom: 0; }
 
+/* SQL completion: a dropdown under the focused editor. Fixed so it can escape
+   the cell, and at least as wide as the editor it belongs to. */
+.complete {
+  position: fixed;
+  z-index: 30;
+  max-height: 15rem;
+  overflow-y: auto;
+  padding: 0.25rem;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  font: 13px/1.4 var(--mono);
+}
+.complete-item {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding: 0.25rem 0.4rem;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.complete-item.active { background: var(--accent); color: var(--accent-text); }
+.complete-kind {
+  flex: none;
+  width: 4.5rem;
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.complete-item.active .complete-kind { color: var(--accent-text); }
+
 @media (max-width: 720px) {
   .wrap { padding: 1rem 0.75rem 3rem; }
   .nav { display: none; }

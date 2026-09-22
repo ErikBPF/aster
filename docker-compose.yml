@@ -1,7 +1,10 @@
-# Local stack: metadata database, session state, API server, the reconcile
-# controller and a Keycloak used only to evaluate the identity port. Images are
-# fully qualified so podman short-name resolution never bites; Keycloak comes
-# from quay.io and has no Harbor proxy yet, which is why it is local-only.
+# Self-contained shell/UI stack: metadata database, session state, API server,
+# the reconcile controller and a Keycloak used only to evaluate the identity
+# port. It runs on mock engine and catalog providers, so it needs no compute
+# backends — for the real Trino/Spark path use the minikube stack
+# (`just stack-bootstrap`). Images are fully qualified so podman short-name
+# resolution never bites; Keycloak lives on quay.io, which is why it is picked
+# directly rather than through a registry proxy.
 services:
   valkey:
     image: docker.io/valkey/valkey:9.1.2-alpine
@@ -55,9 +58,9 @@ services:
     environment:
       ASTER_BIND: 0.0.0.0:8080
       DATABASE_URL: postgres://${POSTGRES_USER:-aster}:${POSTGRES_PASSWORD:-aster}@postgres:5432/${POSTGRES_DB:-aster}
-      ASTER_ENGINES: ${ASTER_ENGINES:-trino-local;trino;http://trino:8080}
-      ASTER_CATALOGS: ${ASTER_CATALOGS:-polaris-local;polaris;http://polaris:8181;quickstart_catalog}
-      ASTER_GRANTS: ${ASTER_GRANTS:-alice:trino-local}
+      ASTER_ENGINES: ${ASTER_ENGINES:-mock-local;mock;local}
+      ASTER_CATALOGS: ${ASTER_CATALOGS:-mock-local;mock;local}
+      ASTER_GRANTS: ${ASTER_GRANTS:-alice:mock-local}
       ASTER_NOTEBOOK_DIR: /data/notebooks
       ASTER_CONTRACTS_DIR: /etc/aster/contracts
       ASTER_STATE_URL: redis://:${VALKEY_PASSWORD:-aster-dev}@valkey:6379
@@ -91,8 +94,8 @@ services:
     entrypoint: ["/usr/local/bin/aster-controller"]
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-aster}:${POSTGRES_PASSWORD:-aster}@postgres:5432/${POSTGRES_DB:-aster}
-      ASTER_ENGINES: ${ASTER_ENGINES:-trino-local;trino;http://trino:8080}
-      ASTER_CATALOGS: ${ASTER_CATALOGS:-polaris-local;polaris;http://polaris:8181;quickstart_catalog}
+      ASTER_ENGINES: ${ASTER_ENGINES:-mock-local;mock;local}
+      ASTER_CATALOGS: ${ASTER_CATALOGS:-mock-local;mock;local}
       ASTER_RECONCILE_SECONDS: ${ASTER_RECONCILE_SECONDS:-30}
       ASTER_AUDIT_RETENTION_DAYS: ${ASTER_AUDIT_RETENTION_DAYS:-30}
     depends_on:

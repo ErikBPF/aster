@@ -1,0 +1,41 @@
+# ODCS v3.2 contract for the TPC-H seed table `polaris.sales.customer`.
+version: 3.2.0
+apiVersion: v3.2.0
+kind: DataContract
+id: customer
+name: customer
+status: active
+description: one row per customer
+team:
+  name: data-team
+domain: sales
+schema:
+  - name: customer
+    logicalType: object
+    properties:
+      - name: custkey
+        logicalType: bigint
+        required: true
+        primaryKey: true
+        semanticType: column
+      - name: name
+        logicalType: varchar
+        semanticType: dimension
+      - name: address
+        logicalType: varchar
+        semanticType: dimension
+      - name: nationkey
+        logicalType: bigint
+        semanticType: dimension
+      - name: phone
+        logicalType: varchar
+        semanticType: dimension
+      - name: acctbal
+        logicalType: double
+        semanticType: measure
+      - name: mktsegment
+        logicalType: varchar
+        semanticType: dimension
+      - name: comment
+        logicalType: varchar
+        semanticType: dimension

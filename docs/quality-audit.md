@@ -30,7 +30,7 @@ out of this audit are enforced in `CONTRIBUTING.md` and `AGENTS.md`.
 | Public enums are not all `#[non_exhaustive]` (`Health` is) | additive, mostly mechanical | next core touch |
 | `parse_engines` / `parse_catalogs` share one splitter implementation | generic extraction saves ~10 lines | next config change |
 | Role parsing lives in three places (core serde, `parse_role`, OIDC mapping) | one `FromStr` for `Role` in core is the fix | with the extractor work |
-| Chart had no `values.schema.json` | **done** — `charts/aster/values.schema.json` now pins the Harbor path and the digest shape | — |
+| Chart had no `values.schema.json` | **done** — `charts/aster/values.schema.json` now exposes a configurable image repository and an optional immutable digest | — |
 
 ## Second audit — shared state, RPC and sessions (2026-09-16)
 

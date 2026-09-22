@@ -1,0 +1,32 @@
+# Hand-authored Cube semantic model for the TPC-H seed table sales.supplier.
+cubes:
+  - name: "supplier"
+    sql_table: "sales.supplier"
+    description: "TPC-H supplier; one row per supplying account"
+    dimensions:
+      - name: "suppkey"
+        sql: "suppkey"
+        type: number
+        primary_key: true
+      - name: "name"
+        sql: "name"
+        type: string
+      - name: "address"
+        sql: "address"
+        type: string
+      - name: "nationkey"
+        sql: "nationkey"
+        type: number
+      - name: "phone"
+        sql: "phone"
+        type: string
+      - name: "comment"
+        sql: "comment"
+        type: string
+    measures:
+      - name: "count"
+        type: count
+      - name: "total_account_balance"
+        sql: "acctbal"
+        type: sum
+        format: currency

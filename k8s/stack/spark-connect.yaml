@@ -1,0 +1,93 @@
+# This stack's own Spark Connect server. It relies on YuniKorn and on the Spark
+# operator's CRDs, both installed by this stack, and the executor request stays
+# at 500m so it fits a laptop. It lives in `spark-jobs` because that is the only
+# namespace the operator watches.
+#
+# Spark is pinned to 4.1.3, not the 4.2.0 the Rust client uses, because the
+# Iceberg Spark runtime ships for 4.0/4.1 and there is no 4.2 artifact. The
+# `polaris` catalog below is the same Iceberg REST catalog Trino reads, so
+# `polaris.sales.<table>` resolves on both engines. The Iceberg jar is fetched
+# from Maven Central by the driver at start (spark.jars.packages) and handed to
+# the executors, so the first start is slower than the rest.
+#
+# Two operator behaviours to remember:
+#   * Changing sparkVersion does not roll the server pod or the Service selector.
+#     Delete the server pod AND the `spark-connect-aster` Service afterwards, or
+#     the selector keeps the old `spark-version` label and the Service ends up
+#     with no endpoints.
+#   * Polaris keeps its realm in memory, so a Polaris restart invalidates the
+#     OAuth token Spark cached. Restart the server pod after one.
+apiVersion: sparkoperator.k8s.io/v1alpha1
+kind: SparkConnect
+metadata:
+  name: aster-spark
+  labels: {app: aster-spark, app.kubernetes.io/part-of: aster}
+spec:
+  sparkVersion: 4.1.3
+  image: docker.io/apache/spark:4.1.3@sha256:bf9d035a7c32a8ca46aa58d6348182ffd7d2dff6409206ecfbb3915ff1fef211
+  server:
+    cores: 1
+    memory: 1g
+    service:
+      metadata: {name: spark-connect-aster}
+      spec:
+        ports: [{name: connect, port: 15002, protocol: TCP, targetPort: 15002}]
+    template:
+      metadata:
+        annotations:
+          yunikorn.apache.org/app-id: aster-spark
+          yunikorn.apache.org/queue: root.main
+      spec:
+        serviceAccount: spark-operator-spark
+        schedulerName: yunikorn
+        securityContext: {fsGroup: 185}
+        containers:
+          - name: spark-kubernetes-driver
+            image: docker.io/apache/spark:4.1.3@sha256:bf9d035a7c32a8ca46aa58d6348182ffd7d2dff6409206ecfbb3915ff1fef211
+            resources:
+              requests: {cpu: 500m, memory: 1Gi}
+              limits: {cpu: "1", memory: 2Gi}
+  executor:
+    cores: 1
+    instances: 1
+    memory: 2g
+    template:
+      metadata:
+        annotations:
+          yunikorn.apache.org/app-id: aster-spark
+          yunikorn.apache.org/queue: root.main
+      spec:
+        schedulerName: yunikorn
+        securityContext: {fsGroup: 185}
+        containers:
+          - name: spark-kubernetes-executor
+            image: docker.io/apache/spark:4.1.3@sha256:bf9d035a7c32a8ca46aa58d6348182ffd7d2dff6409206ecfbb3915ff1fef211
+            resources:
+              requests: {cpu: 500m, memory: 2Gi}
+              limits: {cpu: "1", memory: 3Gi}
+  sparkConf:
+    spark.kubernetes.container.image.pullPolicy: IfNotPresent
+    # The workers run hot; a 500m request fits where a guaranteed 1 CPU cannot.
+    spark.kubernetes.executor.request.cores: 500m
+
+    # Iceberg REST catalog, the same warehouse Trino's `polaris` connector reads.
+    # The AWS bundle is separate: the Spark runtime does not ship S3FileIO.
+    spark.jars.packages: org.apache.iceberg:iceberg-spark-runtime-4.1_2.13:1.11.0,org.apache.iceberg:iceberg-aws-bundle:1.11.0
+    # The image's HOME is not writable, so Ivy needs an explicit cache directory.
+    spark.jars.ivy: /tmp/.ivy2
+    spark.sql.extensions: org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions
+    spark.sql.defaultCatalog: polaris
+    spark.sql.catalog.polaris: org.apache.iceberg.spark.SparkCatalog
+    spark.sql.catalog.polaris.type: rest
+    spark.sql.catalog.polaris.uri: http://polaris.polaris.svc.cluster.local:8181/api/catalog
+    spark.sql.catalog.polaris.warehouse: quickstart_catalog
+    spark.sql.catalog.polaris.credential: root:s3cr3t
+    spark.sql.catalog.polaris.scope: PRINCIPAL_ROLE:ALL
+    spark.sql.catalog.polaris.header.Polaris-Realm: POLARIS
+    # Iceberg's S3 FileIO against RustFS; the keys are the dev credentials.
+    spark.sql.catalog.polaris.io-impl: org.apache.iceberg.aws.s3.S3FileIO
+    spark.sql.catalog.polaris.s3.endpoint: http://rustfs.polaris.svc.cluster.local:9000
+    spark.sql.catalog.polaris.s3.path-style-access: "true"
+    spark.sql.catalog.polaris.s3.access-key-id: rustfsadmin
+    spark.sql.catalog.polaris.s3.secret-access-key: rustfsadmin
+    spark.sql.catalog.polaris.s3.region: us-west-2

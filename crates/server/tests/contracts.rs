@@ -9,11 +9,11 @@
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use aster_core::{
     AppConfig, AuditSink, Catalog, CatalogConfig, CatalogId, CatalogRegistry, Column, ColumnSchema,
-    EngineConfig, EngineId, EngineInfo, EngineRegistry, Grants, Health, InMemoryAudit,
+    CoreError, EngineConfig, EngineId, EngineInfo, EngineRegistry, Grants, Health, InMemoryAudit,
     InMemoryGrants, InMemoryHandshakes, InMemoryLlm, InMemorySessions, InMemoryUserState,
     Namespace, NotebookStore, QueryEngine, QueryRequest, QueryResult, TableRef, TableSchema,
     UserState, WorkingState,
@@ -26,10 +26,16 @@ use cucumber::{given, then, when, World};
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
-/// Counts executions so "the request is forwarded to the engine" is observable.
+/// Counts executions so "the request is forwarded to the engine" is observable,
+/// and can be told to refuse the statement so the query-error path is drivable.
 struct StubEngine {
     info: EngineInfo,
     calls: Arc<AtomicUsize>,
+    refusal: Arc<Mutex<Option<String>>>,
+    /// The session catalog the last execute saw, so the defaulting is observable.
+    catalog_seen: Arc<Mutex<Option<String>>>,
+    /// Stands in for an engine with no session catalog (Spark) when true.
+    without_catalog: bool,
 }
 
 #[async_trait::async_trait]
@@ -38,12 +44,20 @@ impl QueryEngine for StubEngine {
         &self.info
     }
 
+    fn uses_catalog(&self) -> bool {
+        !self.without_catalog
+    }
+
     async fn health(&self) -> Health {
         Health::Healthy
     }
 
-    async fn execute(&self, _request: QueryRequest) -> aster_core::Result<QueryResult> {
+    async fn execute(&self, request: QueryRequest) -> aster_core::Result<QueryResult> {
         self.calls.fetch_add(1, Ordering::SeqCst);
+        *self.catalog_seen.lock().expect("catalog lock") = request.catalog.clone();
+        if let Some(message) = self.refusal.lock().expect("refusal lock").clone() {
+            return Err(CoreError::Query(message));
+        }
         Ok(QueryResult {
             columns: vec![Column {
                 name: "one".into(),
@@ -106,6 +120,14 @@ impl Catalog for StubCatalog {
 struct Contract {
     /// Executions of the stub engine, observable across steps.
     calls: Arc<AtomicUsize>,
+    /// When set, the stub engine refuses the statement with this message.
+    refusal: Arc<Mutex<Option<String>>>,
+    /// The session catalog the stub engine last saw.
+    catalog_seen: Arc<Mutex<Option<String>>>,
+    /// The configured default catalog for the query path.
+    default_catalog: Option<String>,
+    /// Makes the stub engine one without a session catalog.
+    engine_without_catalog: bool,
     /// Temporary git checkout for the notebook scenarios.
     dir: Option<PathBuf>,
     grants: Option<Arc<InMemoryGrants>>,
@@ -170,6 +192,9 @@ impl Contract {
                 routing_group: None,
             },
             calls: Arc::clone(&self.calls),
+            refusal: Arc::clone(&self.refusal),
+            catalog_seen: Arc::clone(&self.catalog_seen),
+            without_catalog: self.engine_without_catalog,
         }));
         let mut catalogs = CatalogRegistry::new();
         catalogs.register(Arc::new(StubCatalog {
@@ -196,9 +221,11 @@ impl Contract {
                 kind: "stub".into(),
                 endpoint: "http://catalog.invalid".into(),
                 catalog: None,
+                token: None,
+                credential: None,
             }],
             default_engine: self.default_engine.as_ref().map(|engine| engine.0.clone()),
-            default_catalog: None,
+            default_catalog: self.default_catalog.clone(),
         };
 
         let notebooks: Arc<dyn NotebookStore> = Arc::new(
@@ -387,6 +414,21 @@ async fn notebook_branch(_world: &mut Contract, _branch: String) {}
 #[given(expr = "subject {string} has no grant for engine {string}")]
 async fn no_grant(_world: &mut Contract, _subject: String, _engine: String) {}
 
+#[given(expr = "the engine refuses the statement with {string}")]
+async fn engine_refuses(world: &mut Contract, message: String) {
+    *world.refusal.lock().expect("refusal lock") = Some(message);
+}
+
+#[given(expr = "the default catalog is {string}")]
+async fn default_catalog(world: &mut Contract, catalog: String) {
+    world.default_catalog = Some(catalog);
+}
+
+#[given(expr = "the engine has no session catalog")]
+async fn engine_without_catalog(world: &mut Contract) {
+    world.engine_without_catalog = true;
+}
+
 #[given(expr = "subject {string} is granted engine {string}")]
 async fn is_granted(world: &mut Contract, subject: String, engine: String) {
     world
@@ -500,6 +542,77 @@ async fn query(world: &mut Contract, subject: String) {
 async fn read_audit(world: &mut Contract, subject: String, role: String) {
     let request = caller("GET", "/api/audit", Some(&subject), &role, None);
     world.send(request).await;
+}
+
+/// Percent-encode for the query string: `Request::builder().uri` rejects the
+/// spaces and `*` a SQL snippet carries.
+fn encode(value: &str) -> String {
+    value
+        .bytes()
+        .map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (byte as char).to_string()
+            }
+            other => format!("%{other:02X}"),
+        })
+        .collect()
+}
+
+#[when(expr = "subject {string} asks for completion after {string}")]
+async fn completion_after(world: &mut Contract, subject: String, sql: String) {
+    let path = format!("/api/sql/complete?sql={}", encode(&sql));
+    let request = caller("GET", &path, Some(&subject), "editor", None);
+    world.send(request).await;
+}
+
+#[then(expr = "the suggestions include catalog {string}")]
+async fn suggestions_include_catalog(world: &mut Contract, label: String) {
+    assert_suggestion(world, &label, "catalog");
+}
+
+#[then(expr = "the suggestions include schema {string}")]
+async fn suggestions_include_schema(world: &mut Contract, label: String) {
+    assert_suggestion(world, &label, "schema");
+}
+
+#[then(expr = "the suggestions are empty")]
+async fn suggestions_are_empty(world: &mut Contract) {
+    let items = suggestions(world);
+    assert!(items.is_empty(), "expected no suggestions, got {items:?}");
+}
+
+/// A name that is not a plain identifier has to reach the cell quoted, or the
+/// suggestion would produce SQL the engine refuses.
+#[then(expr = "the catalog {string} is suggested quoted")]
+async fn catalog_suggested_quoted(world: &mut Contract, label: String) {
+    let items = suggestions(world);
+    let item = items
+        .iter()
+        .find(|item| item.get("label").and_then(Value::as_str) == Some(&label))
+        .unwrap_or_else(|| panic!("no suggestion for {label:?} in {items:?}"));
+    let insert = item
+        .get("insert")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert_eq!(insert, format!("\"{label}\""), "unquoted insert");
+}
+
+fn suggestions(world: &Contract) -> Vec<Value> {
+    world
+        .json
+        .as_ref()
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn assert_suggestion(world: &Contract, label: &str, kind: &str) {
+    let items = suggestions(world);
+    let found = items.iter().any(|item| {
+        item.get("label").and_then(Value::as_str) == Some(label)
+            && item.get("kind").and_then(Value::as_str) == Some(kind)
+    });
+    assert!(found, "expected a {kind} suggestion {label:?} in {items:?}");
 }
 
 #[when(expr = "subject {string} saves notebook {string} with one cell {string}")]
@@ -738,6 +851,43 @@ async fn error_names_grant(world: &mut Contract) {
     assert!(
         message.contains("not granted") && message.contains("trino-local"),
         "unhelpful error: {message}"
+    );
+}
+
+/// The engine's own wording reaches the caller, rather than the generic message
+/// the 5xx path hands out: a statement mistake has to read as a statement mistake.
+/// A statement with no qualifier needs the configured default to reach the
+/// engine as its session catalog, or Trino refuses it outright.
+#[then(expr = "the query ran with catalog {string}")]
+async fn ran_with_catalog(world: &mut Contract, catalog: String) {
+    let seen = world.catalog_seen.lock().expect("catalog lock").clone();
+    assert_eq!(seen.as_deref(), Some(catalog.as_str()), "session catalog");
+}
+
+#[then(expr = "the query ran without a catalog")]
+async fn ran_without_catalog(world: &mut Contract) {
+    let seen = world.catalog_seen.lock().expect("catalog lock").clone();
+    assert!(seen.is_none(), "expected no session catalog, saw {seen:?}");
+}
+
+#[then(expr = "the error names the engine's reason")]
+async fn error_names_engine_reason(world: &mut Contract) {
+    let expected = world
+        .refusal
+        .lock()
+        .expect("refusal lock")
+        .clone()
+        .expect("a refusal was configured");
+    let message = world
+        .json
+        .as_ref()
+        .and_then(|value| value.get("error"))
+        .and_then(Value::as_str)
+        .unwrap_or(&world.body)
+        .to_string();
+    assert!(
+        message.contains(&expected),
+        "expected the engine's message {expected:?}, got {message:?}"
     );
 }
 

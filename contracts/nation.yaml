@@ -1,0 +1,29 @@
+# ODCS v3.2 contract for the TPC-H seed table `polaris.sales.nation`.
+version: 3.2.0
+apiVersion: v3.2.0
+kind: DataContract
+id: nation
+name: nation
+status: active
+description: one row per nation; joins customer and supplier to region
+team:
+  name: data-team
+domain: sales
+schema:
+  - name: nation
+    logicalType: object
+    properties:
+      - name: nationkey
+        logicalType: bigint
+        required: true
+        primaryKey: true
+        semanticType: column
+      - name: name
+        logicalType: varchar
+        semanticType: dimension
+      - name: regionkey
+        logicalType: bigint
+        semanticType: dimension
+      - name: comment
+        logicalType: varchar
+        semanticType: dimension

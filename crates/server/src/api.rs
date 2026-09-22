@@ -48,7 +48,9 @@ fn connect_error(error: CoreError) -> ConnectError {
     match error {
         CoreError::Unauthorized(message) => ConnectError::permission_denied(message),
         CoreError::NotFound(message) => ConnectError::not_found(message),
-        CoreError::Invalid(message) => ConnectError::invalid_argument(message),
+        CoreError::Invalid(message) | CoreError::Query(message) => {
+            ConnectError::invalid_argument(message)
+        }
         other => {
             tracing::error!(%other, "rpc failed");
             ConnectError::internal("upstream dependency failed")
