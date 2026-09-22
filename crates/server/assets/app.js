@@ -138,6 +138,14 @@ function cellTemplate(id, sql, engine) {
     resize(area);
     setDirty(true);
   });
+  /* Suggestions follow the token under the caret: a trailing word character or
+   * dot keeps them coming, anything else dismisses the list. */
+  area.addEventListener('input', () => {
+    if (/[A-Za-z0-9_."-]$/.test(area.value.slice(0, area.selectionStart))) scheduleComplete(area);
+    else closeComplete();
+  });
+  area.addEventListener('keydown', (event) => completeKeydown(event, area));
+  area.addEventListener('blur', () => closeComplete());
 
   const out = document.createElement('div');
   out.className = 'out';
@@ -492,6 +500,125 @@ function filterList(input) {
   const needle = input.value.trim().toLowerCase();
   for (const item of document.querySelectorAll('[data-name]')) {
     item.classList.toggle('hidden', needle !== '' && !item.dataset.name.toLowerCase().includes(needle));
+  }
+}
+
+/* ---- sql completion -------------------------------------------------- */
+
+/* A dropdown under the focused editor. Suggestions come from the server, which
+ * knows the catalogs and their namespaces; the browser only has to place the
+ * box, keep a selection and splice the chosen label into the cell. */
+const completeBox = document.createElement('div');
+completeBox.className = 'complete hidden';
+document.body.appendChild(completeBox);
+
+let completeState = { area: null, start: 0, items: [], index: 0 };
+let completeTimer = null;
+
+function tokenBefore(text, caret) {
+  const match = text.slice(0, caret).match(/[A-Za-z0-9_."-]*$/);
+  return match ? match[0] : '';
+}
+
+function completeOpen() {
+  return !completeBox.classList.contains('hidden');
+}
+
+function closeComplete() {
+  clearTimeout(completeTimer);
+  completeBox.classList.add('hidden');
+  completeBox.replaceChildren();
+  completeState = { area: null, start: 0, items: [], index: 0 };
+}
+
+function renderComplete() {
+  completeBox.replaceChildren();
+  completeState.items.forEach((item, index) => {
+    const row = document.createElement('div');
+    row.className = 'complete-item' + (index === completeState.index ? ' active' : '');
+    const kind = document.createElement('span');
+    kind.className = 'complete-kind';
+    kind.textContent = item.kind;
+    const label = document.createElement('span');
+    label.textContent = item.label;
+    row.append(kind, label);
+    /* mousedown, not click: the editor must not lose focus first. */
+    row.addEventListener('mousedown', (event) => {
+      event.preventDefault();
+      acceptComplete(index);
+    });
+    completeBox.appendChild(row);
+  });
+}
+
+function showComplete(area, items, start) {
+  completeState = { area, start, items, index: 0 };
+  const rect = area.getBoundingClientRect();
+  completeBox.style.left = rect.left + 'px';
+  completeBox.style.top = rect.bottom + 2 + 'px';
+  completeBox.style.minWidth = Math.max(rect.width, 240) + 'px';
+  completeBox.classList.remove('hidden');
+  renderComplete();
+}
+
+async function requestComplete(area) {
+  const caret = area.selectionStart;
+  const token = tokenBefore(area.value, caret);
+  let items;
+  try {
+    const res = await fetch(
+      '/api/sql/complete?sql=' + encodeURIComponent(area.value.slice(0, caret)),
+    );
+    if (!res.ok) return closeComplete();
+    items = await res.json();
+  } catch (error) {
+    return closeComplete();
+  }
+  if (!Array.isArray(items) || items.length === 0) return closeComplete();
+  showComplete(area, items, caret - token.length);
+}
+
+function scheduleComplete(area) {
+  clearTimeout(completeTimer);
+  completeTimer = setTimeout(() => requestComplete(area), 120);
+}
+
+function acceptComplete(index) {
+  const { area, start, items } = completeState;
+  if (!area || !items[index]) return;
+  /* `insert` is the label quoted when SQL needs it; plain names are identical. */
+  const text = items[index].insert || items[index].label;
+  const caret = area.selectionStart;
+  area.value = area.value.slice(0, start) + text + area.value.slice(caret);
+  const position = start + text.length;
+  area.setSelectionRange(position, position);
+  resize(area);
+  setDirty(true);
+  closeComplete();
+  area.focus();
+}
+
+function completeKeydown(event, area) {
+  if ((event.metaKey || event.ctrlKey) && event.key === ' ') {
+    event.preventDefault();
+    return requestComplete(area);
+  }
+  if (!completeOpen()) return;
+  const { items } = completeState;
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    event.preventDefault();
+    const step = event.key === 'ArrowDown' ? 1 : -1;
+    completeState.index = (completeState.index + step + items.length) % items.length;
+    return renderComplete();
+  }
+  if ((event.key === 'Tab' || event.key === 'Enter') && !event.metaKey && !event.ctrlKey && !event.shiftKey) {
+    event.preventDefault();
+    event.stopPropagation();
+    return acceptComplete(completeState.index);
+  }
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    closeComplete();
   }
 }
 

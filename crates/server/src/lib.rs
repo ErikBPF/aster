@@ -27,7 +27,7 @@ mod telemetry;
 mod web;
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -220,15 +220,17 @@ impl IntoResponse for ApiError {
         let status = match self.0 {
             CoreError::Unauthorized(_) => StatusCode::FORBIDDEN,
             CoreError::NotFound(_) => StatusCode::NOT_FOUND,
-            CoreError::Invalid(_) => StatusCode::BAD_REQUEST,
+            CoreError::Invalid(_) | CoreError::Query(_) => StatusCode::BAD_REQUEST,
             _ => StatusCode::BAD_GATEWAY,
         };
         // 5xx details can carry git stderr or upstream internals: log them and
-        // hand the client a generic message.
+        // hand the client a generic message. A `Query` error is the engine
+        // rejecting the statement, so its own wording is what the caller needs.
         let message = match &self.0 {
             CoreError::Unauthorized(message)
             | CoreError::NotFound(message)
-            | CoreError::Invalid(message) => message.clone(),
+            | CoreError::Invalid(message)
+            | CoreError::Query(message) => message.clone(),
             other => {
                 tracing::error!(error = %other, "request failed");
                 "upstream dependency failed".to_string()
@@ -278,9 +280,20 @@ pub(crate) async fn execute_query(
         .or_else(|| state.config.default_engine.clone())
         .map(EngineId::new);
 
+    // The cell's catalog, else the configured default — but only for an engine
+    // that has a session catalog at all: Spark has none and refuses one, so the
+    // default must not be pushed onto a Spark cell.
+    let catalog = match engine_id.as_ref().and_then(|id| state.engines.get(id)) {
+        Some(engine) if engine.uses_catalog() => body
+            .catalog
+            .clone()
+            .or_else(|| state.config.default_catalog.clone()),
+        _ => body.catalog.clone(),
+    };
+
     let started = Instant::now();
     let outcome = match authorize(principal, aster_core::Action::RunQuery) {
-        Ok(()) => run_attempt(state, principal, body, engine_id.as_ref()).await,
+        Ok(()) => run_attempt(state, principal, body, engine_id.as_ref(), catalog.clone()).await,
         Err(error) => Err(error),
     };
     let latency_ms = started.elapsed().as_millis() as u64;
@@ -294,7 +307,7 @@ pub(crate) async fn execute_query(
         // A refusal before routing has no engine: name that in the trail instead
         // of dropping the attempt.
         engine: engine_id.unwrap_or_else(|| EngineId::new("(unrouted)")),
-        catalog: body.catalog.clone(),
+        catalog,
         schema: body.schema.clone(),
         sql: body.sql.clone(),
         latency_ms,
@@ -313,6 +326,7 @@ async fn run_attempt(
     principal: &Principal,
     body: &QueryBody,
     engine_id: Option<&EngineId>,
+    catalog: Option<String>,
 ) -> Result<aster_core::QueryResult, CoreError> {
     let engine_id =
         engine_id.ok_or_else(|| CoreError::Invalid("no engine selected and no default".into()))?;
@@ -324,7 +338,7 @@ async fn run_attempt(
     engine
         .execute(QueryRequest {
             sql: body.sql.clone(),
-            catalog: body.catalog.clone(),
+            catalog,
             schema: body.schema.clone(),
             max_rows: body.max_rows,
         })
@@ -532,6 +546,143 @@ async fn list_notebooks(
     Ok(Json(state.notebooks.list(&principal.subject).await?))
 }
 
+#[derive(Deserialize)]
+pub(crate) struct CompleteQuery {
+    /// The cell text up to the caret: the dotted name being typed is its tail.
+    sql: String,
+}
+
+#[derive(Serialize)]
+struct Candidate {
+    label: String,
+    kind: &'static str,
+    /// What to put in the cell: the label quoted when it is not a plain SQL
+    /// identifier (a catalog like `polaris-local` has to be `"polaris-local"`).
+    insert: String,
+}
+
+/// Quoted when it has to be: `polaris-local` is a catalog name, not an identifier.
+fn insert_text(label: &str) -> String {
+    let mut chars = label.chars();
+    let plain = matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if plain {
+        label.to_string()
+    } else {
+        format!("\"{}\"", label.replace('"', "\"\""))
+    }
+}
+
+fn candidate(label: String, kind: &'static str) -> Candidate {
+    let insert = insert_text(&label);
+    Candidate {
+        label,
+        kind,
+        insert,
+    }
+}
+
+/// Offered when the caret is not inside a dotted name. Kept short on purpose:
+/// the point of the list is the namespace objects, not a full grammar.
+const SQL_KEYWORDS: &[&str] = &[
+    "SELECT",
+    "FROM",
+    "WHERE",
+    "GROUP BY",
+    "ORDER BY",
+    "HAVING",
+    "LIMIT",
+    "JOIN",
+    "LEFT JOIN",
+    "INNER JOIN",
+    "ON",
+    "AS",
+    "WITH",
+    "UNION",
+    "DISTINCT",
+    "CREATE TABLE",
+    "CREATE SCHEMA",
+    "INSERT INTO",
+    "DESCRIBE",
+    "SHOW SCHEMAS",
+    "SHOW TABLES",
+    "EXPLAIN",
+];
+
+/// The dotted path the caret sits in: `select * from polaris.sales.par` gives
+/// `["polaris", "sales", "par"]`, and a trailing dot yields a final empty part.
+/// Quotes are kept so `"polaris-local".sales.` parses, then stripped per part.
+fn dotted_path(text: &str) -> Vec<&str> {
+    let tail = text.trim_end();
+    let start = tail
+        .rfind(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.' || c == '-' || c == '"'))
+        .map(|index| index + 1)
+        .unwrap_or(0);
+    tail[start..]
+        .split('.')
+        .map(|part| part.trim_matches('"'))
+        .collect()
+}
+
+/// Completion for the editor. It never fails the request: an unreachable catalog
+/// just yields fewer suggestions, because a suggestion list must not interrupt
+/// typing — which is also why an unknown catalog is not an error here.
+async fn complete(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(params): Query<CompleteQuery>,
+) -> Result<Json<Vec<Candidate>>, ApiError> {
+    let principal = principal(&state, &headers).await?;
+    authorize(&principal, aster_core::Action::ReadNotebook)?;
+
+    let path = dotted_path(&params.sql);
+    let (catalog, schema, prefix) = match path.as_slice() {
+        [prefix] => (None, None, *prefix),
+        [catalog, prefix] => (Some(*catalog), None, *prefix),
+        [catalog, schema, prefix, ..] => (Some(*catalog), Some(*schema), *prefix),
+        [] => (None, None, ""),
+    };
+    let prefix = prefix.to_ascii_lowercase();
+    let wanted = |label: &str| label.to_ascii_lowercase().starts_with(&prefix);
+
+    let mut candidates = Vec::new();
+    let Some(catalog) = catalog else {
+        for entry in state.catalogs.list() {
+            let label = entry.id().0.clone();
+            if wanted(&label) {
+                candidates.push(candidate(label, "catalog"));
+            }
+        }
+        for keyword in SQL_KEYWORDS {
+            if wanted(keyword) {
+                candidates.push(candidate((*keyword).to_string(), "keyword"));
+            }
+        }
+        return Ok(Json(candidates));
+    };
+
+    let Some(entry) = state.catalogs.get(&CatalogId::new(catalog)) else {
+        return Ok(Json(candidates));
+    };
+    match schema {
+        Some(schema) => {
+            for table in entry.list_tables(schema).await.unwrap_or_default() {
+                if wanted(&table.name) {
+                    candidates.push(candidate(table.name, "table"));
+                }
+            }
+        }
+        None => {
+            for namespace in entry.list_namespaces().await.unwrap_or_default() {
+                if wanted(&namespace.name) {
+                    candidates.push(candidate(namespace.name, "schema"));
+                }
+            }
+        }
+    }
+    Ok(Json(candidates))
+}
+
 async fn get_notebook(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -590,6 +741,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/api/catalogs", get(list_catalogs))
         .route("/api/contracts", get(list_contracts))
         .route("/api/query", post(run_query))
+        .route("/api/sql/complete", get(complete))
         .route("/api/audit", get(list_audit))
         .route("/api/state", get(get_state).put(put_state))
         .route("/api/notebooks", get(list_notebooks))
