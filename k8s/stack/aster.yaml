@@ -1,18 +1,15 @@
-# Local Kubernetes stack for `devspace deploy --profile local`.
+# The aster half of the self-contained dev stack: its metadata Postgres, its
+# Valkey and the server itself. Deployed by `just stack-up <profile>` (devspace).
 #
-# Local-only: inline dev env values, no Vault, no ingress, images built by
-# `just build` and loaded into the local node. The cluster path (Harbor digests,
-# ExternalSecret, NetworkPolicy) lives in the Helm chart and in platform-gitops.
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: aster-local
----
+# Local-only: inline dev secrets, no Vault, no ingress. The server image is built
+# by `just build-minikube` and side-loaded into minikube, so it carries no digest
+# yet. The shared-cluster path (published image digests, ExternalSecret,
+# NetworkPolicy) lives in the Helm chart under charts/aster.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: postgres
-  namespace: aster-local
+  namespace: aster
 spec:
   accessModes: [ReadWriteOnce]
   resources:
@@ -23,7 +20,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: postgres
-  namespace: aster-local
+  namespace: aster
 spec:
   replicas: 1
   selector:
@@ -70,7 +67,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: postgres
-  namespace: aster-local
+  namespace: aster
 spec:
   selector:
     app: postgres
@@ -82,7 +79,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: valkey
-  namespace: aster-local
+  namespace: aster
 spec:
   accessModes: [ReadWriteOnce]
   resources:
@@ -93,7 +90,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: valkey
-  namespace: aster-local
+  namespace: aster
 spec:
   replicas: 1
   selector:
@@ -105,7 +102,7 @@ spec:
         app: valkey
     spec:
       securityContext:
-        runAsNonRoot: true
+        # The upstream valkey image runs as root, like the postgres one above.
         fsGroup: 1000
         seccompProfile:
           type: RuntimeDefault
@@ -124,9 +121,9 @@ spec:
             initialDelaySeconds: 3
             periodSeconds: 5
           securityContext:
+            # No capability drop: the image's entrypoint chowns /data and drops
+            # privileges itself, which needs CAP_CHOWN/CAP_SETUID.
             allowPrivilegeEscalation: false
-            capabilities:
-              drop: ["ALL"]
           resources:
             requests:
               cpu: 20m
@@ -143,7 +140,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: valkey
-  namespace: aster-local
+  namespace: aster
 spec:
   selector:
     app: valkey
@@ -155,7 +152,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: aster-server
-  namespace: aster-local
+  namespace: aster
 spec:
   replicas: 1
   selector:
@@ -185,8 +182,31 @@ spec:
               value: redis://:aster-dev@valkey:6379
             - name: ASTER_DEV_LOGIN
               value: "1"
+            # The compute backends in k8s/stack: Trino through the gateway (so the
+            # routing group is exercised) and this stack's own Spark Connect.
+            - name: ASTER_ENGINES
+              value: trino-gw;trino;http://trino-gateway.trino.svc.cluster.local:8080;lab,spark-live;spark;http://spark-connect-aster.spark-jobs.svc.cluster.local:15002
+            - name: ASTER_DEFAULT_ENGINE
+              value: trino-gw
+            # The Iceberg REST catalog this stack seeds (see k8s/stack/polaris.yaml).
+            # The id matches the Trino connector name in k8s/stack/trino.yaml, so
+            # it is also the qualifier a cell types: `polaris.sales.part`.
+            # Last field is the OAuth2 client id:secret aster exchanges for a token.
+            - name: ASTER_CATALOGS
+              value: polaris;polaris;http://polaris.polaris.svc.cluster.local:8181;quickstart_catalog;;root:s3cr3t
+            - name: ASTER_DEFAULT_CATALOG
+              value: polaris
             - name: ASTER_GRANTS
-              value: alice:trino-local
+              value: alice:trino-gw,alice:spark-live
+            # The notebook emptyDir is root-owned while the server runs as 65532,
+            # so git's dubious-ownership check would refuse it. Scope the
+            # exception to that one path instead of running the pod as root.
+            - name: GIT_CONFIG_COUNT
+              value: "1"
+            - name: GIT_CONFIG_KEY_0
+              value: safe.directory
+            - name: GIT_CONFIG_VALUE_0
+              value: /data/notebooks
             - name: ASTER_NOTEBOOK_DIR
               value: /data/notebooks
             - name: ASTER_CONTRACTS_DIR
@@ -229,7 +249,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: aster-server
-  namespace: aster-local
+  namespace: aster
 spec:
   selector:
     app: aster-server

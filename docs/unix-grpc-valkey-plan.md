@@ -81,7 +81,7 @@ Consequences to accept:
 - Deployment: a **dedicated Valkey for aster** (D18) — its own deployment in the
   `aster` namespace from the official `valkey-io/valkey-helm` chart, auth via
   `ExternalSecret` from `lab/aster`, digest-pinned Harbor image, NetworkPolicy
-  scoped to aster pods; compose and `k8s/local.yaml` gain a valkey service for
+  scoped to aster pods; compose and `k8s/stack/aster.yaml` gain a valkey service for
   local runs.
 
 ## 3. gRPC-native communication
@@ -121,7 +121,7 @@ streaming/stateful clients, but it should be an accepted decision.
   `state::tests::sessions_are_shared_between_connections` passes against a live
   Valkey, and a session minted by another client in Valkey was accepted by a
   running server (200), which then refreshed `last_seen` and the key TTL. The
-  valkey service ships in `docker-compose.yml`, `k8s/local.yaml` and as the
+  valkey service ships in `docker-compose.yml`, `k8s/stack/aster.yaml` and as the
   `valkey-io/valkey-helm` 0.12.0 chart dependency with the password from Vault.
 - **S13 — User working state.** `aster:v1:user:<subject>:state` read/write API,
   used by the web page and TUI so a session resumes on any container. Contract:

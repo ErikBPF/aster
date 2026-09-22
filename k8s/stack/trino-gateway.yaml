@@ -1,0 +1,186 @@
+# Local validation mirror of platform-gitops `platform/trino-gateway` (the
+# authoritative deployment for the shared cluster). Trino Gateway 21 in front of
+# the single-node Trino, with its own metadata Postgres, so `aster` exercises the
+# routing-group path. Only difference from the cluster copy: the Postgres PVC
+# asks for minikube's `standard` class instead of k3s `local-path`. Redeploying
+# does not re-run the backend-registration Job; `just stack-down && just stack-up`
+# (or deleting the Job) re-registers the backend if the PVC is ever wiped.
+# Trino Gateway in front of the single-node Trino, so `aster` can exercise the
+# seed's routing-group design. Gateway 21 keeps its cluster list in a database,
+# not in this file, so a one-shot Job registers the backend through the API.
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: trino-gateway-config}
+data:
+  config.yaml: |
+    serverConfig:
+      node.environment: lab
+      http-server.http.enabled: true
+      http-server.http.port: 8080
+    # The metadata database is a single-user Postgres reachable only from this
+    # namespace, and the Gateway derives no privilege from it. Password auth
+    # arrives with the lab/trino-gateway ExternalSecret before this leaves the lab.
+    dataStore:
+      jdbcUrl: jdbc:postgresql://trino-gateway-postgres:5432/gateway
+      user: gateway
+      password: ""
+      driver: org.postgresql.Driver
+      queryHistoryEnabled: false
+    clusterStatsConfiguration:
+      monitorType: INFO_API
+    routing:
+      defaultRoutingGroup: lab
+      # Nothing sits in front of the gateway, and Trino rejects the
+      # X-Forwarded-Proto it would otherwise synthesise.
+      forwardedHeadersEnabled: false
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: {name: trino-gateway-postgres, labels: {app: trino-gateway-postgres}}
+spec:
+  serviceName: trino-gateway-postgres
+  replicas: 1
+  selector: {matchLabels: {app: trino-gateway-postgres}}
+  template:
+    metadata: {labels: {app: trino-gateway-postgres}}
+    spec:
+      securityContext: {runAsNonRoot: true, runAsUser: 999, runAsGroup: 999, fsGroup: 999, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: postgres
+          image: docker.io/library/postgres:17.10-bookworm@sha256:9b18b78397054fce88a9552e9d5a3ad5bb7fd258c5b3cc1c5028e46373d6ea8f
+          ports: [{name: postgres, containerPort: 5432}]
+          env:
+            # The image refuses to initdb into the volume root; the subdirectory
+            # is the working pattern this cluster already uses.
+            - {name: PGDATA, value: /var/lib/postgresql/data/pgdata}
+            - {name: POSTGRES_USER, value: gateway}
+            - {name: POSTGRES_DB, value: gateway}
+            # ponytail: trust auth inside a default-deny namespace; switch to a
+            # password from lab/trino-gateway before anything else can reach 5432.
+            - {name: POSTGRES_HOST_AUTH_METHOD, value: trust}
+          volumeMounts: [{name: data, mountPath: /var/lib/postgresql/data}]
+          readinessProbe: {exec: {command: [pg_isready, -U, gateway]}, initialDelaySeconds: 5, periodSeconds: 10}
+          livenessProbe: {exec: {command: [pg_isready, -U, gateway]}, initialDelaySeconds: 30, periodSeconds: 20}
+          securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {cpu: 500m, memory: 512Mi}
+  volumeClaimTemplates:
+    - metadata: {name: data}
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: standard
+        resources: {requests: {storage: 2Gi}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: trino-gateway, labels: {app: trino-gateway}}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: trino-gateway}}
+  template:
+    metadata: {labels: {app: trino-gateway}}
+    spec:
+      securityContext: {runAsNonRoot: true, runAsUser: 1000, runAsGroup: 1000, fsGroup: 1000, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: trino-gateway
+          image: docker.io/trinodb/trino-gateway:21@sha256:12c884f235aa4244db21860b85bae64472a691eb6ecb8ea220c40679d8e3dbb9
+          ports: [{name: http, containerPort: 8080}]
+          env:
+            - {name: JAVA_TOOL_OPTIONS, value: "-XX:MinRAMPercentage=60 -XX:MaxRAMPercentage=75"}
+          volumeMounts: [{name: config, mountPath: /etc/trino-gateway, readOnly: true}]
+          readinessProbe: {tcpSocket: {port: http}, initialDelaySeconds: 10, periodSeconds: 10}
+          livenessProbe: {tcpSocket: {port: http}, initialDelaySeconds: 30, periodSeconds: 20}
+          startupProbe: {tcpSocket: {port: http}, periodSeconds: 5, failureThreshold: 60}
+          securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}
+          resources:
+            requests: {cpu: 200m, memory: 512Mi}
+            limits: {cpu: "1", memory: 1Gi}
+      volumes:
+        - name: config
+          configMap: {name: trino-gateway-config, items: [{key: config.yaml, path: config.yaml}]}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: trino-gateway}
+spec:
+  selector: {app: trino-gateway}
+  ports: [{name: http, port: 8080, targetPort: http}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: trino-gateway-postgres}
+spec:
+  selector: {app: trino-gateway-postgres}
+  ports: [{name: postgres, port: 5432, targetPort: postgres}]
+---
+# Gateway has no declarative backend list; this registers the single Trino once.
+# Its spec is immutable, so delete the Job before re-applying after any edit, or
+# when the gateway Postgres data is wiped and the row has to come back.
+apiVersion: batch/v1
+kind: Job
+metadata: {name: trino-gateway-register-backend}
+spec:
+  backoffLimit: 30
+  template:
+    metadata: {labels: {app: trino-gateway-register-backend}}
+    spec:
+      restartPolicy: Never
+      securityContext: {runAsNonRoot: true, runAsUser: 100, runAsGroup: 101, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: register
+          image: docker.io/curlimages/curl:8.16.0@sha256:463eaf6072688fe96ac64fa623fe73e1dbe25d8ad6c34404a669ad3ce1f104b6
+          command: [sh, -c]
+          args:
+            - |
+              body='{"name":"trino-lab","proxyTo":"http://trino:8080","active":true,"routingGroup":"lab"}'
+              # update covers a re-deploy and add covers the first install; add is
+              # INSERT-only, so it must not be tried against an existing row.
+              until curl -sf -X POST http://trino-gateway:8080/gateway/backend/modify/update \
+                      -H 'Content-Type: application/json' -d "$body" \
+                 || curl -sf -X POST http://trino-gateway:8080/gateway/backend/modify/add \
+                      -H 'Content-Type: application/json' -d "$body"; do
+                sleep 5
+              done
+          securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits: {cpu: 100m, memory: 64Mi}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: trino-gateway-runtime}
+spec:
+  podSelector: {matchExpressions: [{key: app, operator: In, values: [trino-gateway, trino-gateway-register-backend]}]}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: trino}}
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: aster}}
+      ports: [{protocol: TCP, port: 8080}]
+  egress:
+    - to:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}}
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+    # The registration Job is selected by this policy too, so it needs egress to
+    # the gateway it registers the backend with.
+    - to: [{podSelector: {matchLabels: {app: trino-gateway}}}]
+      ports: [{protocol: TCP, port: 8080}]
+    - to: [{podSelector: {matchLabels: {app: trino-gateway-postgres}}}]
+      ports: [{protocol: TCP, port: 5432}]
+    - to: [{podSelector: {matchLabels: {app: trino}}}]
+      ports: [{protocol: TCP, port: 8080}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: trino-gateway-postgres-runtime}
+spec:
+  podSelector: {matchLabels: {app: trino-gateway-postgres}}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from: [{podSelector: {matchLabels: {app: trino-gateway}}}]
+      ports: [{protocol: TCP, port: 5432}]
+  egress:
+    - to:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}}
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]

@@ -27,7 +27,7 @@ engines:
     routingGroup: ""
 
 catalogs:
-  - id: polaris-local
+  - id: polaris
     kind: polaris
     endpoint: http://polaris:8181
     catalog: quickstart_catalog
