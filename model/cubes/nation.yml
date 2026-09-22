@@ -1,0 +1,22 @@
+# Hand-authored Cube semantic model for the TPC-H seed table sales.nation.
+cubes:
+  - name: "nation"
+    sql_table: "sales.nation"
+    description: "TPC-H nation; joins customer and supplier to region"
+    dimensions:
+      - name: "nationkey"
+        sql: "nationkey"
+        type: number
+        primary_key: true
+      - name: "name"
+        sql: "name"
+        type: string
+      - name: "regionkey"
+        sql: "regionkey"
+        type: number
+      - name: "comment"
+        sql: "comment"
+        type: string
+    measures:
+      - name: "count"
+        type: count

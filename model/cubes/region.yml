@@ -1,0 +1,21 @@
+# Hand-authored Cube semantic model for the TPC-H seed table sales.region.
+# Complements contracts/region.yaml: the contract fixes the format, this states
+# what the table means to a query.
+cubes:
+  - name: "region"
+    sql_table: "sales.region"
+    description: "TPC-H region; the root of the nation geography"
+    dimensions:
+      - name: "regionkey"
+        sql: "regionkey"
+        type: number
+        primary_key: true
+      - name: "name"
+        sql: "name"
+        type: string
+      - name: "comment"
+        sql: "comment"
+        type: string
+    measures:
+      - name: "count"
+        type: count

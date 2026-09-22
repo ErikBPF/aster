@@ -22,6 +22,9 @@ RUN apt-get update \
     && install -d -o 65532 -g 65532 /data/notebooks
 COPY --from=build /app/target/release/aster-server /usr/local/bin/aster-server
 COPY --from=build /app/target/release/aster-controller /usr/local/bin/aster-controller
+# Shipped so ASTER_CONTRACTS_DIR=/etc/aster/contracts resolves with no mount; a
+# deployment can still override the directory with a volume.
+COPY contracts /etc/aster/contracts
 USER 65532:65532
 EXPOSE 8080
 ENV ASTER_BIND=0.0.0.0:8080

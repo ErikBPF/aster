@@ -1,0 +1,46 @@
+# Hand-authored Cube semantic model for the TPC-H seed table sales.orders.
+# The placed-order fact table: indicators are stated as derived measures so a
+# dashboard and the ODCS contract cannot drift apart.
+cubes:
+  - name: "orders"
+    sql_table: "sales.orders"
+    description: "TPC-H orders; one row per customer order"
+    dimensions:
+      - name: "orderkey"
+        sql: "orderkey"
+        type: number
+        primary_key: true
+      - name: "custkey"
+        sql: "custkey"
+        type: number
+      - name: "orderstatus"
+        sql: "orderstatus"
+        type: string
+      - name: "orderdate"
+        sql: "orderdate"
+        type: time
+        granularities: [day, week, month, quarter, year]
+      - name: "orderpriority"
+        sql: "orderpriority"
+        type: string
+      - name: "clerk"
+        sql: "clerk"
+        type: string
+      - name: "shippriority"
+        sql: "shippriority"
+        type: number
+      - name: "comment"
+        sql: "comment"
+        type: string
+    measures:
+      - name: "count"
+        type: count
+      - name: "total_price"
+        sql: "totalprice"
+        type: sum
+        format: currency
+      # Indicator: spend per order, so a segment or period is comparable.
+      - name: "average_order_value"
+        sql: "${total_price} / NULLIF(${count}, 0)"
+        type: number
+        format: currency
