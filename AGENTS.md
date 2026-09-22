@@ -76,8 +76,9 @@ draft and must be marked as such in its header comment.
   move.
 - **justfile** owns every workflow: add a recipe instead of documenting a long
   command. Recipes that do real work use a bash shebang with `set -euo pipefail`.
-- Images are digest-pinned Harbor references; secrets come from `ExternalSecret`
-  and never appear in values, manifests, or chart templates.
+- aster is a standalone experiment: it runs on minikube and pulls only public
+  upstream images. No Harbor, no storage-host, no Vault. Secrets never appear in
+  values, manifests, or chart templates.
 
 ## Also
 

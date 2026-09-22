@@ -1,0 +1,69 @@
+# ODCS v3.2 contract for the TPC-H seed table `polaris.sales.lineitem`.
+version: 3.2.0
+apiVersion: v3.2.0
+kind: DataContract
+id: lineitem
+name: lineitem
+status: active
+description: one row per line of an order; the composite key is (orderkey, linenumber)
+team:
+  name: data-team
+domain: sales
+schema:
+  - name: lineitem
+    logicalType: object
+    properties:
+      - name: orderkey
+        logicalType: bigint
+        required: true
+        primaryKey: true
+        semanticType: column
+      - name: partkey
+        logicalType: bigint
+        required: true
+        semanticType: dimension
+      - name: suppkey
+        logicalType: bigint
+        required: true
+        semanticType: dimension
+      - name: linenumber
+        logicalType: integer
+        required: true
+        primaryKey: true
+        semanticType: column
+      - name: quantity
+        logicalType: double
+        semanticType: measure
+      - name: extendedprice
+        logicalType: double
+        semanticType: measure
+      - name: discount
+        logicalType: double
+        semanticType: measure
+      - name: tax
+        logicalType: double
+        semanticType: measure
+      - name: returnflag
+        logicalType: varchar
+        semanticType: dimension
+      - name: linestatus
+        logicalType: varchar
+        semanticType: dimension
+      - name: shipdate
+        logicalType: date
+        semanticType: dimension
+      - name: commitdate
+        logicalType: date
+        semanticType: dimension
+      - name: receiptdate
+        logicalType: date
+        semanticType: dimension
+      - name: shipinstruct
+        logicalType: varchar
+        semanticType: dimension
+      - name: shipmode
+        logicalType: varchar
+        semanticType: dimension
+      - name: comment
+        logicalType: varchar
+        semanticType: dimension

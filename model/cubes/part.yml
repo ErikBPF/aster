@@ -1,0 +1,42 @@
+# Hand-authored Cube semantic model for the TPC-H seed table sales.part.
+cubes:
+  - name: "part"
+    sql_table: "sales.part"
+    description: "TPC-H part; the product catalogue"
+    dimensions:
+      - name: "partkey"
+        sql: "partkey"
+        type: number
+        primary_key: true
+      - name: "name"
+        sql: "name"
+        type: string
+      - name: "mfgr"
+        sql: "mfgr"
+        type: string
+      - name: "brand"
+        sql: "brand"
+        type: string
+      - name: "type"
+        sql: "type"
+        type: string
+      - name: "container"
+        sql: "container"
+        type: string
+      - name: "comment"
+        sql: "comment"
+        type: string
+    measures:
+      - name: "count"
+        type: count
+      - name: "average_size"
+        sql: "size"
+        type: avg
+      - name: "average_retail_price"
+        sql: "retailprice"
+        type: avg
+        format: currency
+      - name: "total_retail_value"
+        sql: "retailprice"
+        type: sum
+        format: currency

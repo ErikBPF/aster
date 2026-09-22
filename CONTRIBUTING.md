@@ -77,8 +77,9 @@ just compose-up          # local stack, real Postgres
 just chart-lint          # helm dependency build + helm template + kubeconform
 ```
 
-Images are published to `registry.example.invalid/library/aster` and
-pinned by digest in `charts/aster/values.yaml`. A tag alone is never committed.
+Images come from any public registry. `charts/aster/values.yaml` defaults to the
+`aster-server:local` image `just build-minikube` side-loads into minikube; pin a
+digest there when one is published.
 
 ## Change flow
 

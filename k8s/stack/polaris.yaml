@@ -1,0 +1,222 @@
+# The Iceberg REST catalog substrate for the dev stack: Apache Polaris with an
+# in-memory metastore plus an S3-compatible object store (RustFS) for the data
+# files, mirroring the official Polaris "Trino" guide. Ported to Kubernetes —
+# the guide's compose file is the reference for every env var below.
+#
+# The stack's Trino reaches Polaris through the `polaris` catalog (see
+# k8s/stack/trino.yaml), and aster browses it with the `polaris` catalog
+# provider. Dev-only: inline credentials, in-memory Polaris metastore, and no
+# NetworkPolicy in this namespace (the trino namespace's default-deny is what
+# constrains Trino).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: rustfs-data
+  namespace: polaris
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rustfs
+  namespace: polaris
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rustfs
+  template:
+    metadata:
+      labels:
+        app: rustfs
+    spec:
+      containers:
+        - name: rustfs
+          image: docker.io/rustfs/rustfs:1.0.0-beta.8@sha256:fa19210ac4697c79d7ccca1ec9b0eb91aebacc6691991ffb14014bb3c67e6cc3
+          ports:
+            - name: s3
+              containerPort: 9000
+            - name: console
+              containerPort: 9001
+          env:
+            - {name: RUSTFS_ACCESS_KEY, value: rustfsadmin}
+            - {name: RUSTFS_SECRET_KEY, value: rustfsadmin}
+            - {name: RUSTFS_VOLUMES, value: /data}
+            - {name: RUSTFS_ADDRESS, value: ":9000"}
+            - {name: RUSTFS_CONSOLE_ENABLE, value: "true"}
+            - {name: RUSTFS_CONSOLE_ADDRESS, value: ":9001"}
+          volumeMounts:
+            - {name: data, mountPath: /data}
+          readinessProbe:
+            httpGet: {path: /health, port: s3}
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {cpu: 500m, memory: 512Mi}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: rustfs-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rustfs
+  namespace: polaris
+spec:
+  selector:
+    app: rustfs
+  ports:
+    - {name: s3, port: 9000, targetPort: s3}
+    - {name: console, port: 9001, targetPort: console}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: polaris
+  namespace: polaris
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: polaris
+  template:
+    metadata:
+      labels:
+        app: polaris
+    spec:
+      containers:
+        - name: polaris
+          image: docker.io/apache/polaris:1.7.0@sha256:3495f67f38cca33892a045f7dd3f46eb52387f0fd52d4145538a772fd8aedad7
+          ports:
+            - name: http
+              containerPort: 8181
+            - name: mgmt
+              containerPort: 8182
+          env:
+            # <realm>,<clientId>,<clientSecret> for the bootstrapped principal.
+            - {name: POLARIS_BOOTSTRAP_CREDENTIALS, value: "POLARIS,root,s3cr3t"}
+            - {name: POLARIS_REALM_CONTEXT_REALMS, value: POLARIS}
+            - {name: QUARKUS_OTEL_SDK_DISABLED, value: "true"}
+            # Polaris writes table metadata to the S3 location itself, so it
+            # needs the object-store credentials too (the Trino side needs its
+            # own copy). Missing these surfaces as a table-creation failure.
+            - {name: AWS_REGION, value: us-west-2}
+            - {name: AWS_ACCESS_KEY_ID, value: rustfsadmin}
+            - {name: AWS_SECRET_ACCESS_KEY, value: rustfsadmin}
+          readinessProbe:
+            httpGet: {path: /q/health, port: mgmt}
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 30
+          livenessProbe:
+            httpGet: {path: /q/health, port: mgmt}
+            initialDelaySeconds: 45
+            periodSeconds: 15
+          resources:
+            requests: {cpu: 250m, memory: 768Mi}
+            limits: {cpu: "2", memory: 2Gi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: polaris
+  namespace: polaris
+spec:
+  selector:
+    app: polaris
+  ports:
+    - {name: http, port: 8181, targetPort: http}
+    - {name: mgmt, port: 8182, targetPort: mgmt}
+---
+# Bootstraps the catalog the rest of the stack assumes: create the bucket, then
+# the `quickstart_catalog` (S3-backed) and the grant that lets the bootstrapped
+# principal write to it. Idempotent, and it stays up afterwards so the catalog
+# is re-created if Polaris is restarted with its in-memory metastore.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: polaris-setup
+  namespace: polaris
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: polaris-setup
+  template:
+    metadata:
+      labels:
+        app: polaris-setup
+    spec:
+      initContainers:
+        - name: bucket
+          image: docker.io/amazon/aws-cli:2.36.8@sha256:7e1b11a3c93bc5af81f496de0662f666b2352a4a6666e8ebae904fe102b131b6
+          env:
+            - {name: AWS_ACCESS_KEY_ID, value: rustfsadmin}
+            - {name: AWS_SECRET_ACCESS_KEY, value: rustfsadmin}
+            - {name: AWS_ENDPOINT_URL, value: http://rustfs:9000}
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              until aws s3 ls s3://bucket123 >/dev/null 2>&1 || aws s3 mb s3://bucket123; do
+                echo "waiting for rustfs..."
+                sleep 3
+              done
+              echo "bucket123 ready"
+      containers:
+        - name: setup
+          image: docker.io/curlimages/curl:8.16.0@sha256:463eaf6072688fe96ac64fa623fe73e1dbe25d8ad6c34404a669ad3ce1f104b6
+          env:
+            - {name: CLIENT_ID, value: root}
+            - {name: CLIENT_SECRET, value: s3cr3t}
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              # Polaris keeps its metastore in memory, so it re-runs this loop
+              # forever: a Polaris restart empties the realm and the catalog has
+              # to be recreated (creating an existing catalog is a tolerated 409).
+              realm=POLARIS
+              while :; do
+                token=""
+                while [ -z "$token" ]; do
+                  token=$(curl -s -u "$CLIENT_ID:$CLIENT_SECRET" -H "Polaris-Realm: $realm" \
+                      -d grant_type=client_credentials -d scope=PRINCIPAL_ROLE:ALL \
+                      http://polaris:8181/api/catalog/v1/oauth/tokens 2>/dev/null \
+                      | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')
+                  [ -n "$token" ] || { echo "waiting for polaris..."; sleep 3; }
+                done
+
+                code=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+                  -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
+                  -H "Polaris-Realm: $realm" \
+                  http://polaris:8181/api/management/v1/catalogs \
+                  -d '{"catalog":{"name":"quickstart_catalog","type":"INTERNAL","readOnly":false,
+                       "properties":{"default-base-location":"s3://bucket123"},
+                       "storageConfigInfo":{"storageType":"S3",
+                         "endpoint":"http://rustfs.polaris.svc.cluster.local:9000",
+                         "endpointInternal":"http://rustfs.polaris.svc.cluster.local:9000",
+                         "pathStyleAccess":true,
+                         "region":"us-west-2"}}}')
+                echo "create catalog -> $code"
+
+                curl -s -o /dev/null -X PUT \
+                  -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
+                  -H "Polaris-Realm: $realm" \
+                  http://polaris:8181/api/management/v1/catalogs/quickstart_catalog/catalog-roles/catalog_admin/grants \
+                  -d '{"type":"catalog","privilege":"CATALOG_MANAGE_CONTENT"}'
+                touch /tmp/polaris-setup-done
+                sleep 20
+              done
+          readinessProbe:
+            exec: {command: ["test", "-f", "/tmp/polaris-setup-done"]}
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 60
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits: {cpu: 100m, memory: 128Mi}

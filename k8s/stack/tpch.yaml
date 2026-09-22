@@ -1,0 +1,57 @@
+# Materialises the TPC-H tables into the Polaris-backed Iceberg warehouse, so
+# the catalog tab, the data contracts and the Cube models all have real tables
+# to point at. Dev-only seed data: `tpch.tiny` is Trino's built-in generator.
+#
+# It lives in the polaris namespace because Trino (default-deny) allows ingress
+# from it, and it stays up so a Trino/Polaris restart re-seeds.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tpch-load
+  namespace: polaris
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: tpch-load
+  template:
+    metadata:
+      labels:
+        app: tpch-load
+    spec:
+      containers:
+        - name: load
+          image: docker.io/trinodb/trino:483@sha256:db58cc93e593a2706553745f276bb119c9810e69918be56ecde088ba7ccb0534
+          env:
+            - {name: TRINO, value: "http://trino.trino.svc.cluster.local:8080"}
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              # Loops forever like the Polaris setup: the realm is in memory, so
+              # after a Polaris restart the schema and tables have to come back.
+              # Every statement is IF NOT EXISTS, so a steady state is a no-op.
+              while :; do
+                until curl -sf "$TRINO/v1/info" >/dev/null 2>&1; do
+                  echo "waiting for trino..."
+                  sleep 5
+                done
+                if trino --server "$TRINO" --execute "CREATE SCHEMA IF NOT EXISTS polaris.sales" >/dev/null 2>&1; then
+                  for t in customer lineitem nation orders part partsupp region supplier; do
+                    trino --server "$TRINO" --execute \
+                      "CREATE TABLE IF NOT EXISTS polaris.sales.$t AS SELECT * FROM tpch.tiny.$t" \
+                      >/dev/null 2>&1 && echo "ensured sales.$t"
+                  done
+                  touch /tmp/tpch-done
+                else
+                  echo "polaris catalog not ready yet"
+                fi
+                sleep 30
+              done
+          readinessProbe:
+            exec: {command: ["test", "-f", "/tmp/tpch-done"]}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 90
+          resources:
+            requests: {cpu: 100m, memory: 512Mi}
+            limits: {cpu: "1", memory: 1Gi}

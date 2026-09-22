@@ -21,6 +21,13 @@ pub struct CatalogConfig {
     pub endpoint: String,
     /// Optional catalog/warehouse name within the backend (Polaris prefix).
     pub catalog: Option<String>,
+    /// A ready bearer token, when the caller already holds one.
+    #[serde(default)]
+    pub token: Option<String>,
+    /// OAuth2 client credentials as `client_id:client_secret`, exchanged for a
+    /// token on demand. Preferred over `token`, which expires.
+    #[serde(default)]
+    pub credential: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -37,7 +44,9 @@ impl AppConfig {
     ///
     /// `ASTER_ENGINES` / `ASTER_CATALOGS` accept a comma-separated pool, one
     /// entry per instance, fields separated by `;`:
-    /// `id;kind;endpoint[;routing_group]` and `id;kind;endpoint[;catalog]`.
+    /// `id;kind;endpoint[;routing_group]` and
+    /// `id;kind;endpoint[;catalog[;token[;credential]]]`, where `credential` is
+    /// the OAuth2 `client_id:client_secret` pair used to mint a token.
     pub fn from_env() -> Self {
         let engines = std::env::var("ASTER_ENGINES")
             .ok()
@@ -59,7 +68,7 @@ impl AppConfig {
             .filter(|catalogs| !catalogs.is_empty())
             .unwrap_or_else(|| {
                 vec![CatalogConfig {
-                    id: "polaris-local".into(),
+                    id: "polaris".into(),
                     kind: "polaris".into(),
                     endpoint: std::env::var("POLARIS_ENDPOINT")
                         .unwrap_or_else(|_| "http://localhost:8181".into()),
@@ -67,6 +76,8 @@ impl AppConfig {
                         std::env::var("POLARIS_CATALOG")
                             .unwrap_or_else(|_| "quickstart_catalog".into()),
                     ),
+                    token: std::env::var("POLARIS_TOKEN").ok(),
+                    credential: polaris_credential_from_env(),
                 }]
             });
 
@@ -92,6 +103,14 @@ fn field(value: Option<&&str>) -> Option<String> {
         .map(|value| value.trim())
         .filter(|value| !value.is_empty())
         .map(str::to_string)
+}
+
+/// `POLARIS_CLIENT_ID` + `POLARIS_CLIENT_SECRET` as the `id:secret` pair the
+/// catalog exchanges for a token, when both are set.
+fn polaris_credential_from_env() -> Option<String> {
+    let id = std::env::var("POLARIS_CLIENT_ID").ok()?;
+    let secret = std::env::var("POLARIS_CLIENT_SECRET").ok()?;
+    Some(format!("{id}:{secret}"))
 }
 
 fn parse_engines(spec: &str) -> Vec<EngineConfig> {
@@ -125,6 +144,8 @@ fn parse_catalogs(spec: &str) -> Vec<CatalogConfig> {
                 kind: (*kind).to_string(),
                 endpoint: (*endpoint).to_string(),
                 catalog: field(fields.get(3)),
+                token: field(fields.get(4)),
+                credential: field(fields.get(5)),
             })
         })
         .collect()

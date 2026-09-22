@@ -1,0 +1,44 @@
+# ODCS v3.2 contract for the TPC-H seed table `polaris.sales.part`.
+version: 3.2.0
+apiVersion: v3.2.0
+kind: DataContract
+id: part
+name: part
+status: active
+description: one row per part in the product catalogue
+team:
+  name: data-team
+domain: sales
+schema:
+  - name: part
+    logicalType: object
+    properties:
+      - name: partkey
+        logicalType: bigint
+        required: true
+        primaryKey: true
+        semanticType: column
+      - name: name
+        logicalType: varchar
+        semanticType: dimension
+      - name: mfgr
+        logicalType: varchar
+        semanticType: dimension
+      - name: brand
+        logicalType: varchar
+        semanticType: dimension
+      - name: type
+        logicalType: varchar
+        semanticType: dimension
+      - name: size
+        logicalType: integer
+        semanticType: measure
+      - name: container
+        logicalType: varchar
+        semanticType: dimension
+      - name: retailprice
+        logicalType: double
+        semanticType: measure
+      - name: comment
+        logicalType: varchar
+        semanticType: dimension

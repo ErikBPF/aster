@@ -1,0 +1,70 @@
+# Hand-authored Cube semantic model for the TPC-H seed table sales.lineitem.
+# The order-line fact table: revenue indicators are stated as derived measures.
+cubes:
+  - name: "lineitem"
+    sql_table: "sales.lineitem"
+    description: "TPC-H lineitem; one row per order line"
+    dimensions:
+      - name: "orderkey"
+        sql: "orderkey"
+        type: number
+      - name: "partkey"
+        sql: "partkey"
+        type: number
+      - name: "suppkey"
+        sql: "suppkey"
+        type: number
+      - name: "linenumber"
+        sql: "linenumber"
+        type: number
+      - name: "returnflag"
+        sql: "returnflag"
+        type: string
+      - name: "linestatus"
+        sql: "linestatus"
+        type: string
+      - name: "shipdate"
+        sql: "shipdate"
+        type: time
+        granularities: [day, month, quarter, year]
+      - name: "commitdate"
+        sql: "commitdate"
+        type: time
+        granularities: [day, month, quarter, year]
+      - name: "receiptdate"
+        sql: "receiptdate"
+        type: time
+        granularities: [day, month, quarter, year]
+      - name: "shipinstruct"
+        sql: "shipinstruct"
+        type: string
+      - name: "shipmode"
+        sql: "shipmode"
+        type: string
+      - name: "comment"
+        sql: "comment"
+        type: string
+    measures:
+      - name: "line_count"
+        type: count
+      - name: "total_quantity"
+        sql: "quantity"
+        type: sum
+      - name: "gross_revenue"
+        sql: "extendedprice"
+        type: sum
+        format: currency
+      # Indicator: the discount given away, in the same unit as gross_revenue.
+      - name: "total_discount"
+        sql: "extendedprice * discount"
+        type: sum
+        format: currency
+      # Indicator: what the lines actually earn, net of discount.
+      - name: "net_revenue"
+        sql: "${gross_revenue} - ${total_discount}"
+        type: number
+        format: currency
+      # Indicator: average discount rate applied, as a fraction of gross.
+      - name: "average_discount_rate"
+        sql: "${total_discount} / NULLIF(${gross_revenue}, 0)"
+        type: number

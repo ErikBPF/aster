@@ -11,12 +11,17 @@ use aster_core::{
 };
 use async_trait::async_trait;
 
+/// Polaris's realm context header. The dev stack runs the single default realm;
+/// a multi-realm deployment would have to make this configurable.
+const POLARIS_REALM: &str = "POLARIS";
+
 pub struct PolarisCatalog {
     id: CatalogId,
     client: reqwest::Client,
     endpoint: String,
     prefix: String,
     token: Option<String>,
+    credential: Option<(String, String)>,
 }
 
 impl PolarisCatalog {
@@ -31,10 +36,62 @@ impl PolarisCatalog {
             endpoint: endpoint.into(),
             prefix: prefix.into(),
             token: None,
+            credential: None,
         }
     }
 
-    fn request(&self, path: &str) -> reqwest::RequestBuilder {
+    /// A ready bearer token, sent as-is.
+    pub fn with_token(mut self, token: Option<String>) -> Self {
+        self.token = token;
+        self
+    }
+
+    /// OAuth2 `client_id:client_secret`, exchanged for a token on each request.
+    /// Preferred over `with_token`, whose token expires.
+    pub fn with_credential(mut self, credential: Option<String>) -> Self {
+        self.credential = credential.and_then(|value| {
+            value
+                .split_once(':')
+                .map(|(id, secret)| (id.to_string(), secret.to_string()))
+        });
+        self
+    }
+
+    /// The bearer token to attach: the configured one, or a fresh token from the
+    /// OAuth2 client-credentials grant.
+    async fn bearer(&self) -> Result<Option<String>> {
+        if let Some(token) = &self.token {
+            return Ok(Some(token.clone()));
+        }
+        let Some((client_id, client_secret)) = &self.credential else {
+            return Ok(None);
+        };
+        let payload: serde_json::Value = self
+            .client
+            .post(format!(
+                "{}/api/catalog/v1/oauth/tokens",
+                self.endpoint.trim_end_matches('/')
+            ))
+            .basic_auth(client_id, Some(client_secret))
+            .header("Polaris-Realm", POLARIS_REALM)
+            .form(&[
+                ("grant_type", "client_credentials"),
+                ("scope", "PRINCIPAL_ROLE:ALL"),
+            ])
+            .send()
+            .await
+            .map_err(|error| CoreError::Catalog(error.to_string()))?
+            .json()
+            .await
+            .map_err(|error| CoreError::Catalog(error.to_string()))?;
+        payload
+            .get("access_token")
+            .and_then(|value| value.as_str())
+            .map(|token| Some(token.to_string()))
+            .ok_or_else(|| CoreError::Catalog("polaris token response had no access_token".into()))
+    }
+
+    async fn request(&self, path: &str) -> Result<reqwest::RequestBuilder> {
         let url = format!(
             "{}/api/catalog/v1/{}/{}",
             self.endpoint.trim_end_matches('/'),
@@ -42,10 +99,10 @@ impl PolarisCatalog {
             path
         );
         let builder = self.client.get(url).header("Accept", "application/json");
-        match &self.token {
+        Ok(match self.bearer().await? {
             Some(token) => builder.bearer_auth(token),
             None => builder,
-        }
+        })
     }
 }
 
@@ -60,7 +117,10 @@ impl Catalog for PolarisCatalog {
     }
 
     async fn health(&self) -> Health {
-        match self.request("namespaces").send().await {
+        let Ok(request) = self.request("namespaces").await else {
+            return Health::Unavailable;
+        };
+        match request.send().await {
             Ok(response) if response.status().is_success() => Health::Healthy,
             Ok(_) => Health::Degraded,
             Err(_) => Health::Unavailable,
@@ -70,6 +130,7 @@ impl Catalog for PolarisCatalog {
     async fn list_namespaces(&self) -> Result<Vec<Namespace>> {
         let payload: serde_json::Value = self
             .request("namespaces")
+            .await?
             .send()
             .await
             .map_err(|error| CoreError::Catalog(error.to_string()))?
@@ -102,6 +163,7 @@ impl Catalog for PolarisCatalog {
         let path = format!("namespaces/{namespace}/tables");
         let payload: serde_json::Value = self
             .request(&path)
+            .await?
             .send()
             .await
             .map_err(|error| CoreError::Catalog(error.to_string()))?
@@ -140,6 +202,7 @@ impl Catalog for PolarisCatalog {
         let path = format!("namespaces/{}/tables/{}", table.namespace, table.name);
         let payload: serde_json::Value = self
             .request(&path)
+            .await?
             .send()
             .await
             .map_err(|error| CoreError::Catalog(error.to_string()))?
@@ -182,8 +245,8 @@ impl Catalog for PolarisCatalog {
 /// are browsed as two namespaces; each member (measure or dimension) becomes a
 /// column, named exactly as Cube's own SQL API exposes it.
 /// ponytail: no credential yet — Cube API tokens are JWTs signed with
-/// `CUBEJS_API_SECRET`, and nothing in `CatalogConfig` can carry one. Decide where
-/// the secret lives when a Cube instance is actually deployed (D6).
+/// `CUBEJS_API_SECRET`, which `CatalogConfig.credential` could carry once a Cube
+/// instance is actually deployed (D6).
 pub struct CubeCatalog {
     id: CatalogId,
     client: reqwest::Client,
@@ -669,11 +732,15 @@ impl Catalog for MockCatalog {
 
 pub fn catalog_from_config(config: &CatalogConfig) -> Result<Arc<dyn Catalog>> {
     let catalog: Arc<dyn Catalog> = match config.kind.as_str() {
-        "polaris" => Arc::new(PolarisCatalog::new(
-            &config.id,
-            &config.endpoint,
-            config.catalog.clone().unwrap_or_else(|| "default".into()),
-        )),
+        "polaris" => Arc::new(
+            PolarisCatalog::new(
+                &config.id,
+                &config.endpoint,
+                config.catalog.clone().unwrap_or_else(|| "default".into()),
+            )
+            .with_token(config.token.clone())
+            .with_credential(config.credential.clone()),
+        ),
         "nessie" => Arc::new(NessieCatalog::new(&config.id, &config.endpoint)),
         "unity" => Arc::new(UnityCatalog::new(&config.id, &config.endpoint)),
         // A semantic layer browsed read-only; `catalog` carries the base path.
@@ -709,6 +776,8 @@ mod tests {
             kind: kind.into(),
             endpoint: "http://catalog.invalid:8181".into(),
             catalog: None,
+            token: None,
+            credential: None,
         }
     }
 
@@ -862,5 +931,34 @@ mod tests {
             })
             .await;
         assert!(miss.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_configured_bearer_token_is_attached_to_requests() {
+        // No credential and no server: only the configured token is observable.
+        let catalog =
+            PolarisCatalog::new("c", "http://catalog.invalid", "p").with_token(Some("tok".into()));
+        assert_eq!(
+            catalog.bearer().await.expect("token").as_deref(),
+            Some("tok")
+        );
+
+        let anonymous = PolarisCatalog::new("c", "http://catalog.invalid", "p");
+        assert!(anonymous.bearer().await.expect("anonymous").is_none());
+    }
+
+    #[test]
+    fn a_credential_is_split_into_client_id_and_secret() {
+        let catalog = PolarisCatalog::new("c", "http://catalog.invalid", "p")
+            .with_credential(Some("root:s3cr3t".into()));
+        assert_eq!(
+            catalog.credential,
+            Some(("root".to_string(), "s3cr3t".to_string()))
+        );
+
+        // A malformed pair is refused rather than sent as a basic-auth header.
+        let malformed = PolarisCatalog::new("c", "http://catalog.invalid", "p")
+            .with_credential(Some("no-colon".into()));
+        assert_eq!(malformed.credential, None);
     }
 }

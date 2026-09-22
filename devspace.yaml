@@ -1,26 +1,162 @@
 version: v2beta1
 name: aster
 
-# Local inner loop: `devspace dev` runs the server against the compose Postgres
-# and the engines/catalogs declared below. Images are built by `just build`
-# (or `just build-dev`), never by devspace, matching the ecosystem convention.
+# Self-contained development stack: the whole aster compute path on a throwaway
+# minikube cluster (see `just stack-bootstrap`). devenv owns the toolchain,
+# devspace owns the Kubernetes layer, and everything here is dev-only — it pulls
+# only public upstream images, so no Harbor, no platform cluster and no private
+# DNS are required. Images are digest-pinned upstream refs, except
+# `aster-server:local`, which `just build-minikube` builds and side-loads into
+# minikube's containerd.
+#
+# Profiles choose how much of the compute path comes up. `just stack-up <profile>`:
+#   local  (default) everything, in dependency order
+#   trino  aster + Trino through its gateway and the Polaris Iceberg catalog, no Spark
+#   spark  aster + Spark Connect, no Trino
+#   apps   aster only, for shell/UI work
+# Engines/catalogs a profile leaves out are reported unhealthy by aster but do not block it.
 localRegistry:
   enabled: false
 
 profiles:
+  # Default for `just stack-up`: everything, in dependency order.
   - name: local
 
+  # aster only, for shell/UI work without the compute backends.
+  - name: apps
+    patches:
+      - op: remove
+        path: deployments.polaris
+      - op: remove
+        path: deployments.tpch
+      - op: remove
+        path: deployments.trino
+      - op: remove
+        path: deployments.trino-gateway
+      - op: remove
+        path: deployments.yunikorn
+      - op: remove
+        path: deployments.spark-operator
+      - op: remove
+        path: deployments.spark-connect
+      - op: replace
+        path: pipelines.deploy.run
+        value: |-
+          create_deployments namespaces
+          create_deployments aster
+
+  # aster plus Trino through the gateway, no Spark.
+  - name: trino
+    patches:
+      - op: remove
+        path: deployments.yunikorn
+      - op: remove
+        path: deployments.spark-operator
+      - op: remove
+        path: deployments.spark-connect
+      - op: replace
+        path: pipelines.deploy.run
+        value: |-
+          create_deployments namespaces
+          create_deployments polaris
+          create_deployments trino trino-gateway
+          create_deployments tpch
+          create_deployments aster
+
+  # aster plus Spark Connect, no Trino.
+  - name: spark
+    patches:
+      - op: remove
+        path: deployments.polaris
+      - op: remove
+        path: deployments.tpch
+      - op: remove
+        path: deployments.trino
+      - op: remove
+        path: deployments.trino-gateway
+      - op: replace
+        path: pipelines.deploy.run
+        value: |-
+          create_deployments namespaces
+          create_deployments yunikorn
+          create_deployments spark-operator
+          kubectl wait --for=condition=Established crd/sparkconnects.sparkoperator.k8s.io --timeout=120s
+          kubectl wait --for=condition=Available --timeout=180s deployment --all -n spark-operator
+          create_deployments spark-connect
+          create_deployments aster
+
 deployments:
-  stack:
-    namespace: aster-local
+  namespaces:
+    namespace: default
     kubectl:
       manifests:
-        - k8s/local.yaml
+        - k8s/stack/namespaces.yaml
+
+  trino:
+    namespace: trino
+    kubectl:
+      manifests:
+        - k8s/stack/trino.yaml
+
+  # The Iceberg REST catalog substrate (Polaris + RustFS) the Trino `polaris`
+  # connector and aster's catalog tab both read from.
+  polaris:
+    namespace: polaris
+    kubectl:
+      manifests:
+        - k8s/stack/polaris.yaml
+
+  # Seeds the eight TPC-H tables into polaris.sales once Trino and Polaris answer.
+  tpch:
+    namespace: polaris
+    kubectl:
+      manifests:
+        - k8s/stack/tpch.yaml
+
+  trino-gateway:
+    namespace: trino
+    kubectl:
+      manifests:
+        - k8s/stack/trino-gateway.yaml
+
+  # YuniKorn first: spark-operator's batchScheduler points at it, and the
+  # SparkConnect server asks for `schedulerName: yunikorn`.
+  yunikorn:
+    namespace: yunikorn
+    helm:
+      chart:
+        name: yunikorn
+        repo: https://apache.github.io/yunikorn-release
+        version: "1.7.0"
+      valuesFiles:
+        - k8s/stack/yunikorn-values.yaml
+
+  spark-operator:
+    namespace: spark-operator
+    helm:
+      chart:
+        name: spark-operator
+        repo: https://kubeflow.github.io/spark-operator
+        version: "2.5.2"
+      valuesFiles:
+        - k8s/stack/spark-operator-values.yaml
+
+  spark-connect:
+    namespace: spark-jobs
+    kubectl:
+      manifests:
+        - k8s/stack/spark-connect.yaml
+
+  aster:
+    namespace: aster
+    kubectl:
+      manifests:
+        - k8s/stack/aster.yaml
 
 dev:
   server:
     imageSelector: aster-server:local
-    namespace: aster-local
+    namespace: aster
     command: ["/usr/local/bin/aster-server"]
     ports:
       - port: "8080:8080"
@@ -28,4 +164,18 @@ dev:
 pipelines:
   deploy:
     run: |-
-      create_deployments stack
+      create_deployments namespaces
+      create_deployments polaris
+      create_deployments trino trino-gateway
+      create_deployments tpch
+      # Serially: both helm deployments would otherwise race to write the same
+      # helm binary under ~/.devspace/bin, and YuniKorn must be up first anyway
+      # because spark-operator's batchScheduler points at it.
+      create_deployments yunikorn
+      create_deployments spark-operator
+      # The SparkConnect kind only exists once the operator's CRDs are served,
+      # and its mutating webhook must be serving before the CR is admitted.
+      kubectl wait --for=condition=Established crd/sparkconnects.sparkoperator.k8s.io --timeout=120s
+      kubectl wait --for=condition=Available --timeout=180s deployment --all -n spark-operator
+      create_deployments spark-connect
+      create_deployments aster

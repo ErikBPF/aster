@@ -1,7 +1,8 @@
 # Draft contract (@unautomated). The equivalent behavior is exercised by the
 # unit tests in crates/catalogs/src/lib.rs (URL building, response parsing,
-# health) and by the catalog page smoke path in the justfile. Binding these
-# steps to a Gherkin runner needs an Iceberg REST fixture (proposal IP S8/S11).
+# health, token and client-credential handling) and by the catalog page smoke
+# path in the justfile. Binding these steps to a Gherkin runner needs an Iceberg
+# REST fixture (proposal IP S8/S11).
 @contract @unautomated
 Feature: Polaris catalog navigation
 
@@ -39,3 +40,9 @@ Feature: Polaris catalog navigation
     Given a catalog configured with an access token
     When the catalog calls the Iceberg REST API
     Then the request carries that token as a bearer credential
+
+  Scenario: OAuth2 client credentials are exchanged for a token
+    Given a catalog configured with a client id and secret but no token
+    When the catalog calls the Iceberg REST API
+    Then the credentials are exchanged for an access token
+    And the request carries that token as a bearer credential

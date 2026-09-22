@@ -1,0 +1,32 @@
+# Hand-authored Cube semantic model for the TPC-H seed table sales.partsupp.
+cubes:
+  - name: "partsupp"
+    sql_table: "sales.partsupp"
+    description: "TPC-H partsupp; one row per part-supplier pair"
+    dimensions:
+      - name: "partkey"
+        sql: "partkey"
+        type: number
+        primary_key: true
+      - name: "suppkey"
+        sql: "suppkey"
+        type: number
+        primary_key: true
+      - name: "comment"
+        sql: "comment"
+        type: string
+    measures:
+      - name: "count"
+        type: count
+      - name: "total_available_quantity"
+        sql: "availqty"
+        type: sum
+      - name: "average_supply_cost"
+        sql: "supplycost"
+        type: avg
+        format: currency
+      # Indicator: what the currently available stock is worth at supply cost.
+      - name: "inventory_value"
+        sql: "availqty * supplycost"
+        type: sum
+        format: currency

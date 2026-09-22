@@ -59,36 +59,65 @@ docker/            dev + server + tui images
 
 ## Build and test
 
-The dev host has Docker but no Rust and no cargo; builds run on `cache-host` through
-its declared `devenv`, driven by `just`. The local checkout stays the source of
-truth. Local equivalents with a container image exist too.
+`devenv` is the only toolchain source: `devenv shell` provides Rust, protoc,
+clippy and the container/Kubernetes tools, so a contributor needs Nix and
+nothing else on the host. Every workflow is a `just` recipe, and `just ci` is
+the gate.
 
 ```
-just sync            # rsync the workspace to cache-host (deletes stale files there)
-just remote-check    # cargo check --workspace --all-targets
-just remote-test     # cargo test --workspace
-just remote-clippy   # clippy -D warnings
-just fmt-remote      # format on cache-host, pull the result back, verify
-just ci              # fmt + clippy + tests + features + repo contract (devenv)
+devenv shell         # toolchain: cargo, rustfmt, clippy, protoc, just, kubectl…
+just ci              # fmt + clippy -D warnings + tests + features + repo contract
+just check           # cargo check --workspace --all-targets
+just test            # cargo test --workspace
 just features        # every .feature declares a Feature and a Scenario
 just repo-check      # binding for features/repo-setup.feature
+just providers-check # provider matrix and selection sites stay in sync
 just build-dev       # container image with rustfmt + clippy
 just build           # production image (server + controller)
 just build-tui       # TUI image
-just compose-up      # compose: valkey + postgres + server
+just compose-up      # compose: valkey + postgres + server, mock engines
 just chart-lint      # render charts/aster and validate with kubeconform
 ```
+
+A remote build host is optional, not required: `just remote-check` /
+`remote-test` / `remote-ci` rsync the workspace to `ASTER_BUILD_HOST` (default
+`cache-host`) and run there when a faster machine is at hand.
+
+### Self-contained development stack
+
+`just stack-bootstrap` brings up the whole compute path locally, on a throwaway
+minikube cluster: aster (server, Postgres, Valkey) plus Trino through Trino
+Gateway and Spark Connect (YuniKorn + the Spark operator). It pulls only public
+upstream images — no Harbor, no platform host, no private DNS — and needs only a
+container driver (podman or docker).
+
+```sh
+devenv shell
+just stack-bootstrap        # minikube-start + build-minikube + stack-up local
+just stack-up trino         # profiles: local (default) | trino | spark | apps
+just stack-status
+cargo build -p aster-server
+ASTER_LIVE_CONTEXT=aster tests/live-backends.sh
+just stack-down && just minikube-delete
+```
+
+`just build-minikube` builds `aster-server:local` from `docker/Dockerfile.server`
+and side-loads it into minikube's containerd, so the server under test is the
+working tree with no registry involved. A profile only starts the backends it
+names; the engines it leaves out report unhealthy in `/api/engines` without
+blocking the server.
 
 ### Live compute backends
 
 `features/live-backends.feature` is bound by `tests/live-backends.sh`, which
-runs a built server against the real platform Trino (through the Trino Gateway)
-and the platform-owned Spark Connect. It needs a reachable cluster and two
-port-forwards, so it is **not** part of `just ci`:
+runs a built server against a real Trino (through the Trino Gateway) and a real
+Spark Connect. By default it targets the self-contained minikube stack above; it
+needs a reachable cluster, a built binary and two port-forwards, so it is **not**
+part of `just ci`:
 
 ```
-just build
-tests/live-backends.sh        # or: ASTER_SERVER_BIN=... tests/live-backends.sh
+cargo build -p aster-server
+ASTER_LIVE_CONTEXT=aster tests/live-backends.sh   # or ASTER_SERVER_BIN=... tests/live-backends.sh
 ```
 
 It points `ASTER_ENGINES` at `trino-gw;trino;http://127.0.0.1:<port>;lab` and
@@ -98,7 +127,9 @@ It points `ASTER_ENGINES` at `trino-gw;trino;http://127.0.0.1:<port>;lab` and
 both engines, the gateway's routing group and absent-group fallback, the
 refused-grant path and the audit rows. The Spark engine sends the routing
 group's `lab` only to Trino; the Spark endpoint is rewritten to the client's
-`sc://host:port` form automatically.
+`sc://host:port` form automatically. Point it at another cluster with
+`ASTER_LIVE_CONTEXT`, and at other namespaces/ports with the `ASTER_LIVE_*`
+overrides.
 
 Calling a gRPC method with `grpcurl` (no reflection needed, the proto is in the
 repository):
@@ -236,8 +267,7 @@ values may be bare names or full paths (`/aster-admins`), so both IdPs map.
 `keycloak/aster-realm.json`: realm `aster`, groups `aster-admins` and
 `aster-editors`, users `root` (admin), `alice` (editor) and `bob` (viewer), and
 the confidential client `aster` with the group-membership mapper. The
-credentials in that file are development values. Keycloak has no Harbor proxy
-yet, which is why this service is local-only.
+credentials in that file are development values, and the service is local-only.
 
 Run the server on the host, not in compose: the issuer it discovers has to be
 the one the browser sees.
@@ -275,6 +305,6 @@ Thin vertical is implemented: SSO (or the dev seam) -> git-backed notebook ->
 pooled engine execution with per-subject grants -> audit row, plus catalog
 browsing, the controller, the TUI, LLM-assisted cells, data contracts, shared
 session/working state in Valkey and the gRPC/Connect RPC surface in
-`proto/aster.proto`. The deployment manifests live in `platform-gitops` under
-`apps/platform/aster` and stay unsynced until the prerequisite runtime (proposal
-D6) and the published Harbor image exist.
+`proto/aster.proto`. aster is a standalone experiment: it runs on minikube from
+`charts/aster` or the `k8s/stack/` manifests, pulling only public upstream
+images, and it is not deployed to the platform cluster.

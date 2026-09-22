@@ -1,0 +1,26 @@
+# Spark operator for the self-contained dev stack. DEV-ONLY: a cluster install
+# uses the chart with its own values. Values are top-level here because devspace
+# installs the upstream chart directly, whereas a wrapper chart would nest them
+# under its own key.
+#
+# The operator watches only spark-jobs, and it routes driver/executor pods
+# through YuniKorn so the SparkConnect CR's `schedulerName: yunikorn` and
+# `root.main` queue resolve.
+controller:
+  replicas: 1
+  batchScheduler:
+    enable: true
+    default: yunikorn
+  resources:
+    requests: {cpu: 250m, memory: 512Mi}
+    limits: {cpu: 500m, memory: 1Gi}
+
+webhook:
+  enable: true
+  resources:
+    requests: {cpu: 50m, memory: 128Mi}
+    limits: {cpu: 250m, memory: 256Mi}
+
+spark:
+  jobNamespaces:
+    - spark-jobs

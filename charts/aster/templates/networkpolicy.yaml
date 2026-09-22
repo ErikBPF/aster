@@ -17,23 +17,29 @@ spec:
   policyTypes:
     - Ingress
     - Egress
+  {{- if or .Values.networkPolicy.ingressNamespaces .Values.networkPolicy.metricsNamespaces }}
   ingress:
+    {{- range .Values.networkPolicy.ingressNamespaces }}
     - from:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: {{ .Values.networkPolicy.ingressNamespace }}
+              kubernetes.io/metadata.name: {{ . }}
       ports:
         - port: 8080
           protocol: TCP
+    {{- end }}
     # Prometheus targets the pod directly, so the target namespace opens the
     # metrics port to the monitoring namespace itself.
+    {{- range .Values.networkPolicy.metricsNamespaces }}
     - from:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: {{ .Values.networkPolicy.metricsNamespace }}
+              kubernetes.io/metadata.name: {{ . }}
       ports:
-        - port: {{ .Values.server.metricsPort }}
+        - port: {{ $.Values.server.metricsPort }}
           protocol: TCP
+    {{- end }}
+  {{- end }}
   egress:
     # DNS.
     - ports:

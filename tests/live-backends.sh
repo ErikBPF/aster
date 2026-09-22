@@ -3,17 +3,20 @@
 #
 # These are tooling assertions, so they are checked here instead of through a
 # Gherkin runner: every check prints what it verified and any failure exits
-# non-zero. Unlike the other scripts they need a reachable platform cluster, a
-# built server binary and two port-forwards, so they are run explicitly and are
-# not part of `just ci`:
+# non-zero. Unlike the other scripts they need a reachable cluster, a built
+# server binary and two port-forwards, so they are run explicitly and are not
+# part of `just ci`:
 #
-#   just build                       # or ASTER_SERVER_BIN=... tests/live-backends.sh
+#   just stack-bootstrap        # self-contained minikube stack (default context)
 #   tests/live-backends.sh
+#
+# Against another cluster, set ASTER_LIVE_CONTEXT (and the namespace/port
+# overrides below).
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-context=${ASTER_LIVE_CONTEXT:-platform}
+context=${ASTER_LIVE_CONTEXT:-aster}
 trino_namespace=${ASTER_LIVE_TRINO_NAMESPACE:-trino}
 spark_namespace=${ASTER_LIVE_SPARK_NAMESPACE:-spark-jobs}
 gateway_port=${ASTER_LIVE_GATEWAY_PORT:-18092}
