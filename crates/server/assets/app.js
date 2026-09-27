@@ -9,8 +9,6 @@ const workspace = nbNode?.dataset.workspace || 'session';
 let contentRevision = nbNode?.dataset.contentRevision || null;
 const statusLine = document.getElementById('status');
 const cellsRoot = document.getElementById('cells');
-const helperSession = Array.from(crypto.getRandomValues(new Uint8Array(16)),
-  byte => byte.toString(16).padStart(2, '0')).join('');
 
 
 let dirty = false;
