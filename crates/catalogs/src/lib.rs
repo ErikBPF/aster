@@ -3,13 +3,14 @@
 //! registered stubs; the trait is intentionally product-neutral so the
 //! engine/catalog choice stays a team decision.
 
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 use aster_core::{
     Catalog, CatalogConfig, CatalogId, ColumnSchema, CoreError, Health, Namespace, Result,
-    TableRef, TableSchema,
+    TableDescriptor, TableRef, TableSchema,
 };
 use async_trait::async_trait;
+use serde::{de::DeserializeOwned, Deserialize};
 
 /// Polaris's realm context header. The dev stack runs the single default realm;
 /// a multi-realm deployment would have to make this configurable.
@@ -22,6 +23,53 @@ pub struct PolarisCatalog {
     prefix: String,
     token: Option<String>,
     credential: Option<(String, String)>,
+    generic_tables_enabled: bool,
+}
+
+#[derive(Deserialize)]
+struct GenericList {
+    identifiers: Vec<GenericIdentifier>,
+    #[serde(rename = "next-page-token")]
+    next_page_token: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct GenericIdentifier {
+    namespace: Vec<String>,
+    name: String,
+}
+
+#[derive(Deserialize)]
+struct GenericLoad {
+    table: GenericTable,
+}
+
+#[derive(Deserialize)]
+struct GenericTable {
+    name: String,
+    format: String,
+    #[serde(rename = "base-location")]
+    base_location: Option<String>,
+}
+
+async fn checked_json<T: DeserializeOwned>(
+    request: reqwest::RequestBuilder,
+    operation: &str,
+) -> Result<T> {
+    let response = request
+        .send()
+        .await
+        .map_err(|error| CoreError::Catalog(error.to_string()))?;
+    if !response.status().is_success() {
+        return Err(CoreError::Catalog(format!(
+            "{operation} returned HTTP {}",
+            response.status().as_u16()
+        )));
+    }
+    response
+        .json()
+        .await
+        .map_err(|error| CoreError::Catalog(format!("invalid {operation} response: {error}")))
 }
 
 impl PolarisCatalog {
@@ -37,6 +85,7 @@ impl PolarisCatalog {
             prefix: prefix.into(),
             token: None,
             credential: None,
+            generic_tables_enabled: false,
         }
     }
 
@@ -54,6 +103,13 @@ impl PolarisCatalog {
                 .split_once(':')
                 .map(|(id, secret)| (id.to_string(), secret.to_string()))
         });
+        self
+    }
+
+    /// Generic metadata is a separate beta API. Runtime browsing stays off
+    /// until a format-aware row-read and storage-policy gate validates it.
+    pub fn with_generic_tables(mut self, enabled: bool) -> Self {
+        self.generic_tables_enabled = enabled;
         self
     }
 
@@ -104,6 +160,136 @@ impl PolarisCatalog {
             None => builder,
         })
     }
+
+    async fn generic_request(&self, path: &[&str]) -> Result<reqwest::RequestBuilder> {
+        let mut url = reqwest::Url::parse(&format!(
+            "{}/api/catalog/polaris/v1/",
+            self.endpoint.trim_end_matches('/')
+        ))
+        .map_err(|_| CoreError::Catalog("invalid Polaris endpoint".into()))?;
+        {
+            let mut segments = url
+                .path_segments_mut()
+                .map_err(|_| CoreError::Catalog("invalid Polaris endpoint path".into()))?;
+            segments.pop_if_empty();
+            segments.push(&self.prefix);
+            for part in path {
+                segments.push(part);
+            }
+        }
+        let builder = self.client.get(url).header("Accept", "application/json");
+        Ok(match self.bearer().await? {
+            Some(token) => builder.bearer_auth(token),
+            None => builder,
+        })
+    }
+
+    async fn list_iceberg_tables(&self, namespace: &str) -> Result<Vec<TableRef>> {
+        let path = format!("namespaces/{namespace}/tables");
+        let payload: serde_json::Value =
+            checked_json(self.request(&path).await?, "Iceberg list").await?;
+        let identifiers = payload
+            .get("identifiers")
+            .and_then(|value| value.as_array())
+            .ok_or_else(|| CoreError::Catalog("Iceberg list has no identifiers".into()))?;
+        Ok(identifiers
+            .iter()
+            .map(|item| TableRef {
+                namespace: item
+                    .get("namespace")
+                    .and_then(|value| value.as_array())
+                    .map(|parts| {
+                        parts
+                            .iter()
+                            .filter_map(|part| part.as_str())
+                            .collect::<Vec<_>>()
+                            .join(".")
+                    })
+                    .unwrap_or_else(|| namespace.to_string()),
+                name: item["name"].as_str().unwrap_or_default().to_string(),
+            })
+            .collect())
+    }
+
+    async fn list_generic_refs(&self, namespace: &str) -> Result<Vec<TableRef>> {
+        let mut tables = Vec::new();
+        let mut seen_names = HashSet::new();
+        let mut seen_tokens = HashSet::new();
+        let mut page_token: Option<String> = None;
+        loop {
+            let request = self
+                .generic_request(&["namespaces", namespace, "generic-tables"])
+                .await?;
+            let request = match &page_token {
+                Some(token) => request.query(&[("pageToken", token)]),
+                None => request,
+            };
+            let page: GenericList = checked_json(request, "Generic Table list").await?;
+            for item in page.identifiers {
+                if item.namespace.join(".") != namespace || item.name.trim().is_empty() {
+                    return Err(CoreError::Catalog(
+                        "Generic Table list contains an invalid identifier".into(),
+                    ));
+                }
+                if !seen_names.insert(item.name.clone()) {
+                    return Err(CoreError::Catalog(
+                        "Generic Table list contains a duplicate name".into(),
+                    ));
+                }
+                tables.push(TableRef {
+                    namespace: namespace.to_string(),
+                    name: item.name,
+                });
+            }
+            match page.next_page_token {
+                None => return Ok(tables),
+                Some(token) if token.is_empty() || !seen_tokens.insert(token.clone()) => {
+                    return Err(CoreError::Catalog(
+                        "Generic Table list has an invalid page token".into(),
+                    ));
+                }
+                Some(token) => page_token = Some(token),
+            }
+        }
+    }
+
+    pub async fn load_generic_table(&self, table: &TableRef) -> Result<TableDescriptor> {
+        let request = self
+            .generic_request(&[
+                "namespaces",
+                &table.namespace,
+                "generic-tables",
+                &table.name,
+            ])
+            .await?;
+        let loaded: GenericLoad = checked_json(request, "Generic Table load").await?;
+        if loaded.table.name != table.name || loaded.table.format.trim().is_empty() {
+            return Err(CoreError::Catalog(
+                "Generic Table load has invalid metadata".into(),
+            ));
+        }
+        if let Some(location) = &loaded.table.base_location {
+            let parsed = reqwest::Url::parse(location).map_err(|_| {
+                CoreError::Catalog("Generic Table has malformed base location".into())
+            })?;
+            if parsed.cannot_be_a_base()
+                || !parsed.username().is_empty()
+                || parsed.password().is_some()
+                || parsed.query().is_some()
+                || parsed.fragment().is_some()
+            {
+                return Err(CoreError::Catalog(
+                    "Generic Table has malformed base location".into(),
+                ));
+            }
+        }
+        Ok(TableDescriptor {
+            table: table.clone(),
+            format: Some(loaded.table.format),
+            base_location: loaded.table.base_location,
+            schema_available: false,
+        })
+    }
 }
 
 #[async_trait]
@@ -128,15 +314,8 @@ impl Catalog for PolarisCatalog {
     }
 
     async fn list_namespaces(&self) -> Result<Vec<Namespace>> {
-        let payload: serde_json::Value = self
-            .request("namespaces")
-            .await?
-            .send()
-            .await
-            .map_err(|error| CoreError::Catalog(error.to_string()))?
-            .json()
-            .await
-            .map_err(|error| CoreError::Catalog(error.to_string()))?;
+        let payload: serde_json::Value =
+            checked_json(self.request("namespaces").await?, "namespace list").await?;
 
         let namespaces = payload
             .get("namespaces")
@@ -160,55 +339,58 @@ impl Catalog for PolarisCatalog {
     }
 
     async fn list_tables(&self, namespace: &str) -> Result<Vec<TableRef>> {
-        let path = format!("namespaces/{namespace}/tables");
-        let payload: serde_json::Value = self
-            .request(&path)
-            .await?
-            .send()
-            .await
-            .map_err(|error| CoreError::Catalog(error.to_string()))?
-            .json()
-            .await
-            .map_err(|error| CoreError::Catalog(error.to_string()))?;
+        if self.generic_tables_enabled {
+            Ok(self
+                .list_table_descriptors(namespace)
+                .await?
+                .into_iter()
+                .map(|descriptor| descriptor.table)
+                .collect())
+        } else {
+            self.list_iceberg_tables(namespace).await
+        }
+    }
 
-        let tables = payload
-            .get("identifiers")
-            .and_then(|value| value.as_array())
-            .map(|items| {
-                items
-                    .iter()
-                    .map(|item| TableRef {
-                        namespace: item
-                            .get("namespace")
-                            .and_then(|value| value.as_array())
-                            .map(|parts| {
-                                parts
-                                    .iter()
-                                    .filter_map(|part| part.as_str())
-                                    .collect::<Vec<_>>()
-                                    .join(".")
-                            })
-                            .unwrap_or_else(|| namespace.to_string()),
-                        name: item["name"].as_str().unwrap_or_default().to_string(),
-                    })
-                    .collect()
+    async fn list_table_descriptors(&self, namespace: &str) -> Result<Vec<TableDescriptor>> {
+        let iceberg = self.list_iceberg_tables(namespace).await?;
+        let mut names: HashSet<_> = iceberg.iter().map(|table| table.name.clone()).collect();
+        let mut descriptors: Vec<_> = iceberg
+            .into_iter()
+            .map(|table| TableDescriptor {
+                table,
+                format: Some("iceberg".into()),
+                base_location: None,
+                schema_available: true,
             })
-            .unwrap_or_default();
-
-        Ok(tables)
+            .collect();
+        if self.generic_tables_enabled {
+            for table in self.list_generic_refs(namespace).await? {
+                if !names.insert(table.name.clone()) {
+                    return Err(CoreError::Catalog(
+                        "Iceberg and Generic Table lists contain the same name".into(),
+                    ));
+                }
+                descriptors.push(self.load_generic_table(&table).await?);
+            }
+        }
+        Ok(descriptors)
     }
 
     async fn table_schema(&self, table: &TableRef) -> Result<TableSchema> {
+        if self.generic_tables_enabled
+            && self
+                .list_generic_refs(&table.namespace)
+                .await?
+                .iter()
+                .any(|generic| generic.name == table.name)
+        {
+            return Err(CoreError::Invalid(
+                "schema unavailable for a Generic Table".into(),
+            ));
+        }
         let path = format!("namespaces/{}/tables/{}", table.namespace, table.name);
-        let payload: serde_json::Value = self
-            .request(&path)
-            .await?
-            .send()
-            .await
-            .map_err(|error| CoreError::Catalog(error.to_string()))?
-            .json()
-            .await
-            .map_err(|error| CoreError::Catalog(error.to_string()))?;
+        let payload: serde_json::Value =
+            checked_json(self.request(&path).await?, "Iceberg table load").await?;
 
         let fields = payload
             .pointer("/metadata/schemas/0/fields")

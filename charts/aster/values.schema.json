@@ -90,10 +90,26 @@
       "type": "object",
       "properties": {
         "replicas": { "type": "integer", "minimum": 1 },
+        "catalogBindings": { "type": "string" },
         "contractsDir": { "type": "string" },
         "notebookDir": { "type": "string" },
         "metricsPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
         "otlpEndpoint": { "type": "string" },
+        "sharedModels": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "allowedOrigins": { "type": "string" },
+            "activeKey": { "type": "string" },
+            "keysetSecretName": { "type": "string" },
+            "authorityEnabled": { "type": "boolean" },
+            "useEnabled": { "type": "boolean" },
+            "authentikApiOrigin": { "type": "string" },
+            "adminGroupUuid": { "type": "string" },
+            "editorGroupUuid": { "type": "string" },
+            "readTokenSecretName": { "type": "string" }
+          }
+        },
         "identity": {
           "type": "object",
           "properties": {
@@ -104,7 +120,8 @@
             "groupsClaim": { "type": "string" },
             "redirectUri": { "type": "string" },
             "adminGroup": { "type": "string" },
-            "editorGroup": { "type": "string" }
+            "editorGroup": { "type": "string" },
+            "userUuidClaim": { "type": "string" }
           }
         },
         "sessionTtlSeconds": { "type": "integer", "minimum": 60 },

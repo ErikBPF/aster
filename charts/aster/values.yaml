@@ -1,7 +1,7 @@
 # Defaults are intentional placeholders: `just chart-lint` renders them, and a
-# default install runs on any cluster with no private registry and no external
-# secret store. Credentials are never values: the chart generates them at
-# install time and keeps them in the Secret below, or reads an existing one.
+# default install needs only the side-loaded Aster image, not a private registry
+# or external secret store. Credentials are never values: the chart generates
+# them at install time and keeps them in the Secret below, or reads an existing one.
 
 image:
   # Any registry/repository. The default is the image `just build-minikube`
@@ -57,6 +57,8 @@ catalogs:
     catalog: quickstart_catalog
 
 server:
+  # Browse catalog ID;engine ID;engine-native SQL catalog;policy, comma-separated.
+  catalogBindings: polaris;trino-local;polaris;protected
   replicas: 1
   bind: 0.0.0.0:8080
   notebookDir: /data/notebooks
@@ -67,16 +69,32 @@ server:
   sessionTtlSeconds: 28800
   handshakeTtlSeconds: 300
   userStateTtlSeconds: 2592000
+  # Admin-only shared registrations are opt-in until group/role revocation is
+  # enforced. Supply the keyset through a separate existing Kubernetes Secret;
+  # never put application keys in chart values.
+  sharedModels:
+    enabled: false
+    allowedOrigins: ""
+    activeKey: ""
+    keysetSecretName: ""
+    # Authority can secure SSO admin management before ordinary model use.
+    authorityEnabled: false
+    # Remains off until live Authentik removal and grant checks pass.
+    useEnabled: false
+    authentikApiOrigin: ""
+    adminGroupUuid: ""
+    editorGroupUuid: ""
+    readTokenSecretName: ""
   # Development-only identity seam; leave empty in a real deployment so SSO is
   # the only way in.
   grants: ""
   metricsPort: 9090
   # OTLP endpoint for traces. Empty keeps tracing on stdout.
   otlpEndpoint: ""
-  # `oidc` is any OpenID Connect provider; the values below differ per IdP.
-  # `none` accepts the development seam and is refused in a real deployment.
+  # `none` enables development login for a private throwaway cluster. Configure
+  # `oidc` with an issuer before exposing Aster beyond the local dev cluster.
   identity:
-    kind: oidc
+    kind: none
     issuer: ""
     clientId: aster
     scopes: openid
@@ -84,6 +102,7 @@ server:
     redirectUri: http://localhost:8080/callback
     adminGroup: aster-admins
     editorGroup: aster-editors
+    userUuidClaim: ""
   resources:
     requests:
       cpu: 50m

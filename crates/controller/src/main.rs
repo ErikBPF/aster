@@ -40,7 +40,7 @@ async fn main() -> anyhow::Result<()> {
     .execute(&pool)
     .await?;
 
-    let config = AppConfig::from_env();
+    let config = AppConfig::from_env()?;
     let interval = env_number("ASTER_RECONCILE_SECONDS", RECONCILE_SECONDS as i64) as u64;
     let retention_days =
         env_number("ASTER_AUDIT_RETENTION_DAYS", AUDIT_RETENTION_DAYS as i64) as i32;

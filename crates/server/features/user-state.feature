@@ -32,3 +32,28 @@ Feature: User working state follows the subject across containers
   Scenario: A subject with nothing recorded reads an empty state
     Given subject "carol" is signed in as editor
     Then reading the state returns no notebook
+
+  Scenario: Helper selection belongs to each user and notebook
+    Given alice selected helper "lab-qwen" for notebook "sales"
+    And alice selected helper "cloud" for notebook "forecast"
+    And bob selected helper "cloud" for notebook "sales"
+    When alice reopens notebook "sales" after visiting "forecast"
+    Then alice's selected helper is "lab-qwen"
+    And bob's selection and the Git notebook content are unchanged
+
+  Scenario: A deleted selection remains visible until replaced
+    Given alice selected helper "lab-qwen" for notebook "sales"
+    When alice deletes helper "lab-qwen"
+    Then opening notebook "sales" still shows "lab-qwen" as unavailable
+    And generation does not use another helper automatically
+
+  Scenario: A legacy last-notebook helper migrates once
+    Given alice's legacy working state names notebook "sales" and helper "lab-qwen"
+    When alice opens notebook "sales"
+    Then the scoped selection is "lab-qwen"
+    And a later legacy state write naming another helper does not replace it
+
+  Scenario: Different notebook selections do not overwrite one another
+    Given alice has notebooks "sales" and "forecast"
+    When two tabs concurrently select different helpers for those notebooks
+    Then each notebook retains its own selected helper

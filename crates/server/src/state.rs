@@ -2,12 +2,12 @@
 //!
 //! The cookie carries an opaque id and nothing else; every container resolves it
 //! here, so a session survives a restart and works behind more than one replica.
-//! Keys are namespaced `aster:v1:<domain>:<entity>` and every write carries a
-//! TTL, so an abandoned session expires without a sweeper.
+//! Keys are namespaced `aster:v1:<domain>:<entity>`. Sessions, handshakes,
+//! and last-opened working state expire; notebook helper choices persist.
 
 use aster_core::{
-    new_sid, CoreError, HandshakeStore, Result, Role, SessionRecord, SessionRegistry, UserState,
-    WorkingState,
+    new_sid, CoreError, HandshakeStore, Identity, Result, Role, SessionRecord, SessionRegistry,
+    UserState, WorkingState,
 };
 use redis::aio::MultiplexedConnection;
 use redis::AsyncCommands;
@@ -33,6 +33,10 @@ fn handshake_key(state: &str) -> String {
 
 fn user_state_key(subject: &str) -> String {
     format!("{PREFIX}:user:{subject}")
+}
+
+fn user_helpers_key(subject: &str) -> String {
+    format!("{PREFIX}:user-helpers:{subject}")
 }
 
 async fn open_connection(url: &str) -> Result<MultiplexedConnection> {
@@ -88,16 +92,8 @@ pub async fn connect(
     Ok((sessions, handshakes, user_state))
 }
 
-#[async_trait::async_trait]
-impl SessionRegistry for ValkeySessions {
-    async fn create(
-        &self,
-        subject: &str,
-        roles: Vec<Role>,
-        user_agent: Option<String>,
-        now: i64,
-    ) -> Result<SessionRecord> {
-        let record = SessionRecord::new(new_sid()?, subject.to_string(), roles, now, user_agent);
+impl ValkeySessions {
+    async fn persist(&self, record: SessionRecord) -> Result<SessionRecord> {
         let mut conn = self.conn.clone();
         let body = serde_json::to_string(&record)
             .map_err(|error| CoreError::Storage(format!("session encode: {error}")))?;
@@ -106,14 +102,55 @@ impl SessionRegistry for ValkeySessions {
             .await
             .map_err(storage)?;
         let _: () = conn
-            .sadd(subject_index(subject), &record.sid)
+            .sadd(subject_index(&record.subject), &record.sid)
             .await
             .map_err(storage)?;
         let _: () = conn
-            .expire(subject_index(subject), self.ttl_seconds)
+            .expire(subject_index(&record.subject), self.ttl_seconds)
             .await
             .map_err(storage)?;
         Ok(record)
+    }
+}
+
+#[async_trait::async_trait]
+impl SessionRegistry for ValkeySessions {
+    async fn create(
+        &self,
+        subject: &str,
+        roles: Vec<Role>,
+        groups: Vec<String>,
+        user_agent: Option<String>,
+        now: i64,
+    ) -> Result<SessionRecord> {
+        let record = SessionRecord::new(
+            new_sid()?,
+            subject.to_string(),
+            roles,
+            groups,
+            now,
+            user_agent,
+        );
+        self.persist(record).await
+    }
+
+    async fn create_verified(
+        &self,
+        identity: &Identity,
+        user_agent: Option<String>,
+        now: i64,
+    ) -> Result<SessionRecord> {
+        let mut record = SessionRecord::new(
+            new_sid()?,
+            identity.subject.clone(),
+            identity.roles.clone(),
+            identity.groups.clone(),
+            now,
+            user_agent,
+        );
+        record.user_uuid = identity.user_uuid.clone();
+        record.verified = true;
+        self.persist(record).await
     }
 
     async fn get(&self, sid: &str, now: i64) -> Result<Option<SessionRecord>> {
@@ -253,6 +290,37 @@ impl UserState for ValkeyUserState {
             .map_err(storage)?;
         Ok(())
     }
+
+    async fn get_helper(&self, subject: &str, notebook: &str) -> Result<Option<String>> {
+        let mut conn = self.conn.clone();
+        conn.hget(user_helpers_key(subject), notebook)
+            .await
+            .map_err(storage)
+    }
+
+    async fn put_helper(&self, subject: &str, notebook: &str, helper: &str) -> Result<()> {
+        let mut conn = self.conn.clone();
+        let _: usize = conn
+            .hset(user_helpers_key(subject), notebook, helper)
+            .await
+            .map_err(storage)?;
+        Ok(())
+    }
+
+    async fn put_helper_if_absent(
+        &self,
+        subject: &str,
+        notebook: &str,
+        helper: &str,
+    ) -> Result<String> {
+        let mut conn = self.conn.clone();
+        let key = user_helpers_key(subject);
+        let _: bool = conn
+            .hset_nx(&key, notebook, helper)
+            .await
+            .map_err(storage)?;
+        conn.hget(key, notebook).await.map_err(storage)
+    }
 }
 
 #[cfg(test)]
@@ -264,6 +332,7 @@ mod tests {
         assert_eq!(handshake_key("abc"), "aster:v1:handshake:abc");
         assert_eq!(subject_index("alice"), "aster:v1:sessions:alice");
         assert_eq!(user_state_key("alice"), "aster:v1:user:alice");
+        assert_eq!(user_helpers_key("alice"), "aster:v1:user-helpers:alice");
     }
 
     /// Proves the cross-container claim: two independent connections (what two
@@ -281,7 +350,16 @@ mod tests {
             connect(&url, 3600, 300, 3600).await.expect("container two");
 
         let record = one
-            .create("alice", vec![Role::Editor], Some("test".into()), 1_000)
+            .create_verified(
+                &Identity {
+                    subject: "alice".into(),
+                    roles: vec![Role::Editor],
+                    groups: vec!["/org/analysts".into()],
+                    user_uuid: Some("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".into()),
+                },
+                Some("test".into()),
+                1_000,
+            )
             .await
             .expect("create");
         let seen = two
@@ -291,6 +369,15 @@ mod tests {
             .expect("the other container sees the session");
         assert_eq!(seen.subject, "alice");
         assert_eq!(seen.roles, vec![Role::Editor]);
+        assert_eq!(seen.groups, vec!["/org/analysts"]);
+        assert!(
+            seen.verified,
+            "verified OIDC provenance survives Valkey lookup"
+        );
+        assert_eq!(
+            seen.user_uuid.as_deref(),
+            Some("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
+        );
 
         one_handshakes
             .put("state-1", "verifier-1:nonce-1", 1_000)
@@ -313,7 +400,7 @@ mod tests {
         // An idle session that expires must also leave its index entry behind
         // it, or a subject's set grows with every session it ever created.
         let expiring = one
-            .create("alice", vec![Role::Editor], None, 2_000)
+            .create("alice", vec![Role::Editor], vec![], None, 2_000)
             .await
             .expect("create");
         assert_eq!(
@@ -332,5 +419,57 @@ mod tests {
             Some(state),
             "the other container resumes where alice left off"
         );
+    }
+
+    #[tokio::test]
+    #[ignore = "needs a disposable Valkey at ASTER_TEST_STATE_URL"]
+    async fn notebook_helpers_are_isolated_atomic_and_outlive_working_state() {
+        let url = std::env::var("ASTER_TEST_STATE_URL").expect("disposable Valkey URL");
+        let (_, _, one) = connect(&url, 3600, 300, 1).await.unwrap();
+        let (_, _, two) = connect(&url, 3600, 300, 1).await.unwrap();
+        let alice = format!("aster-v6-alice-{}", new_sid().unwrap());
+        let bob = format!("aster-v6-bob-{}", new_sid().unwrap());
+
+        let (sales, forecast) = tokio::join!(
+            one.put_helper(&alice, "sales", "alpha"),
+            two.put_helper(&alice, "forecast", "beta"),
+        );
+        sales.unwrap();
+        forecast.unwrap();
+        two.put_helper(&bob, "sales", "beta").await.unwrap();
+        assert_eq!(
+            one.get_helper(&alice, "sales").await.unwrap().as_deref(),
+            Some("alpha")
+        );
+        assert_eq!(
+            one.get_helper(&alice, "forecast").await.unwrap().as_deref(),
+            Some("beta")
+        );
+        assert_eq!(
+            one.get_helper(&bob, "sales").await.unwrap().as_deref(),
+            Some("beta")
+        );
+        assert_eq!(one.get_helper(&bob, "forecast").await.unwrap(), None);
+        assert_eq!(
+            one.put_helper_if_absent(&alice, "sales", "beta")
+                .await
+                .unwrap(),
+            "alpha"
+        );
+
+        let mut legacy = WorkingState::default();
+        legacy.notebook = Some("sales".into());
+        legacy.helper = Some("beta".into());
+        one.put(&alice, &legacy).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+        assert_eq!(two.get(&alice).await.unwrap(), None);
+        assert_eq!(
+            two.get_helper(&alice, "sales").await.unwrap().as_deref(),
+            Some("alpha")
+        );
+
+        let mut conn = one.conn.clone();
+        let _: usize = conn.del(user_helpers_key(&alice)).await.unwrap();
+        let _: usize = conn.del(user_helpers_key(&bob)).await.unwrap();
     }
 }

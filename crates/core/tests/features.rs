@@ -81,6 +81,8 @@ async fn a_principal(world: &mut App, subject: String, roles: String) {
             .split(',')
             .map(|role_name| role(role_name.trim()))
             .collect(),
+        groups: vec![],
+        user_uuid: None,
     });
 }
 
@@ -162,6 +164,13 @@ fn push_cell(world: &mut App, id: String, sql: String, engine: Option<String>) {
     });
 }
 
+#[given("that cell has a SQL comment resembling a cell marker")]
+async fn marker_like_sql(world: &mut App) {
+    world.notebook.as_mut().unwrap().cells[0]
+        .sql
+        .push_str("\n-- cell not-a-cell\nSELECT 2");
+}
+
 #[when("the notebook is written to text and read back")]
 async fn round_trip(world: &mut App) {
     let text = world
@@ -176,6 +185,13 @@ async fn round_trip(world: &mut App) {
 async fn has_cells(world: &mut App, count: usize) {
     let notebook = world.notebook.as_ref().expect("a notebook exists");
     assert_eq!(notebook.cells.len(), count);
+}
+
+#[then(expr = "that SQL comment remains in cell {string}")]
+async fn marker_like_sql_preserved(world: &mut App, id: String) {
+    let notebook = world.notebook.as_ref().unwrap();
+    let cell = notebook.cells.iter().find(|cell| cell.id == id).unwrap();
+    assert_eq!(cell.sql, "SELECT 1\n-- cell not-a-cell\nSELECT 2");
 }
 
 #[then(expr = "cell {string} is bound to engine {string}")]
@@ -232,7 +248,7 @@ async fn create_session(world: &mut App, subject: String, roles: String, now: i6
     let roles = roles.split(',').map(|r| role(r.trim())).collect();
     let record = world
         .sessions()
-        .create(&subject, roles, None, now)
+        .create(&subject, roles, vec![], None, now)
         .await
         .expect("the session is created");
     world.sid = record.sid.clone();

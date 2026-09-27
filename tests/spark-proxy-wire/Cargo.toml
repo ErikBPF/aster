@@ -1,0 +1,29 @@
+[package]
+name = "aster-spark-proxy-wire"
+version = "0.0.1"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+aster-core = { path = "../../crates/core" }
+aster-catalogs = { path = "../../crates/catalogs" }
+aster-engines = { path = "../../crates/engines" }
+aster-server = { path = "../../crates/server" }
+apache-spark-connect-core = "=4.2.0"
+async-trait = "0.1"
+axum = "0.8"
+bytes = "1"
+prost = "0.14"
+prost-types = "0.14"
+reqwest = "0.12"
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["net"] }
+tonic = "0.14"
+tonic-prost = "0.14"
+tower = "0.5"
+
+[build-dependencies]
+tonic-prost-build = "0.14"
