@@ -376,6 +376,7 @@ name = "aster-engines"
 version = "0.0.1"
 dependencies = [
  "apache-spark-connect",
+ "apache-spark-connect-core",
  "aster-core",
  "async-trait",
  "base64 0.22.1",

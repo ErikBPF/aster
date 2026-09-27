@@ -6,6 +6,8 @@ const nbNode = document.getElementById('nb');
 const nb = nbNode ? JSON.parse(nbNode.textContent) : null;
 const statusLine = document.getElementById('status');
 const cellsRoot = document.getElementById('cells');
+const helperSession = Array.from(crypto.getRandomValues(new Uint8Array(16)),
+  byte => byte.toString(16).padStart(2, '0')).join('');
 
 let dirty = false;
 let engineInfo = new Map();
@@ -357,7 +359,7 @@ async function generate(btn) {
   outMeta(out, 'asking the model…', '');
   const res = await fetch('/api/ai', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', 'x-opencode-session': helperSession },
     body: JSON.stringify({
       prompt: `Write a query for: ${(nb && nb.title) || 'a report'}`,
       sql: area.value,

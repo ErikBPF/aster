@@ -64,3 +64,18 @@ Feature: User-registered LLM helpers
     And bob has registered "lab-qwen"
     When bob posts a prompt to /api/ai
     Then the request is refused with 403
+
+  Scenario: Helper requests identify the client conversation
+    Given the notebook page has a random conversation identifier
+    When alice generates SQL twice from that page
+    Then both upstream requests carry the same x-opencode-session identifier
+    And the upstream user agent identifies Aster
+    And no browser cookies are forwarded
+
+  Scenario: Legacy callers have independent standalone conversations
+    When alice posts a prompt without a conversation identifier
+    Then the upstream request receives a fresh random conversation identifier
+
+  Scenario: Invalid conversation identifiers are refused
+    When alice posts a prompt with a conversation identifier containing spaces
+    Then the request is refused with 400 before contacting the helper
