@@ -14,3 +14,4 @@ data/
 # the fetched subcharts are build products, the pin lives in Chart.yaml.
 charts/**/Chart.lock
 charts/**/charts/
+/worktrees/

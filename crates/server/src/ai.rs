@@ -172,17 +172,7 @@ pub(crate) async fn generate(
         prompt.push_str(&sql);
     }
 
-    let response = state
-        .http
-        .post(chat_endpoint(&config.base_url))
-        .bearer_auth(&config.api_key)
-        .json(&serde_json::json!({
-            "model": config.model,
-            "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": prompt},
-            ],
-        }))
+    let response = completion_request(&state.http, &config, &prompt, &headers)?
         .send()
         .await
         .map_err(|error| CoreError::Storage(format!("llm request failed: {error}")))?;
@@ -207,6 +197,35 @@ pub(crate) async fn generate(
     Ok(Json(Completion {
         sql: text.trim().to_string(),
     }))
+}
+
+fn completion_request(
+    http: &reqwest::Client,
+    config: &LlmConfig,
+    prompt: &str,
+    headers: &HeaderMap,
+) -> Result<reqwest::RequestBuilder, ApiError> {
+    let session = match headers.get("x-opencode-session") {
+        Some(value) => value
+            .to_str()
+            .ok()
+            .filter(|value| aster_core::llm::valid_id(value))
+            .ok_or_else(|| CoreError::Invalid("invalid helper conversation identifier".into()))?
+            .to_owned(),
+        None => openidconnect::Nonce::new_random().secret().clone(),
+    };
+    Ok(http
+        .post(chat_endpoint(&config.base_url))
+        .header("x-opencode-session", session)
+        .header("user-agent", concat!("aster/", env!("CARGO_PKG_VERSION")))
+        .bearer_auth(&config.api_key)
+        .json(&serde_json::json!({
+            "model": config.model,
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+        })))
 }
 
 /// The named helper, or the first one the subject registered.
@@ -243,7 +262,53 @@ fn chat_endpoint(base_url: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::chat_endpoint;
+    use super::*;
+
+    #[test]
+    fn helper_requests_preserve_conversation_affinity_without_forwarding_credentials() {
+        let config = LlmConfig {
+            subject: "alice".into(),
+            id: "go".into(),
+            base_url: "https://example.invalid/v1".into(),
+            model: "deepseek-v4.1-flash".into(),
+            api_key: "upstream-token".into(),
+        };
+        let client = reqwest::Client::new();
+        let mut headers = HeaderMap::new();
+        headers.insert("x-opencode-session", "conversation-123".parse().unwrap());
+        headers.insert("cookie", "aster_session=private".parse().unwrap());
+        let request = completion_request(&client, &config, "select 1", &headers)
+            .unwrap()
+            .build()
+            .unwrap();
+        assert_eq!(
+            request
+                .headers()
+                .get("x-opencode-session")
+                .map(|s| s.to_str().unwrap()),
+            Some("conversation-123")
+        );
+        assert_eq!(
+            request.headers()["user-agent"],
+            concat!("aster/", env!("CARGO_PKG_VERSION"))
+        );
+        assert!(!request.headers().contains_key("cookie"));
+        assert_eq!(request.headers()["authorization"], "Bearer upstream-token");
+        headers.insert("x-opencode-session", "not a session".parse().unwrap());
+        assert!(completion_request(&client, &config, "select 1", &headers).is_err());
+        let first = completion_request(&client, &config, "select 1", &HeaderMap::new())
+            .unwrap()
+            .build()
+            .unwrap();
+        let second = completion_request(&client, &config, "select 1", &HeaderMap::new())
+            .unwrap()
+            .build()
+            .unwrap();
+        assert_ne!(
+            first.headers()["x-opencode-session"],
+            second.headers()["x-opencode-session"]
+        );
+    }
 
     #[test]
     fn accepts_a_host_a_v1_base_or_a_full_endpoint() {
