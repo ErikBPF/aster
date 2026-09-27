@@ -1,7 +1,7 @@
 # aster — first testable draft (implementation one-pager)
 
 **Stage / revision:** PL+IP+RV combined / r2 (closing record for S0–S14)
-**Status:** the thin vertical and every queued slice are implemented, tested and container-validated; nothing is deployed and nothing has been exercised against a live Trino, Polaris or identity provider
+**Status:** the thin vertical and every queued slice are implemented, tested and container-validated; a standalone minikube stack is deployed and has been exercised live against Trino, Polaris, RustFS, Spark and an Authentik issuer, and a private GitHub repository is wired as a remote sync target
 **Owner / date:** Erik / 2026-09-16
 **Basis:** platform proposal `docs/proposals/2026-09-14-aster-sql-notebook-platform.md`, `docs/unix-grpc-valkey-plan.md` (D17–D20 accepted 2026-09-16), `docs/quality-audit.md`. This page grants no execution authority.
 
@@ -40,7 +40,7 @@ Notebook format is deliberate: a text `.aster` file (`# aster notebook v1`, `# t
 | S7 web UI | implemented | hand-written HTML/JS by choice; catalog + contracts + AI pages included |
 | S8 catalog tab | implemented | namespace → table → column, catalog errors rendered inline |
 | S9 engine pool routing | implemented | `X-Trino-Routing-Group` sent only when a group is configured |
-| S10 AI assist | partial | registration + completion proxy shipped; notebook evaluation metric not built |
+| S10 AI assist | implemented | personal helpers, notebook chat and per-cell conversations grounded on data contracts, catalog schema and the semantic model, the notebook session exchange, SQL completion and a measured cell panel; the notebook evaluation metric is not built |
 | S11 data contracts | partial | ODCS-shaped JSON only; YAML and Cube unbuilt (D12) |
 | S12 state plane | implemented | Valkey adapter, single-use handshake, fail-closed on store error |
 | S13 working state | implemented | `GET|PUT /api/state`, web resume link, TUI resume |
@@ -71,7 +71,7 @@ Still open and blocking: **D6** where Trino/Gateway/Polaris run (blocks S0 and t
 
 ## What continues / what waits
 
-Continues without a human decision: binding the remaining 12 drafts (the harness selects by tag, so removing `@unautomated` is the whole change), the S10 evaluation metric, editor polish, and Cube definition generation. Waits on the human: D6, D9, D10. S1 (Authentik, OpenBao, Harbor) and the S5 Argo sync are out of scope: aster is a standalone experiment that runs on minikube.
+Continues without a human decision: binding the remaining drafts (the harness selects by tag, so removing `@unautomated` is the whole change; `sql-completion` and `notebook-session-exchange` are bound), the S10 evaluation metric, editor polish, and Cube definition generation. Waits on the human: D6, D9, D10. S1 (Authentik, OpenBao, Harbor) and the S5 Argo sync are out of scope: aster is a standalone experiment that runs on minikube.
 
 ## Risks and recovery
 
@@ -79,4 +79,4 @@ Continues without a human decision: binding the remaining 12 drafts (the harness
 
 **Design risk.** The engine and catalog plugins have never talked to a real Trino or Polaris, so protocol-level surprises (auth scopes, vended credentials, pagination) remain unverified, as does the whole SSO path against a real IdP. The thin slice and the D6 split are the mitigation: every component runs with no engine, no catalog and no issuer, so the dev loop never depends on the missing runtime.
 
-**Source location.** The canonical checkout is `/home/developer/projects/aster` on a `main` branch. It is not pushed anywhere yet; an earlier scratch copy under `/tmp` was lost to tmp cleanup and restored, which is why the working copy no longer lives in a temporary directory. Until S1 creates the org repository, the working copy is the only copy.
+**Source location.** The canonical checkout is `/home/developer/projects/aster` on `main` and is pushed to `git@github.com:ErikBPF/aster.git`; feature work happens on branches in linked worktrees under `worktrees/`. An earlier scratch copy under `/tmp` was lost to tmp cleanup and restored, which is why the working copy no longer lives in a temporary directory.

@@ -20,7 +20,11 @@ OIDC deployments use a signed-in session instead of the development header.
 `GetConversation` and `SendMessage` are Connect RPCs; the server derives the
 subject from authentication and requires a saved notebook and registered
 personal helper. `SendMessage.expected_revision` protects completed history
-from stale concurrent writes. See [AI assistance](ai.md) for behavior.
+from stale concurrent writes; both calls take an optional `cell`, and a cell
+conversation is scoped to its own cell while notebook chat never reads one.
+Five exchange RPCs — `FetchQuery`, `FetchResult`, `FetchSummary`, `SendSummary`
+and `UpdateQuery` — move cell material between conversations inside the
+principal's notebook. See [AI assistance](ai.md) for behavior.
 `RunQuery.catalog_context` identifies the browse catalog; its older `catalog`
 field is the engine-native SQL alias. `ListEngines.catalog_context` filters
 engine choices to connected, granted engines. See [catalogs and compute](catalogs-and-compute.md).
@@ -41,6 +45,7 @@ engine choices to connected, granted engines. See [catalogs and compute](catalog
 | `just polaris-generic-adapter-validation` | Pinned fake Polaris Generic Table list/load plus REST/Connect/browser descriptor browsing, including path-encoded table links. Runtime capability stays disabled; no Delta row or engine-policy proof. |
 | `just conversation-postgres` | Two disposable PostgreSQL databases: default/delegated history, reconnect, isolation and competing revisions. |
 | `just conversation-browser` | Disposable server, fake helper and Chromium: history, sidebar, inert text, explicit SQL insertion and stale-read regression. |
+| `just cell-panel-visual` | Disposable server and Chromium: the cell conversation panel renders and stays within its 30 percent ceiling. |
 | `just compose-up` | Builds and starts the self-contained Compose stack. Verify `/healthz`, then `just compose-down`. |
 | `just chart-lint` | Helm rendering and Kubernetes schema validation; it does not install the chart. |
 | `tests/live-backends.sh` | Live Trino/Gateway and Spark checks against a reachable local stack; outside CI. |

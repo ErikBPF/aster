@@ -40,18 +40,29 @@ histories are distinct — a cell conversation cannot read the notebook
 conversation or another cell's, and the notebook conversation cannot read any
 cell conversation — and each is scoped by authenticated subject. Selecting
 another helper sends that notebook's history to the newly selected helper. Model
-text is rendered inert; a fenced SQL block gets an explicit **Insert SQL as new
-cell** button and never runs by itself.
+text is rendered inert; a fenced SQL block gets one explicit **Insert SQL as new
+cell** button per reply (its last block) and never runs by itself, and
+Ctrl/Cmd+Enter runs the focused cell or sends the focused chat message. The cell
+panel scrolls rather than stretching the cell, and navigating away from a
+notebook no longer asks for confirmation.
 
-The notebook conversation reaches cell material only through five explicit
-exchange operations, each scoped to the requesting principal's notebook and none
+The notebook session also receives a bounded index of the notebook's cells — each
+cell's id and SQL, at most 20 cells or 8 KiB — as untrusted per-turn context, so a
+question about "the first cell" can see it. The index is rebuilt each turn, never
+saved, and only the notebook session receives it; a cell conversation still sees
+its own cell alone.
+
+Beyond that reference material the notebook session reaches cell material through
+five explicit exchange operations, each scoped to the requesting principal's
+notebook and none
 reading a cell conversation: `FetchQuery` (one cell's SQL and the content
 revision it was read at), `FetchResult` (one cell's last recorded result),
 `FetchSummary` (the notebook summary and the cell index), `SendSummary`
 (replace the summary, 8 KiB) and `UpdateQuery` (replace one cell's SQL against
 the expected content revision, refused as a conflict when stale). A cell run
 through `/api/query` or `RunQuery` records its result when the request names the
-notebook and cell, keeping at most 100 rows per cell. Exchange material is
+notebook and cell, keeping at most 100 rows per cell, and a run trims a trailing
+statement terminator so a cell ending in `;` executes. Exchange material is
 bookkeeping, stored apart from the Git notebook document and the conversations:
 `ASTER_EXCHANGE_DATABASE_URL` selects `postgres` and installs only exchange
 tables, `ASTER_EXCHANGE_STORE` overrides that selection, and disposable `memory`
@@ -84,7 +95,10 @@ history — and is labelled untrusted, never instructions.
 retrieval-scoped reference material above; the
 `just conversation-postgres` recipe checks default and delegated persistence
 against two disposable databases. `just conversation-browser` exercises the
-sidebar and inert SQL with a fake helper. A manual Build-host check of
+sidebar and inert SQL with a fake helper, and `just cell-panel-visual` measures
+the cell panel at 28.1 percent of the cell against a 30 percent ceiling. The
+[notebook session exchange file](../crates/server/features/notebook-session-exchange.feature)
+is bound to those router checks. A manual Build-host check of
 `deepseek-go` and saved history is recorded in the platform stage record, not
 run by this repository's CI. The
 [conversation Gherkin file](../crates/server/features/conversations.feature)

@@ -133,3 +133,15 @@ Trino, Polaris Generic Delta, notebook ownership and disposable Sync, and
 shared-model authority; their scope and remaining live gates are listed in
 the audit above. Draft Gherkin remains unbound. The handbook does not count
 file presence as runtime coverage.
+
+## Delivery status, 2026-09-26
+
+Notebook chat gained a per-cell conversation and the notebook session exchange.
+[AI assistance](ai.md), [API and tests](api-and-tests.md),
+[provider matrix](provider-matrix.md) and the
+[implementation record](implementation-one-pager.md) now describe the cell
+panel, the five exchange operations, the trailing statement-terminator trim,
+SQL completion and the measured panel gate (`just cell-panel-visual`).
+`sql-completion` and `notebook-session-exchange` are bound to runnable
+Cucumber scenarios; the stage receipts live in the platform coordination repo
+under `docs/plans/aster-boundaries/`.
