@@ -10,7 +10,7 @@ services:
     image: docker.io/valkey/valkey:9.1.2-alpine
     command: ["valkey-server", "--requirepass", "${VALKEY_PASSWORD:-aster-dev}"]
     ports:
-      - "${ASTER_STATE_PORT:-6379}:6379"
+      - "${ASTER_STATE_PORT:-127.0.0.1:6379}:6379"
     volumes:
       - state:/data
     healthcheck:
@@ -26,7 +26,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aster}
       POSTGRES_DB: ${POSTGRES_DB:-aster}
     ports:
-      - "${ASTER_DB_PORT:-5432}:5432"
+      - "${ASTER_DB_PORT:-127.0.0.1:5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -38,7 +38,7 @@ services:
   # The second identity provider, for the port evaluation. Dev mode, realm
   # imported from keycloak/aster-realm.json. Start-dev leaves the hostname
   # dynamic, so the browser and a host-run server both reach it as
-  # http://localhost:${ASTER_IDP_PORT:-8090}. See README for the login recipe.
+  # http://127.0.0.1:8090. See docs/deploy.md for the login recipe.
   keycloak:
     image: quay.io/keycloak/keycloak:26.7.4
     command: ["start-dev", "--import-realm", "--http-port=8080"]
@@ -46,7 +46,7 @@ services:
       KC_BOOTSTRAP_ADMIN_USERNAME: ${KC_ADMIN_USER:-admin}
       KC_BOOTSTRAP_ADMIN_PASSWORD: ${KC_ADMIN_PASSWORD:-aster-dev-admin}
     ports:
-      - "${ASTER_IDP_PORT:-8090}:8080"
+      - "${ASTER_IDP_PORT:-127.0.0.1:8090}:8080"
     volumes:
       - ./keycloak:/opt/keycloak/data/import:ro
 
@@ -60,6 +60,7 @@ services:
       DATABASE_URL: postgres://${POSTGRES_USER:-aster}:${POSTGRES_PASSWORD:-aster}@postgres:5432/${POSTGRES_DB:-aster}
       ASTER_ENGINES: ${ASTER_ENGINES:-mock-local;mock;local}
       ASTER_CATALOGS: ${ASTER_CATALOGS:-mock-local;mock;local}
+      ASTER_CATALOG_BINDINGS: ${ASTER_CATALOG_BINDINGS:-mock-local;mock-local;mock-local;unprotected}
       ASTER_GRANTS: ${ASTER_GRANTS:-alice:mock-local}
       ASTER_NOTEBOOK_DIR: /data/notebooks
       ASTER_CONTRACTS_DIR: /etc/aster/contracts
@@ -73,8 +74,8 @@ services:
       # http://otel-collector:4318 for the lab.
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
     ports:
-      - "${ASTER_PORT:-8080}:8080"
-      - "${ASTER_METRICS_PORT:-9090}:9090"
+      - "${ASTER_PORT:-127.0.0.1:8080}:8080"
+      - "${ASTER_METRICS_PORT:-127.0.0.1:9090}:9090"
     volumes:
       - notebooks:/data/notebooks
       - ./contracts:/etc/aster/contracts:ro

@@ -53,8 +53,21 @@ done
 # --- local stack -------------------------------------------------------------
 check "docker-compose.yml declares postgres, server and controller" \
   bash -c 'grep -q "^  postgres:" docker-compose.yml && grep -q "^  server:" docker-compose.yml && grep -q "^  controller:" docker-compose.yml'
+compose_config() {
+  if command -v podman >/dev/null 2>&1; then
+    podman compose -f docker-compose.yml config "$@"
+  else
+    docker compose -f docker-compose.yml config "$@"
+  fi
+}
 check "the compose file is valid for the container engine" \
-  docker compose -f docker-compose.yml config
+  compose_config
+compose_loopback() (
+  unset ASTER_PORT ASTER_METRICS_PORT ASTER_DB_PORT ASTER_STATE_PORT ASTER_IDP_PORT
+  compose_config --format json \
+    | jq -e '[.services[].ports[]?] | length > 0 and all(.[]; .host_ip == "127.0.0.1")'
+)
+check "compose development ports bind to loopback" compose_loopback
 
 # --- chart -------------------------------------------------------------------
 for file in charts/aster/Chart.yaml charts/aster/values.yaml charts/aster/values.schema.json; do

@@ -67,4 +67,16 @@ pub trait QueryEngine: Send + Sync {
     }
     async fn health(&self) -> Health;
     async fn execute(&self, request: QueryRequest) -> Result<QueryResult>;
+    /// Protected bindings may use only an adapter that explicitly accepts a
+    /// verified session subject and enforces it at the backend. Shared adapters
+    /// remain closed until that backend policy is implemented and tested.
+    async fn execute_as_verified(
+        &self,
+        _request: QueryRequest,
+        _subject: &str,
+    ) -> Result<QueryResult> {
+        Err(crate::CoreError::Unauthorized(
+            "engine has no authenticated delegation".into(),
+        ))
+    }
 }

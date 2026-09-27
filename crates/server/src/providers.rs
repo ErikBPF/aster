@@ -10,8 +10,9 @@ use std::sync::Arc;
 
 use aster_core::{
     AuditSink, CoreError, EnvSecrets, Grants, HandshakeStore, IdentityProvider, InMemoryAudit,
-    InMemoryGrants, InMemoryHandshakes, InMemoryLlm, InMemorySecrets, InMemorySessions,
-    InMemoryUserState, LlmStore, NotebookStore, Result, SecretStore, SessionRegistry, UserState,
+    InMemoryGrants, InMemoryHandshakes, InMemoryLlm, InMemoryNotebookOwners, InMemorySecrets,
+    InMemorySessions, InMemorySharedModels, InMemoryUserState, LlmStore, NotebookOwners,
+    NotebookStore, Result, SecretStore, SessionRegistry, SharedModelStore, UserState,
 };
 
 use crate::gitstore::GitNotebookStore;
@@ -43,6 +44,9 @@ pub struct Metadata {
     pub grants: Arc<dyn Grants>,
     pub audit: Arc<dyn AuditSink>,
     pub llm: Arc<dyn LlmStore>,
+    pub conversations: Arc<dyn aster_core::ConversationStore>,
+    pub notebook_owners: Arc<dyn NotebookOwners>,
+    pub shared_models: Arc<dyn SharedModelStore>,
 }
 
 pub async fn metadata(
@@ -62,6 +66,13 @@ pub async fn metadata(
             Ok(Metadata {
                 grants: store.clone(),
                 audit: store.clone(),
+                conversations: Arc::new(crate::conversations::PgConversations {
+                    pool: store.pool.clone(),
+                }),
+                notebook_owners: store.clone(),
+                shared_models: Arc::new(
+                    crate::shared_models_pg::PgSharedModels::new(store.pool.clone()).await?,
+                ),
                 llm: store,
             })
         }
@@ -77,6 +88,9 @@ pub async fn metadata(
                 grants: Arc::new(grants),
                 audit: Arc::new(InMemoryAudit::new()),
                 llm: Arc::new(InMemoryLlm::new()),
+                conversations: Arc::new(aster_core::InMemoryConversations::default()),
+                notebook_owners: Arc::new(InMemoryNotebookOwners::default()),
+                shared_models: Arc::new(InMemorySharedModels::default()),
             })
         }
         other => Err(CoreError::Invalid(format!(
@@ -158,6 +172,47 @@ pub fn identity(
         "none" => Ok(None),
         other => Err(CoreError::Invalid(format!(
             "unknown identity provider {other}: expected oidc or none"
+        ))),
+    }
+}
+
+/// Conversation storage defaults to the existing metadata store.
+pub async fn conversations(
+    kind: &str,
+    url: Option<&str>,
+    metadata: Arc<dyn aster_core::ConversationStore>,
+) -> Result<Arc<dyn aster_core::ConversationStore>> {
+    match kind {
+        "metadata" => Ok(metadata),
+        "memory" => Ok(Arc::new(aster_core::InMemoryConversations::default())),
+        "postgres" => Ok(Arc::new(
+            crate::conversations::PgConversations::connect(url.ok_or_else(|| {
+                CoreError::Invalid("conversation provider postgres needs a database url".into())
+            })?)
+            .await?,
+        )),
+        other => Err(CoreError::Invalid(format!(
+            "unknown conversation provider {other}: expected metadata, postgres or memory"
+        ))),
+    }
+}
+
+/// Session exchange storage is ephemeral; it never defaults to the metadata
+/// store, which holds durable user data.
+pub async fn exchanges(
+    kind: &str,
+    url: Option<&str>,
+) -> Result<Arc<dyn aster_core::ExchangeStore>> {
+    match kind {
+        "memory" => Ok(Arc::new(aster_core::InMemoryExchanges::default())),
+        "postgres" => Ok(Arc::new(
+            crate::exchange::PgExchanges::connect(url.ok_or_else(|| {
+                CoreError::Invalid("exchange provider postgres needs a database url".into())
+            })?)
+            .await?,
+        )),
+        other => Err(CoreError::Invalid(format!(
+            "unknown exchange provider {other}: expected postgres or memory"
         ))),
     }
 }

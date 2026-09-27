@@ -30,6 +30,19 @@ pub struct TableRef {
     pub name: String,
 }
 
+/// Browse metadata. A generic table may have no catalog-provided schema or
+/// base location; neither absence implies an empty table or readable data.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TableDescriptor {
+    #[serde(flatten)]
+    pub table: TableRef,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_location: Option<String>,
+    pub schema_available: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ColumnSchema {
     pub name: String,
@@ -55,5 +68,20 @@ pub trait Catalog: Send + Sync {
     async fn health(&self) -> Health;
     async fn list_namespaces(&self) -> Result<Vec<Namespace>>;
     async fn list_tables(&self, namespace: &str) -> Result<Vec<TableRef>>;
+    /// Defaults preserve metadata navigation for catalogs without a format
+    /// descriptor. Polaris overrides this for Iceberg and generic tables.
+    async fn list_table_descriptors(&self, namespace: &str) -> Result<Vec<TableDescriptor>> {
+        Ok(self
+            .list_tables(namespace)
+            .await?
+            .into_iter()
+            .map(|table| TableDescriptor {
+                table,
+                format: None,
+                base_location: None,
+                schema_available: true,
+            })
+            .collect())
+    }
     async fn table_schema(&self, table: &TableRef) -> Result<TableSchema>;
 }

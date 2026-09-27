@@ -28,6 +28,67 @@ Feature: Query authorization and audit
     Then the request is forwarded to the engine
     And an audit event is recorded for subject "alice"
 
+  @catalog-routing
+  Scenario: An unknown selected browse catalog is refused before execution
+    Given subject "alice" is granted engine "trino-local"
+    When subject "alice" queries "trino-local" in browse catalog "not-registered"
+    Then the response status is 404
+    And the engine was not called
+    And a refused audit event is recorded for subject "alice"
+
+  @catalog-routing
+  Scenario: Engine choices respect the selected browse catalog and grants
+    Given engine "spark-b" is registered without a catalog binding
+    And subject "alice" is granted engine "spark-b"
+    When subject "alice" lists engines for browse catalog "polaris-local"
+    Then only engine "trino-local" is offered
+
+  @catalog-routing
+  Scenario: A granted but disconnected engine is refused
+    Given engine "spark-b" is registered without a catalog binding
+    And subject "alice" is granted engine "spark-b"
+    When subject "alice" queries "spark-b" in browse catalog "polaris-local"
+    Then the response status is 403
+    And the engine was not called
+    And a refused audit event is recorded for subject "alice"
+
+  @catalog-routing
+  Scenario: A browse catalog uses its bound engine-native alias
+    When subject "alice" queries "trino-local" in browse catalog "polaris-local"
+    Then the query ran with catalog "polaris"
+
+  @catalog-routing
+  Scenario: A conflicting engine-native SQL alias is refused
+    When subject "alice" queries "trino-local" in browse catalog "polaris-local" with SQL catalog "foreign"
+    Then the response status is 400
+    And the engine was not called
+    And a refused audit event is recorded for subject "alice"
+
+  @catalog-routing
+  Scenario: Legacy query audit records the resolved browse catalog
+    When subject "alice" sends a query to "trino-local"
+    Then the latest audit event names browse catalog "polaris-local"
+
+  @catalog-routing
+  Scenario: Missing catalog binding refuses a legacy query
+    Given no catalog binding is configured
+    When subject "alice" sends a query to "trino-local"
+    Then the response status is 400
+    And the engine was not called
+
+  @catalog-routing
+  Scenario: Missing catalog binding offers no compute choices
+    Given no catalog binding is configured
+    When subject "alice" lists engines for browse catalog "polaris-local"
+    Then the response status is 403
+
+  @catalog-routing
+  Scenario: Ambiguous catalog binding refuses a legacy query
+    Given the engine also binds catalog "lake-b"
+    When subject "alice" sends a query to "trino-local"
+    Then the response status is 400
+    And the engine was not called
+
   Scenario: A statement the engine refuses is surfaced as a query error
     Given subject "alice" is granted engine "trino-local"
     And the engine refuses the statement with "Catalog must be specified when session catalog is not set"
