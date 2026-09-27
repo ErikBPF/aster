@@ -27,6 +27,17 @@ Feature: User-registered LLM helpers
     Then the response names the base url and model
     And the response contains no token
 
+  Scenario: A helper URL cannot carry credentials
+    When alice puts a helper whose base URL contains a username and password
+    Then the request is refused with 400
+    And listing /api/llm does not contain that helper
+
+  Scenario: Legacy URL credentials are not returned
+    Given a previously saved helper URL contains a username and password
+    When alice reads /api/llm
+    Then neither credential appears in the response
+    And generation refuses that helper before an upstream request
+
   Scenario: Another subject's helper of the same name is invisible
     Given alice has registered "lab-qwen"
     And subject "bob" is signed in with role "editor"
@@ -44,6 +55,13 @@ Feature: User-registered LLM helpers
     Then the server calls the cloud endpoint's chat completions path with its token
     And the response carries the model's SQL as "sql"
 
+  Scenario: Two users can use overlapping names without sharing destinations
+    Given alice registers "alpha" and "beta" at distinct endpoints
+    And bob registers "alpha" at the beta endpoint with a different model and token
+    When alice generates with "alpha" and "beta" and bob generates with "alpha"
+    Then each request reaches only its subject's selected endpoint with its model and token
+    And replacing or deleting alice's "alpha" does not change bob's "alpha"
+
   Scenario: Generating SQL without naming a helper uses the first registered one
     Given alice has registered only "lab-qwen"
     When alice posts a prompt to /api/ai
@@ -58,6 +76,11 @@ Feature: User-registered LLM helpers
     Given alice has registered only "lab-qwen"
     When alice posts a prompt to /api/ai with helper "missing"
     Then the request is refused with 404 and names "missing"
+
+  Scenario: An explicit empty helper never selects a default
+    Given alice has registered "lab-qwen"
+    When alice posts a prompt to /api/ai with an empty helper name
+    Then the request is refused with 400 before contacting the helper
 
   Scenario: Viewers cannot spend a token
     Given subject "bob" is signed in with role "viewer"

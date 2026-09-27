@@ -14,22 +14,23 @@ devenv shell          # cargo, clippy, rustfmt, kubectl, helm, kubeconform, devs
 just                  # lists every recipe
 just check            # cargo check --workspace --all-targets
 just test             # unit tests, every crate
-just features         # validates every *.feature contract
+just features         # checks each *.feature has a Feature and Scenario
 just repo-check       # binding for features/repo-setup.feature
-just ci               # fmt + clippy + test + features + repo
+just providers-check  # ports, providers and selection sites match the matrix
+just ci               # fmt + clippy + tests + feature shape + repo + providers
 ```
 
-`just sync`/`remote-*` target a remote build host (`ASTER_BUILD_HOST`, default
-`cache-host`) via `nix shell`; plain `just check` builds locally inside devenv.
+Optional `just remote-*` recipes require `ASTER_BUILD_HOST`; there is no
+implicit host. They sync the workspace and run the same commands remotely
+inside `devenv shell`. `just check` builds locally inside devenv.
 
 ## The rules
 
-1. **Behavior ships with its contract.** Every behavior you change or add gets a
-   contract **next to the code that implements it** (`crates/<crate>/features/`,
-   or `features/` at the root for the repository's own conventions)
-   `.feature` file **next to the code that implements it** (`crates/<crate>/features/`)
-   and at least one executable test that fails without your change. A `.feature`
-   with no bound steps is a draft, not a test.
+1. **Behavior ships with its contract.** Every behavior change gets a
+   `.feature` beside its owning crate (`crates/<crate>/features/`), or under
+   `features/` for repository conventions, and an executable test that fails
+   before the implementation. A `.feature` without bound steps is a draft,
+   not a test. See [API and tests](docs/api-and-tests.md) for runner scope.
 2. **Tests live with their owner.** In-file `#[cfg(test)]` for a unit;
    `crates/<crate>/tests/` for anything exercising the public API. No shared
    test-only crate unless two crates genuinely share a harness.
@@ -45,7 +46,7 @@ just ci               # fmt + clippy + test + features + repo
    client above a 4xx.
 7. **Public enums are `#[non_exhaustive]`** unless exhaustiveness is deliberate.
 8. **Keep `main.rs` a composition root.** Routing, handlers, and identity live
-   in modules (`web.rs`, `ai.rs`, `oidc.rs`, …), not in the entrypoint.
+   in modules (`web.rs`, `ai.rs`, `identity.rs`, …), not in the entrypoint.
 9. **One way to add a plugin.** A new engine/catalog implements the core trait
    and is registered by kind; do not branch on kind anywhere else. Every domain
    that talks to an external system is listed in
@@ -68,8 +69,9 @@ Default delivery is container + chart, both living in this repo:
 
 - `docker/Dockerfile.server` builds `aster-server` **and** `aster-controller`
   from one image; `docker/Dockerfile.tui` builds the terminal client.
-- `docker-compose.yml` is the local stack (server + controller + Postgres) and
-  is the first thing a change must keep working.
+- `docker-compose.yml` is the local stack (server, controller, PostgreSQL,
+  Valkey and development Keycloak) and is the first stack a change must keep
+  working.
 - `charts/aster/` is the Helm chart. Render and lint it before every release:
 
 ```bash
@@ -87,7 +89,9 @@ digest there when one is published.
 2. Write/extend the `.feature` and the failing test first.
 3. Implement until `just ci` is green.
 4. Update the proposal in `platform` when a cross-repo decision changes, and the
-   affected `.feature` in the same change.
+   affected `.feature` in the same change. Update the relevant
+   [handbook page](docs/README.md) when shipped behavior or an owner command
+   changes; keep planned behavior visibly labelled.
 5. Human review: the reviewer reads the diff in `tuicr`; treat `issue` comments
    as blocking and answer every other comment.
 

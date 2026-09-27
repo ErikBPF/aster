@@ -8,6 +8,8 @@
   env.PROTOC = "${pkgs.protobuf}/bin/protoc";
   env.PROTOC_INCLUDE = "${pkgs.protobuf}/include";
 
+  env.ASTER_BROWSER_EXECUTABLE = "${pkgs.chromium}/bin/chromium";
+
   packages = [
     # rust toolchain: pinned by the declared devenv, not by a host install
     pkgs.cargo
@@ -24,9 +26,10 @@
     pkgs.just
     pkgs.jq
     pkgs.curl
+    pkgs.openssl
     pkgs.ripgrep
     pkgs.shellcheck
-    pkgs.python3
+    (pkgs.python3.withPackages (ps: [ ps.playwright ]))
 
     # containers
     pkgs.podman

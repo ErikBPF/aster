@@ -17,24 +17,44 @@ pub mod notebook;
 pub mod registry;
 pub mod secrets;
 pub mod semantic;
+pub mod shared_models;
 pub mod state;
 
 pub use audit::{AuditEvent, AuditSink, InMemoryAudit};
-pub use auth::{authorize, Action, Principal, Role};
-pub use catalog::{Catalog, CatalogId, ColumnSchema, Namespace, TableRef, TableSchema};
-pub use config::{AppConfig, CatalogConfig, EngineConfig};
+pub use auth::{authorize, Action, Principal, Role, SharedModelGrant};
+pub use catalog::{
+    Catalog, CatalogId, ColumnSchema, Namespace, TableDescriptor, TableRef, TableSchema,
+};
+pub use config::{
+    AppConfig, BindingPolicy, CatalogBindingConfig, CatalogConfig, EngineConfig,
+    TrinoDelegationConfig,
+};
 pub use contract::{for_table, relevant, ContractField, DataContract};
 pub use engine::{Column, EngineId, EngineInfo, QueryEngine, QueryRequest, QueryResult};
 pub use error::{CoreError, Result};
 pub use grants::{authorize_engine, Grants, InMemoryGrants};
 pub use health::Health;
-pub use identity::{Identity, IdentityHandshake, IdentityProvider};
+pub use identity::{
+    CurrentIdentity, CurrentIdentityProvider, Identity, IdentityHandshake, IdentityProvider,
+};
 pub use llm::{InMemoryLlm, LlmConfig, LlmStore};
-pub use notebook::{Cell, Notebook, NotebookStore};
+pub use notebook::{
+    Cell, InMemoryNotebookOwners, Notebook, NotebookOwnerChange, NotebookOwnerRecord,
+    NotebookOwners, NotebookPrecondition, NotebookSave, NotebookSnapshot, NotebookStore,
+};
 pub use registry::{CatalogRegistry, EngineRegistry};
 pub use secrets::{require, EnvSecrets, InMemorySecrets, SecretStore};
 pub use semantic::{SemanticFormat, TableModel};
+pub use shared_models::{
+    AdminSharedModelSummary, EncryptedSharedModel, InMemorySharedModels, SharedModelStore,
+};
 pub use state::{
     new_sid, HandshakeStore, InMemoryHandshakes, InMemorySessions, InMemoryUserState,
     SessionRecord, SessionRegistry, UserState, WorkingState,
 };
+
+pub mod conversation;
+pub use conversation::{ChatMessage, Conversation, ConversationStore, InMemoryConversations};
+
+pub mod exchange;
+pub use exchange::{CellResult, ExchangeStore, InMemoryExchanges, NotebookExchange};

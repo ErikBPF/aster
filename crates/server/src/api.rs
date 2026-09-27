@@ -12,7 +12,7 @@
 
 use std::sync::Arc;
 
-use aster_core::{authorize, CoreError, EngineId, Principal};
+use aster_core::{authorize, CoreError, EngineId, NotebookStore, Principal};
 use connectrpc::{ConnectError, RequestContext, ServiceRequest, ServiceResult};
 
 use crate::AppState;
@@ -46,6 +46,7 @@ pub fn router(state: Arc<AppState>) -> connectrpc::Router {
 /// not allowed — the same meaning the REST layer gives it with 403.
 fn connect_error(error: CoreError) -> ConnectError {
     match error {
+        CoreError::Conflict(message) => ConnectError::aborted(message),
         CoreError::Unauthorized(message) => ConnectError::permission_denied(message),
         CoreError::NotFound(message) => ConnectError::not_found(message),
         CoreError::Invalid(message) | CoreError::Query(message) => {
@@ -63,6 +64,75 @@ async fn caller(state: &AppState, ctx: &RequestContext) -> Result<Principal, Con
     crate::principal(state, ctx.headers())
         .await
         .map_err(|_| ConnectError::unauthenticated("sign in required"))
+}
+
+async fn notebook_context(
+    state: &AppState,
+    ctx: &RequestContext,
+    team: Option<&str>,
+    workspace: Option<&str>,
+    notebook: &str,
+) -> Result<Option<(Principal, String)>, ConnectError> {
+    if state.team_workspaces.is_none() {
+        if team.is_some() || workspace.is_some() {
+            return Err(ConnectError::permission_denied(
+                "team notebooks are disabled",
+            ));
+        }
+        return Ok(None);
+    }
+    let team = team.ok_or_else(|| {
+        ConnectError::permission_denied("workspace-qualified notebook route required")
+    })?;
+    let personal = match workspace.unwrap_or("session") {
+        "session" => false,
+        "personal" => true,
+        _ => {
+            return Err(ConnectError::invalid_argument(
+                "invalid workspace selection",
+            ))
+        }
+    };
+    crate::team_notebook_context_selected(state, ctx.headers(), team, notebook, personal)
+        .await
+        .map(Some)
+        .map_err(connect_error)
+}
+
+async fn notebook_workspace(
+    state: &AppState,
+    ctx: &RequestContext,
+    team: Option<&str>,
+    workspace: Option<&str>,
+) -> Result<Option<(Principal, Arc<crate::GitNotebookStore>)>, ConnectError> {
+    let Some(workspaces) = state.team_workspaces.as_deref() else {
+        if team.is_some() || workspace.is_some() {
+            return Err(ConnectError::permission_denied(
+                "team notebooks are disabled",
+            ));
+        }
+        return Ok(None);
+    };
+    let team = team.ok_or_else(|| {
+        ConnectError::permission_denied("workspace-qualified notebook route required")
+    })?;
+    let personal = match workspace.unwrap_or("session") {
+        "session" => false,
+        "personal" => true,
+        _ => {
+            return Err(ConnectError::invalid_argument(
+                "invalid workspace selection",
+            ))
+        }
+    };
+    let (principal, sid) = crate::team_member_session(state, ctx.headers(), team)
+        .await
+        .map_err(|error| connect_error(error.0))?;
+    authorize(&principal, aster_core::Action::ReadNotebook).map_err(connect_error)?;
+    let store = workspaces
+        .workspace(team, &principal, &sid, personal)
+        .map_err(connect_error)?;
+    Ok(Some((principal, store)))
 }
 
 fn to_message(state: aster_core::WorkingState) -> api::WorkingState {
@@ -111,6 +181,90 @@ fn to_cell(cell: &api::Cell) -> aster_core::Cell {
 
 #[allow(refining_impl_trait)]
 impl api::Aster for AsterApi {
+    async fn get_conversation(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, api::GetConversationRequest>,
+    ) -> ServiceResult<api::Conversation> {
+        let request = request.to_owned_message();
+        let context = notebook_context(
+            &self.state,
+            &ctx,
+            request.team.as_deref(),
+            request.workspace.as_deref(),
+            &request.notebook,
+        )
+        .await?;
+        if context.is_some() && request.cell.is_some() {
+            return Err(ConnectError::invalid_argument(
+                "cell conversations are not available in team workspaces",
+            ));
+        }
+        let conversation = if let Some((principal, key)) = context {
+            self.state
+                .conversations
+                .get(&principal.subject, &key)
+                .await
+                .map_err(connect_error)?
+        } else {
+            let principal = caller(&self.state, &ctx).await?;
+            crate::conversations::get(
+                &self.state,
+                &principal,
+                &request.notebook,
+                request.cell.as_deref(),
+            )
+            .await
+            .map_err(connect_error)?
+        };
+        Ok(to_conversation(conversation).into())
+    }
+
+    async fn send_message(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, api::SendMessageRequest>,
+    ) -> ServiceResult<api::Conversation> {
+        let request = request.to_owned_message();
+        let expected = request
+            .expected_revision
+            .ok_or_else(|| ConnectError::invalid_argument("expected revision is required"))?;
+        let context = notebook_context(
+            &self.state,
+            &ctx,
+            request.team.as_deref(),
+            request.workspace.as_deref(),
+            &request.notebook,
+        )
+        .await?;
+        let principal = if let Some((principal, _)) = &context {
+            principal.clone()
+        } else {
+            caller(&self.state, &ctx).await?
+        };
+        if context.is_some() && request.cell.is_some() {
+            return Err(ConnectError::invalid_argument(
+                "cell conversations are not available in team workspaces",
+            ));
+        }
+        let turn = crate::conversations::Turn {
+            notebook: &request.notebook,
+            cell: request.cell.as_deref(),
+            helper: &request.helper,
+            prompt: &request.prompt,
+            context: &request.context,
+            expected,
+        };
+        let conversation = if let Some((_, key)) = context {
+            crate::conversations::send_scoped(&self.state, ctx.headers(), &principal, turn, &key)
+                .await
+        } else {
+            crate::conversations::send(&self.state, ctx.headers(), &principal, turn).await
+        }
+        .map_err(connect_error)?;
+        Ok(to_conversation(conversation).into())
+    }
+
     async fn get_state(
         &self,
         ctx: RequestContext,
@@ -143,14 +297,98 @@ impl api::Aster for AsterApi {
         Ok(to_message(state).into())
     }
 
+    async fn get_notebook_helper(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, api::GetNotebookHelperRequest>,
+    ) -> ServiceResult<api::NotebookHelper> {
+        let request = request.to_owned_message();
+        let notebook = request.notebook;
+        let helper = if let Some((principal, key)) = notebook_context(
+            &self.state,
+            &ctx,
+            request.team.as_deref(),
+            request.workspace.as_deref(),
+            &notebook,
+        )
+        .await?
+        {
+            crate::ai::selected_helper_scoped(&self.state, &principal.subject, &key).await
+        } else {
+            let principal = caller(&self.state, &ctx).await?;
+            authorize(&principal, aster_core::Action::ReadNotebook).map_err(connect_error)?;
+            crate::ai::selected_helper(&self.state, &principal.subject, &notebook).await
+        }
+        .map_err(connect_error)?;
+        Ok(api::NotebookHelper {
+            notebook,
+            helper,
+            ..Default::default()
+        }
+        .into())
+    }
+
+    async fn put_notebook_helper(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, api::PutNotebookHelperRequest>,
+    ) -> ServiceResult<api::NotebookHelper> {
+        let requested = request.to_owned_message();
+        let context = notebook_context(
+            &self.state,
+            &ctx,
+            requested.team.as_deref(),
+            requested.workspace.as_deref(),
+            &requested.notebook,
+        )
+        .await?;
+        if let Some((principal, key)) = context {
+            crate::ai::choose_helper_scoped(
+                &self.state,
+                ctx.headers(),
+                &principal.subject,
+                &key,
+                &requested.helper,
+            )
+            .await
+            .map_err(connect_error)?;
+        } else {
+            let principal = caller(&self.state, &ctx).await?;
+            authorize(&principal, aster_core::Action::ReadNotebook).map_err(connect_error)?;
+            crate::ai::choose_helper(
+                &self.state,
+                ctx.headers(),
+                &principal.subject,
+                &requested.notebook,
+                &requested.helper,
+            )
+            .await
+            .map_err(connect_error)?;
+        }
+        Ok(api::NotebookHelper {
+            notebook: requested.notebook,
+            helper: Some(requested.helper),
+            ..Default::default()
+        }
+        .into())
+    }
+
     async fn list_engines(
         &self,
         ctx: RequestContext,
-        _request: ServiceRequest<'_, api::ListEnginesRequest>,
+        request: ServiceRequest<'_, api::ListEnginesRequest>,
     ) -> ServiceResult<api::ListEnginesResponse> {
-        caller(&self.state, &ctx).await?;
+        let principal = caller(&self.state, &ctx).await?;
+        let requested = request.to_owned_message();
         let mut engines = Vec::new();
-        for engine in self.state.engines.list() {
+        for engine in crate::available_engines(
+            &self.state,
+            &principal,
+            requested.catalog_context.as_deref(),
+        )
+        .await
+        .map_err(connect_error)?
+        {
             let info = engine.info().clone();
             engines.push(api::Engine {
                 id: info.id.0,
@@ -173,9 +411,13 @@ impl api::Aster for AsterApi {
         ctx: RequestContext,
         _request: ServiceRequest<'_, api::ListCatalogsRequest>,
     ) -> ServiceResult<api::ListCatalogsResponse> {
-        caller(&self.state, &ctx).await?;
+        let principal = caller(&self.state, &ctx).await?;
+        authorize(&principal, aster_core::Action::ReadNotebook).map_err(connect_error)?;
         let mut catalogs = Vec::new();
         for catalog in self.state.catalogs.list() {
+            if !crate::catalog_metadata_visible(&self.state, &catalog.id().0) {
+                continue;
+            }
             catalogs.push(api::Catalog {
                 id: catalog.id().0.clone(),
                 kind: catalog.kind().to_string(),
@@ -190,19 +432,68 @@ impl api::Aster for AsterApi {
         .into())
     }
 
+    async fn list_tables(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, api::ListTablesRequest>,
+    ) -> ServiceResult<api::ListTablesResponse> {
+        let caller = caller(&self.state, &ctx).await?;
+        authorize(&caller, aster_core::Action::ReadNotebook).map_err(connect_error)?;
+        let requested = request.to_owned_message();
+        crate::require_catalog_metadata(&self.state, &requested.catalog).map_err(connect_error)?;
+        let catalog = self
+            .state
+            .catalogs
+            .get(&aster_core::CatalogId::new(requested.catalog))
+            .ok_or_else(|| ConnectError::not_found("unknown catalog"))?;
+        let tables = catalog
+            .list_table_descriptors(&requested.namespace)
+            .await
+            .map_err(connect_error)?
+            .into_iter()
+            .map(|descriptor| api::TableDescriptor {
+                namespace: descriptor.table.namespace,
+                name: descriptor.table.name,
+                format: descriptor.format,
+                base_location: descriptor.base_location,
+                schema_available: Some(descriptor.schema_available),
+                ..Default::default()
+            })
+            .collect();
+        Ok(api::ListTablesResponse {
+            tables,
+            ..Default::default()
+        }
+        .into())
+    }
+
     async fn list_notebooks(
         &self,
         ctx: RequestContext,
-        _request: ServiceRequest<'_, api::ListNotebooksRequest>,
+        request: ServiceRequest<'_, api::ListNotebooksRequest>,
     ) -> ServiceResult<api::ListNotebooksResponse> {
-        let caller = caller(&self.state, &ctx).await?;
-        authorize(&caller, aster_core::Action::ReadNotebook).map_err(connect_error)?;
-        let ids = self
-            .state
-            .notebooks
-            .list(&caller.subject)
-            .await
-            .map_err(connect_error)?;
+        let requested = request.to_owned_message();
+        let ids = if let Some((principal, store)) = notebook_workspace(
+            &self.state,
+            &ctx,
+            requested.team.as_deref(),
+            requested.workspace.as_deref(),
+        )
+        .await?
+        {
+            store
+                .list(&principal.subject)
+                .await
+                .map_err(connect_error)?
+        } else {
+            let caller = caller(&self.state, &ctx).await?;
+            authorize(&caller, aster_core::Action::ReadNotebook).map_err(connect_error)?;
+            self.state
+                .notebooks
+                .list(&caller.subject)
+                .await
+                .map_err(connect_error)?
+        };
         Ok(api::ListNotebooksResponse {
             ids,
             ..Default::default()
@@ -215,16 +506,27 @@ impl api::Aster for AsterApi {
         ctx: RequestContext,
         request: ServiceRequest<'_, api::GetNotebookRequest>,
     ) -> ServiceResult<api::Notebook> {
-        let caller = caller(&self.state, &ctx).await?;
-        authorize(&caller, aster_core::Action::ReadNotebook).map_err(connect_error)?;
         let requested = request.to_owned_message();
-        let notebook = self
-            .state
-            .notebooks
-            .get(&requested.id)
-            .await
-            .map_err(connect_error)?;
-        Ok(to_notebook(&notebook).into())
+        let snapshot = if let Some((_, store)) = notebook_workspace(
+            &self.state,
+            &ctx,
+            requested.team.as_deref(),
+            requested.workspace.as_deref(),
+        )
+        .await?
+        {
+            store.snapshot(&requested.id).await.map_err(connect_error)?
+        } else {
+            let caller = caller(&self.state, &ctx).await?;
+            authorize(&caller, aster_core::Action::ReadNotebook).map_err(connect_error)?;
+            self.state
+                .notebook_snapshot(&requested.id)
+                .await
+                .map_err(connect_error)?
+        };
+        let mut response = to_notebook(&snapshot.notebook);
+        response.content_revision = Some(snapshot.content_revision);
+        Ok(response.into())
     }
 
     async fn save_notebook(
@@ -241,17 +543,58 @@ impl api::Aster for AsterApi {
             title: message.title.clone(),
             cells: message.cells.iter().map(to_cell).collect(),
         };
-        let revision = self
+        let expected = match (
+            requested.expected_content_revision.as_deref(),
+            requested.if_absent,
+        ) {
+            (None, true) => aster_core::NotebookPrecondition::Absent,
+            (Some(oid), false)
+                if matches!(oid.len(), 40 | 64)
+                    && oid.bytes().all(|byte| byte.is_ascii_hexdigit()) =>
+            {
+                aster_core::NotebookPrecondition::Blob(oid.to_string())
+            }
+            _ => {
+                return Err(ConnectError::invalid_argument(
+                    "one notebook precondition is required",
+                ))
+            }
+        };
+        let saved = self
             .state
-            .notebooks
-            .save(&notebook, &caller.subject)
+            .save_notebook_owned(&notebook, &caller.subject, expected)
             .await
             .map_err(connect_error)?;
         Ok(api::SaveNotebookResponse {
-            revision,
+            revision: saved.revision,
+            content_revision: saved.content_revision,
             ..Default::default()
         }
         .into())
+    }
+
+    async fn assign_notebook_owner(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, api::AssignNotebookOwnerRequest>,
+    ) -> ServiceResult<api::AssignNotebookOwnerResponse> {
+        let caller = caller(&self.state, &ctx).await?;
+        authorize(&caller, aster_core::Action::Administer).map_err(connect_error)?;
+        let requested = request.to_owned_message();
+        self.state
+            .assign_notebook_owner(
+                &requested.id,
+                &caller.subject,
+                crate::AssignNotebookOwner {
+                    owner: requested.owner,
+                    expected_content_revision: requested.expected_content_revision,
+                    expected_owner: requested.expected_owner,
+                    reason: requested.reason,
+                },
+            )
+            .await
+            .map_err(connect_error)?;
+        Ok(api::AssignNotebookOwnerResponse::default().into())
     }
 
     async fn run_query(
@@ -259,20 +602,25 @@ impl api::Aster for AsterApi {
         ctx: RequestContext,
         request: ServiceRequest<'_, api::RunQueryRequest>,
     ) -> ServiceResult<api::QueryResult> {
-        let caller = caller(&self.state, &ctx).await?;
+        let (caller, verified_session) = crate::principal_with_session(&self.state, ctx.headers())
+            .await
+            .map_err(|_| ConnectError::unauthenticated("sign in required"))?;
         let requested = request.to_owned_message();
         let body = crate::QueryBody {
             sql: requested.sql.clone(),
             engine: requested.engine.clone(),
+            catalog_context: requested.catalog_context.clone(),
             catalog: requested.catalog.clone(),
             schema: requested.schema.clone(),
             max_rows: requested.max_rows.map(|rows| rows as usize),
+            notebook: requested.notebook.clone(),
+            cell: requested.cell.clone(),
         };
-        let result = crate::execute_query(&self.state, &caller, &body)
+        let result = crate::execute_query(&self.state, &caller, verified_session, &body)
             .await
             .map_err(connect_error)?;
 
-        let columns = result
+        let columns: Vec<api::Column> = result
             .columns
             .iter()
             .map(|column| api::Column {
@@ -289,6 +637,22 @@ impl api::Aster for AsterApi {
                     tracing::error!(%error, "query row is not serialisable");
                     return Err(ConnectError::internal("upstream dependency failed"));
                 }
+            }
+        }
+        if let (Some(notebook), Some(cell)) = (&requested.notebook, &requested.cell) {
+            let names: Vec<String> = columns.iter().map(|column| column.name.clone()).collect();
+            if let Err(error) = crate::exchange::record_result(
+                &self.state,
+                &caller,
+                notebook,
+                cell,
+                &names,
+                &rows_json,
+                result.truncated,
+            )
+            .await
+            {
+                tracing::warn!(%error, "cell result was not recorded for the session exchange");
             }
         }
         Ok(api::QueryResult {
@@ -308,6 +672,8 @@ impl api::Aster for AsterApi {
         let caller = caller(&self.state, &ctx).await?;
         authorize(&caller, aster_core::Action::ReadNotebook).map_err(connect_error)?;
         let requested = request.to_owned_message();
+
+        crate::require_catalog_metadata(&self.state, &requested.catalog).map_err(connect_error)?;
 
         let catalog = self
             .state
@@ -337,5 +703,142 @@ impl api::Aster for AsterApi {
             ..Default::default()
         }
         .into())
+    }
+
+    async fn fetch_query(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, api::FetchQueryRequest>,
+    ) -> ServiceResult<api::FetchQueryResponse> {
+        let caller = caller(&self.state, &ctx).await?;
+        let requested = request.to_owned_message();
+        let (sql, content_revision) = crate::exchange::fetch_query(
+            &self.state,
+            &caller,
+            &requested.notebook,
+            &requested.cell,
+        )
+        .await
+        .map_err(connect_error)?;
+        Ok(api::FetchQueryResponse {
+            sql,
+            content_revision,
+            ..Default::default()
+        }
+        .into())
+    }
+
+    async fn fetch_result(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, api::FetchResultRequest>,
+    ) -> ServiceResult<api::FetchResultResponse> {
+        let caller = caller(&self.state, &ctx).await?;
+        let requested = request.to_owned_message();
+        let result = crate::exchange::fetch_result(
+            &self.state,
+            &caller,
+            &requested.notebook,
+            &requested.cell,
+        )
+        .await
+        .map_err(connect_error)?;
+        Ok(api::FetchResultResponse {
+            columns: result.columns,
+            rows_json: result.rows_json,
+            truncated: result.truncated,
+            ..Default::default()
+        }
+        .into())
+    }
+
+    async fn update_query(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, api::UpdateQueryRequest>,
+    ) -> ServiceResult<api::UpdateQueryResponse> {
+        let caller = caller(&self.state, &ctx).await?;
+        let requested = request.to_owned_message();
+        let content_revision = crate::exchange::update_query(
+            &self.state,
+            &caller,
+            &requested.notebook,
+            &requested.cell,
+            &requested.sql,
+            &requested.expected_content_revision,
+        )
+        .await
+        .map_err(connect_error)?;
+        Ok(api::UpdateQueryResponse {
+            content_revision,
+            ..Default::default()
+        }
+        .into())
+    }
+
+    async fn fetch_summary(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, api::FetchSummaryRequest>,
+    ) -> ServiceResult<api::FetchSummaryResponse> {
+        let caller = caller(&self.state, &ctx).await?;
+        let requested = request.to_owned_message();
+        let (summary, cells) =
+            crate::exchange::fetch_summary(&self.state, &caller, &requested.notebook)
+                .await
+                .map_err(connect_error)?;
+        Ok(api::FetchSummaryResponse {
+            summary,
+            cells: cells
+                .into_iter()
+                .map(|(id, sql)| api::NotebookCell {
+                    id,
+                    sql,
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        }
+        .into())
+    }
+
+    async fn send_summary(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, api::SendSummaryRequest>,
+    ) -> ServiceResult<api::SendSummaryResponse> {
+        let caller = caller(&self.state, &ctx).await?;
+        let requested = request.to_owned_message();
+        crate::exchange::send_summary(
+            &self.state,
+            &caller,
+            &requested.notebook,
+            Some(requested.summary.clone()),
+        )
+        .await
+        .map_err(connect_error)?;
+        Ok(api::SendSummaryResponse {
+            summary: requested.summary,
+            ..Default::default()
+        }
+        .into())
+    }
+}
+
+fn to_conversation(value: aster_core::Conversation) -> api::Conversation {
+    api::Conversation {
+        id: value.id,
+        revision: value.revision,
+        messages: value
+            .messages
+            .into_iter()
+            .map(|m| api::ChatMessage {
+                role: m.role,
+                content: m.content,
+                helper: m.helper,
+                ..Default::default()
+            })
+            .collect(),
+        ..Default::default()
     }
 }

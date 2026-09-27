@@ -1,0 +1,52 @@
+# V3b1b: runner-owned disposable project only. No standing stack or host context changes.
+services:
+  rustfs:
+    image: docker.io/rustfs/rustfs:1.0.0-beta.8@sha256:fa19210ac4697c79d7ccca1ec9b0eb91aebacc6691991ffb14014bb3c67e6cc3
+    environment:
+      RUSTFS_ACCESS_KEY: ${V3B1B_S3_KEY:?}
+      RUSTFS_SECRET_KEY: ${V3B1B_S3_SECRET:?}
+      RUSTFS_VOLUMES: /data
+      RUSTFS_ADDRESS: ":9000"
+      RUSTFS_CONSOLE_ENABLE: "false"
+    volumes:
+      - s3-data:/data
+    ports:
+      - 127.0.0.1:${V3B1B_S3_PORT:?}:9000
+
+  polaris:
+    image: docker.io/apache/polaris:1.7.0@sha256:3495f67f38cca33892a045f7dd3f46eb52387f0fd52d4145538a772fd8aedad7
+    environment:
+      POLARIS_BOOTSTRAP_CREDENTIALS: POLARIS,root,${V3B1B_POLARIS_SECRET:?}
+      POLARIS_REALM_CONTEXT_REALMS: POLARIS
+      QUARKUS_OTEL_SDK_DISABLED: "true"
+      AWS_REGION: us-west-2
+      AWS_ACCESS_KEY_ID: ${V3B1B_S3_KEY:?}
+      AWS_SECRET_ACCESS_KEY: ${V3B1B_S3_SECRET:?}
+    ports:
+      - 127.0.0.1:${V3B1B_POLARIS_PORT:?}:8181
+
+  aws:
+    image: docker.io/amazon/aws-cli:2.36.8@sha256:7e1b11a3c93bc5af81f496de0662f666b2352a4a6666e8ebae904fe102b131b6
+    environment:
+      AWS_ACCESS_KEY_ID: ${V3B1B_S3_KEY:?}
+      AWS_SECRET_ACCESS_KEY: ${V3B1B_S3_SECRET:?}
+      AWS_DEFAULT_REGION: us-west-2
+    entrypoint: ["aws"]
+
+  trino:
+    image: docker.io/trinodb/trino:483@sha256:db58cc93e593a2706553745f276bb119c9810e69918be56ecde088ba7ccb0534
+    user: "0:0"
+    environment:
+      CLIENT_SECRET: ${V3B1B_POLARIS_SECRET:?}
+    volumes:
+      - ${V3B1B_TRINO_CONFIG_DIR:?}:/etc/trino:ro
+      - trino-data:/data/trino
+    ports:
+      - 127.0.0.1:${V3B1B_TRINO_PORT:?}:8443
+    depends_on:
+      - rustfs
+      - polaris
+
+volumes:
+  s3-data:
+  trino-data:

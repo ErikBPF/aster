@@ -67,3 +67,13 @@ Feature: Catalog-bound compute and data access
     When the caller submits a query
     Then execution is refused
     And no shared privileged credential is used as a fallback
+
+  Scenario: Protected Spark requires proxy identity and isolated backend access
+    Given Alice and Bob have the same Aster engine grant for protected Spark
+    And an authenticating gRPC proxy binds each request to the verified caller
+    And Spark's catalog and storage policy permits Alice but denies Bob
+    When each caller reads the same connected Delta table through Aster
+    Then Alice receives the independently seeded rows
+    And Bob receives a backend data denial
+    And Bob cannot reuse Alice's Spark session or storage credential
+    And Bob's direct object request is denied under Bob's effective storage identity

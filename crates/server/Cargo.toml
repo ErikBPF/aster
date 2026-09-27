@@ -10,9 +10,10 @@ aster-core.workspace = true
 aster-engines.workspace = true
 aster-catalogs.workspace = true
 async-trait.workspace = true
-sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "macros"] }
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "macros", "json"] }
 serde.workspace = true
 serde_json.workspace = true
+sha2 = "0.10"
 anyhow.workspace = true
 tokio.workspace = true
 axum.workspace = true
@@ -22,6 +23,9 @@ tracing-subscriber.workspace = true
 openidconnect.workspace = true
 reqwest.workspace = true
 base64.workspace = true
+ring = "0.17"
+chrono = "0.4"
+chacha20poly1305 = { version = "0.11", features = ["getrandom"] }
 redis.workspace = true
 buffa.workspace = true
 connectrpc.workspace = true
@@ -40,6 +44,8 @@ cucumber = "0.23"
 async-trait.workspace = true
 tower = "0.5"
 futures.workspace = true
+tokio-rustls = "0.26"
+tempfile = "3"
 
 # The Gherkin harness drives the router in process; it needs its own target
 # because cucumber supplies `main`.

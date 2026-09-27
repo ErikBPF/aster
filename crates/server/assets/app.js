@@ -4,12 +4,17 @@
 
 const nbNode = document.getElementById('nb');
 const nb = nbNode ? JSON.parse(nbNode.textContent) : null;
+const team = nbNode?.dataset.team || null;
+const workspace = nbNode?.dataset.workspace || 'session';
+let contentRevision = nbNode?.dataset.contentRevision || null;
 const statusLine = document.getElementById('status');
 const cellsRoot = document.getElementById('cells');
 const helperSession = Array.from(crypto.getRandomValues(new Uint8Array(16)),
   byte => byte.toString(16).padStart(2, '0')).join('');
 
+
 let dirty = false;
+let editGeneration = 0;
 let engineInfo = new Map();
 
 function status(text) {
@@ -17,14 +22,13 @@ function status(text) {
 }
 
 function setDirty(value) {
+  if (value) editGeneration += 1;
   dirty = value;
+  const syncButton = document.querySelector('[data-action="sync"]');
+  if (syncButton) syncButton.disabled = dirty;
   if (dirty) status('unsaved changes');
   else if (statusLine) statusLine.textContent = '';
 }
-
-window.addEventListener('beforeunload', (event) => {
-  if (dirty) event.preventDefault();
-});
 
 /* ---- engines -------------------------------------------------------- */
 
@@ -86,6 +90,19 @@ function cellButton(label, className, action) {
   return element;
 }
 
+function wireEditor(area) {
+  area.addEventListener('input', () => {
+    resize(area);
+    setDirty(true);
+  });
+  area.addEventListener('input', () => {
+    if (/[A-Za-z0-9_."-]$/.test(area.value.slice(0, area.selectionStart))) scheduleComplete(area);
+    else closeComplete();
+  });
+  area.addEventListener('keydown', (event) => completeKeydown(event, area));
+  area.addEventListener('blur', () => closeComplete());
+}
+
 function cellTemplate(id, sql, engine) {
   const section = document.createElement('section');
   section.className = 'cell';
@@ -136,18 +153,9 @@ function cellTemplate(id, sql, engine) {
   area.className = 'editor';
   area.spellcheck = false;
   area.value = sql;
-  area.addEventListener('input', () => {
-    resize(area);
-    setDirty(true);
-  });
   /* Suggestions follow the token under the caret: a trailing word character or
    * dot keeps them coming, anything else dismisses the list. */
-  area.addEventListener('input', () => {
-    if (/[A-Za-z0-9_."-]$/.test(area.value.slice(0, area.selectionStart))) scheduleComplete(area);
-    else closeComplete();
-  });
-  area.addEventListener('keydown', (event) => completeKeydown(event, area));
-  area.addEventListener('blur', () => closeComplete());
+  wireEditor(area);
 
   const out = document.createElement('div');
   out.className = 'out';
@@ -158,10 +166,71 @@ function cellTemplate(id, sql, engine) {
   outContent.className = 'out-content';
   out.append(outPrompt, outContent);
 
-  body.append(head, area, out);
+  const main = document.createElement('div');
+  main.className = 'cell-main';
+  main.append(area, out);
+
+  const split = document.createElement('div');
+  split.className = 'cell-split';
+  split.append(main, cellChatTemplate());
+
+  body.append(head, split);
   section.append(gutter, body);
   fillEngines(select, engine || '');
   return section;
+}
+
+/* The cell conversation mirrors the notebook panel's markup; it is scoped to
+ * one cell and stays closed until the cell's AI button opens it. */
+function cellChatTemplate() {
+  const panel = document.createElement('aside');
+  panel.className = 'cell-chat';
+  panel.hidden = true;
+  panel.setAttribute('aria-label', 'Cell conversation');
+
+  const heading = document.createElement('div');
+  heading.className = 'chat-heading';
+  const title = document.createElement('strong');
+  title.textContent = 'Cell assistant';
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.className = 'btn cell-chat-close';
+  close.textContent = 'Close';
+  heading.append(title, close);
+
+  const note = document.createElement('p');
+  note.className = 'status';
+  note.textContent = "For this cell only. Sends this cell's SQL and last output; it cannot read the notebook conversation or another cell's.";
+
+  const history = document.createElement('div');
+  history.className = 'cell-chat-history chat-history';
+  history.tabIndex = 0;
+  history.setAttribute('role', 'log');
+  history.setAttribute('aria-label', 'Cell conversation messages');
+  history.setAttribute('aria-live', 'polite');
+
+  const status = document.createElement('p');
+  status.className = 'cell-chat-status status';
+  status.setAttribute('role', 'status');
+
+  const form = document.createElement('form');
+  form.className = 'cell-chat-form';
+  const label = document.createElement('label');
+  label.textContent = 'Message';
+  const prompt = document.createElement('textarea');
+  prompt.className = 'cell-chat-prompt';
+  prompt.rows = 3;
+  prompt.maxLength = 8192;
+  prompt.required = true;
+  prompt.placeholder = 'Ask about this query';
+  const send = document.createElement('button');
+  send.type = 'submit';
+  send.className = 'btn primary cell-chat-send';
+  send.textContent = 'Send';
+  form.append(label, prompt, send);
+
+  panel.append(heading, note, history, status, form);
+  return panel;
 }
 
 document.addEventListener('click', (event) => {
@@ -171,8 +240,9 @@ document.addEventListener('click', (event) => {
   switch (target.dataset.action) {
     case 'run': run(target); break;
     case 'run-all': runAll(); break;
-    case 'ai': generate(target); break;
+    case 'ai': toggleCellChat(cell); break;
     case 'save': save(); break;
+    case 'sync': syncNotebook(); break;
     case 'add': addCell(cell); break;
     case 'up': moveCell(cell, -1); break;
     case 'down': moveCell(cell, 1); break;
@@ -305,6 +375,31 @@ function renderResult(out, result, ms) {
   }
 }
 
+/* Ctrl/Cmd+Enter runs the focused cell, or sends the focused chat message. */
+document.addEventListener('keydown', (event) => {
+  if (!(event.ctrlKey || event.metaKey) || event.key !== 'Enter') return;
+  const target = event.target;
+  if (!target || !target.closest) return;
+  const prompt = target.closest('.cell-chat-prompt, #chat-prompt');
+  if (prompt) {
+    const form = prompt.closest('form');
+    if (form) {
+      event.preventDefault();
+      form.requestSubmit();
+    }
+    return;
+  }
+  const editor = target.closest('.editor');
+  if (editor) {
+    const cell = editor.closest('.cell');
+    const run = cell ? cell.querySelector('[data-action=run]') : null;
+    if (run) {
+      event.preventDefault();
+      run.click();
+    }
+  }
+});
+
 async function run(btn) {
   const cell = btn.closest('.cell');
   const area = cell.querySelector('.editor');
@@ -322,7 +417,7 @@ async function run(btn) {
     response = await fetch('/api/query', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ sql: area.value, engine }),
+      body: JSON.stringify({ sql: area.value, engine, notebook: nb.id, cell: cell.dataset.id }),
     });
   } catch (error) {
     cell.classList.remove('running');
@@ -352,35 +447,15 @@ async function runAll() {
   }
 }
 
-async function generate(btn) {
-  const cell = btn.closest('.cell');
-  const area = cell.querySelector('.editor');
-  const out = cell.querySelector('.out');
-  outMeta(out, 'asking the model…', '');
-  const res = await fetch('/api/ai', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-opencode-session': helperSession },
-    body: JSON.stringify({
-      prompt: `Write a query for: ${(nb && nb.title) || 'a report'}`,
-      sql: area.value,
-      helper: helperValue(),
-    }),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    renderError(out, data.error || `request failed (${res.status})`);
-    return;
-  }
-  area.value = data.sql;
-  resize(area);
-  setDirty(true);
-  outMeta(out, 'suggestion inserted; run it to check.', '');
-}
-
 async function save() {
-  const res = await fetch('/api/notebooks/' + encodeURIComponent(nb.id), {
+  const generation = editGeneration;
+  const res = await fetch(notebookPath(), {
     method: 'PUT',
-    headers: { 'content-type': 'application/json' },
+    headers: {
+      'content-type': 'application/json',
+      ...workspaceHeader(),
+      ...(contentRevision ? { 'if-match': '"' + contentRevision + '"' } : { 'if-none-match': '*' }),
+    },
     body: JSON.stringify({ ...nb, cells: cellsFromDom() }),
   });
   const data = await res.json().catch(() => ({}));
@@ -388,66 +463,182 @@ async function save() {
     status('save failed: ' + (data.error || res.status));
     return;
   }
-  setDirty(false);
-  status('saved ' + String(data.revision).slice(0, 8));
+  contentRevision = data.content_revision;
+  if (generation === editGeneration) {
+    setDirty(false);
+    status((team ? 'saved locally; Sync pending ' : 'saved ') + String(data.revision).slice(0, 8));
+  } else {
+    status('unsaved changes');
+  }
+}
+
+function notebookPath() {
+  const id = encodeURIComponent(nb.id);
+  return team ? '/api/teams/' + encodeURIComponent(team) + '/notebooks/' + id : '/api/notebooks/' + id;
+}
+
+function workspaceHeader() {
+  return team ? { 'x-aster-workspace': workspace } : {};
+}
+
+async function syncNotebook() {
+  if (!team) return;
+  if (dirty) { status('Save before Sync'); return; }
+  const generation = editGeneration;
+  const button = document.querySelector('[data-action="sync"]');
+  button.disabled = true;
+  try {
+    const response = await fetch(notebookPath() + '/sync', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...workspaceHeader() },
+      body: '{}',
+    });
+    const result = await response.json().catch(() => ({}));
+    if (generation === editGeneration && !dirty) {
+      status(response.ok
+        ? 'synced ' + String(result.remote_revision).slice(0, 8)
+        : 'Sync failed: ' + (result.error || response.status));
+    }
+  } catch (error) {
+    if (generation === editGeneration && !dirty) status('Sync failed: ' + error);
+  } finally { button.disabled = dirty; }
 }
 
 /* ---- ai helpers ----------------------------------------------------- */
 
 const helperSelect = document.getElementById('helper');
 let helpers = [];
+let savedHelper = null;
+let helperReady = false;
+let helperSaving = false;
+let pendingState = null;
 
-/* The notebook toolbar offers every helper this user registered; the choice
- * lives in the working state so a reload keeps it. */
+/* The selection belongs to this user and notebook, outside the Git file. */
 async function loadHelpers() {
-  if (!helperSelect) return;
-  const res = await fetch('/api/llm');
-  if (res.ok) helpers = await res.json().catch(() => []);
-  fillHelpers('');
+  if (!helperSelect || !nb) return;
+  helperSelect.disabled = true;
+  helperSelect.replaceChildren(new Option('loading helpers…', ''));
   try {
-    const state = await (await fetch('/api/state')).json();
-    if (state && state.notebook === (nb && nb.id) && state.helper) fillHelpers(state.helper);
+    const url = notebookPath() + '/helper';
+    const [list, choice] = await Promise.all([fetch('/api/llm'), fetch(url, { headers: workspaceHeader() })]);
+    if (!list.ok || !choice.ok) throw new Error('helper selection unavailable');
+    helpers = await list.json();
+    const preference = await choice.json();
+    savedHelper = preference.helper || null;
+    helperReady = true;
+    fillHelpers(savedHelper);
+    if (pendingState) {
+      const { cell, engine } = pendingState;
+      pendingState = null;
+      recordState(cell, engine);
+    }
   } catch (error) {
-    /* best effort */
+    status('helper selection unavailable');
+    helperSelect.replaceChildren(new Option('helper selection unavailable', ''));
+    helperSelect.disabled = true;
   }
+  updateChatSend();
 }
 
 function fillHelpers(current) {
   helperSelect.replaceChildren();
+  const placeholder = new Option(helpers.length ? 'select a helper' : 'no helper registered', '');
+  placeholder.disabled = true;
+  helperSelect.appendChild(placeholder);
+  if (current && !helpers.some((helper) => helperMatches(helper, current))) {
+    const missing = new Option(`${current} (unavailable)`, current);
+    missing.disabled = true;
+    helperSelect.appendChild(missing);
+  }
   if (helpers.length === 0) {
-    const option = document.createElement('option');
-    option.value = '';
-    option.textContent = 'no helper registered';
-    helperSelect.appendChild(option);
     helperSelect.disabled = true;
-    return;
+  } else {
+    helperSelect.disabled = false;
   }
-  helperSelect.disabled = false;
   for (const helper of helpers) {
-    const option = document.createElement('option');
-    option.value = helper.id;
-    option.textContent = `${helper.id} · ${helper.model}`;
-    helperSelect.appendChild(option);
+    // Keep an already saved legacy personal ID usable without writing on load.
+    const value = helper.scope !== 'shared' && helper.id === current ? current : helperRef(helper);
+    const scope = helper.scope === 'shared' ? 'Shared' : 'Personal';
+    helperSelect.appendChild(new Option(`${scope} · ${helper.id} · ${helper.model}`, value));
   }
-  helperSelect.value = current && helpers.some((h) => h.id === current) ? current : helpers[0].id;
+  helperSelect.value = current || '';
+}
+
+function helperRef(helper) {
+  return helper.ref || helper.id;
+}
+
+function helperMatches(helper, value) {
+  return helperRef(helper) === value || (helper.scope !== 'shared' && helper.id === value);
 }
 
 function helperValue() {
-  return helperSelect && helperSelect.value ? helperSelect.value : null;
+  const value = helperSelect && helperSelect.value;
+  return helperReady && !helperSaving && value === savedHelper && helpers.some((helper) => helperMatches(helper, value))
+    ? value : null;
+}
+
+function updateChatSend() {
+  const send = document.getElementById('chat-send');
+  if (send) send.disabled = chatBusy || !helperValue();
 }
 
 if (helperSelect) {
-  helperSelect.addEventListener('change', () => recordState(null, null));
+  helperSelect.addEventListener('change', async () => {
+    const chosen = helperSelect.value;
+    if (!helperReady || helperSaving || !helpers.some((helper) => helperMatches(helper, chosen))) {
+      fillHelpers(savedHelper);
+      return;
+    }
+    helperSaving = true;
+    helperSelect.disabled = true;
+    updateChatSend();
+    try {
+      const response = await fetch(notebookPath() + '/helper', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json', ...workspaceHeader() },
+        body: JSON.stringify({ helper: chosen }),
+      });
+      const value = await response.json();
+      if (!response.ok || value.helper !== chosen) throw new Error('helper selection did not save');
+      savedHelper = chosen;
+      status('helper saved');
+      recordNotebook();
+    } catch (error) {
+      fillHelpers(savedHelper);
+      status('helper selection failed');
+    } finally {
+      helperSaving = false;
+      helperSelect.disabled = helpers.length === 0;
+      updateChatSend();
+    }
+  });
 }
 
 /* Where this user is, kept in the shared state plane so the index page and the
  * TUI can resume on any container. Best effort: a failure never blocks a cell. */
+async function recordNotebook() {
+  if (team) return;
+  try {
+    const response = await fetch('/api/state');
+    if (!response.ok) return;
+    const state = await response.json();
+    if (state.notebook !== nb.id) recordState(null, null);
+  } catch (error) { /* best effort */ }
+}
+
 function recordState(cell, engine) {
-  if (!nb) return;
+  // A legacy helper must migrate before an ordinary working-state write can
+  // replace the old state row.
+  if (!nb || team) return;
+  if (!helperReady) {
+    pendingState = { cell, engine };
+    return;
+  }
   fetch('/api/state', {
     method: 'PUT',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ notebook: nb.id, cell, engine, helper: helperValue() }),
+    body: JSON.stringify({ notebook: nb.id, cell, engine }),
   }).catch(() => {});
 }
 
@@ -488,12 +679,13 @@ async function createNotebook(event) {
   const input = document.getElementById('new-id');
   const id = input.value.trim();
   if (!id) return;
-  await fetch('/api/notebooks/' + encodeURIComponent(id), {
+  const response = await fetch('/api/notebooks/' + encodeURIComponent(id), {
     method: 'PUT',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', 'if-none-match': '*' },
     body: JSON.stringify({ id, title: id, cells: [{ id: 'c1', sql: 'SELECT 1', engine: null }] }),
   });
-  location.href = '/notebooks/' + encodeURIComponent(id);
+  if (response.ok) location.href = '/notebooks/' + encodeURIComponent(id);
+  else status('create failed: ' + (await response.json().catch(() => ({}))).error);
 }
 
 /* ---- catalog filter ------------------------------------------------- */
@@ -577,7 +769,11 @@ async function requestComplete(area) {
     return closeComplete();
   }
   if (!Array.isArray(items) || items.length === 0) return closeComplete();
-  showComplete(area, items, caret - token.length);
+  /* Replace only the segment after the last dot, so accepting `sales` after
+     `polaris.` yields `polaris.sales` rather than dropping the qualifier. A
+     token with no dot (a bare or quoted name) is replaced whole. */
+  const segment = token.slice(token.lastIndexOf('.') + 1);
+  showComplete(area, items, caret - segment.length);
 }
 
 function scheduleComplete(area) {
@@ -626,13 +822,295 @@ function completeKeydown(event, area) {
 
 /* ---- boot ----------------------------------------------------------- */
 
-if (nb) {
-  // Opening the notebook is itself a place to resume from.
-  recordState(null, null);
-}
-
+for (const area of document.querySelectorAll('.editor')) wireEditor(area);
 loadEngines().then(autosizeAll);
 loadHelpers();
+if (nb) recordState(null, null);
 
 const createForm = document.getElementById('create');
 if (createForm) createForm.addEventListener('submit', createNotebook);
+
+
+/* Saved conversation state is server-owned; browser state holds only the draft. */
+const chatPanel = document.getElementById('chat-panel');
+let conversation = null;
+let chatBusy = false;
+
+async function chatRpc(method, body) {
+  if (team) body = { ...body, team, workspace };
+  const response = await fetch('/aster.v1.Aster/' + method, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'connect-protocol-version': '1' },
+    body: JSON.stringify(body),
+  });
+  const value = await response.json();
+  if (!response.ok) {
+    const error = new Error(value.message || 'Conversation request failed');
+    error.conflict = response.status === 409;
+    throw error;
+  }
+  return value;
+}
+
+function renderConversation() {
+  const history = document.getElementById('chat-history');
+  history.replaceChildren();
+  for (const message of conversation.messages || []) {
+    const entry = document.createElement('article');
+    entry.className = 'chat-message ' + (message.role === 'assistant' ? 'assistant' : 'user');
+    const label = document.createElement('strong');
+    label.textContent = message.role === 'assistant' ? message.helper || 'Assistant' : 'You';
+    const text = document.createElement('div');
+    text.className = 'chat-text';
+    text.textContent = message.content;
+    entry.append(label, text);
+    if (message.role === 'assistant') {
+      /* One suggestion per reply: the last fenced SQL block is the answer. */
+      const blocks = [...message.content.matchAll(/```sql\s*\n([\s\S]*?)```/gi)];
+      if (blocks.length > 0) {
+        const suggested = blocks[blocks.length - 1][1].trim();
+        const insert = document.createElement('button');
+        insert.type = 'button';
+        insert.className = 'btn';
+        insert.textContent = 'Insert SQL as new cell';
+        insert.addEventListener('click', () => {
+          const cell = addCell(document.querySelector('.cell:last-child'));
+          cell.querySelector('.editor').value = suggested;
+          resize(cell.querySelector('.editor'));
+          setDirty(true);
+        });
+        entry.appendChild(insert);
+      }
+    }
+    history.appendChild(entry);
+  }
+  history.scrollTop = history.scrollHeight;
+}
+
+async function loadConversation() {
+  const loaded = await chatRpc('GetConversation', { notebook: nb.id });
+  if (!conversation || BigInt(loaded.revision || '0') >= BigInt(conversation.revision || '0')) {
+    conversation = loaded;
+    renderConversation();
+  }
+}
+
+async function openChat() {
+  chatPanel.hidden = false;
+  document.body.classList.add('chat-open');
+  document.getElementById('chat-toggle').setAttribute('aria-expanded', 'true');
+  document.getElementById('chat-prompt').focus();
+  if (!chatBusy) {
+    document.getElementById('chat-send').disabled = true;
+    try {
+      await loadConversation();
+      document.getElementById('chat-status').textContent = '';
+    } catch (error) {
+      conversation = null;
+      document.getElementById('chat-status').textContent = error.message;
+    } finally { updateChatSend(); }
+  }
+}
+
+function closeChat() {
+  chatPanel.hidden = true;
+  document.body.classList.remove('chat-open', 'chat-wide');
+  document.getElementById('chat-toggle').setAttribute('aria-expanded', 'false');
+  document.getElementById('chat-expand').setAttribute('aria-pressed', 'false');
+  document.getElementById('chat-expand').textContent = 'Expand';
+  document.getElementById('chat-toggle').focus();
+}
+
+if (chatPanel) {
+  document.getElementById('chat-toggle').addEventListener('click', () => chatPanel.hidden ? openChat() : closeChat());
+  document.getElementById('chat-close').addEventListener('click', closeChat);
+  document.getElementById('chat-expand').addEventListener('click', (event) => {
+    const expanded = document.body.classList.toggle('chat-wide');
+    event.target.setAttribute('aria-pressed', String(expanded));
+    event.target.textContent = expanded ? 'Narrow' : 'Expand';
+  });
+  chatPanel.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') { event.preventDefault(); closeChat(); }
+  });
+  document.getElementById('chat-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (chatBusy) return;
+    const prompt = document.getElementById('chat-prompt');
+    const context = document.getElementById('chat-context');
+    const status = document.getElementById('chat-status');
+    const chosen = helperValue();
+    if (!chosen) { status.textContent = 'Register and select a helper first.'; return; }
+    chatBusy = true;
+    document.getElementById('chat-send').disabled = true;
+    prompt.disabled = context.disabled = true;
+    status.textContent = 'Waiting for the helper…';
+    try {
+      if (!conversation) await loadConversation();
+      conversation = await chatRpc('SendMessage', {
+        notebook: nb.id, helper: chosen, prompt: prompt.value,
+        context: context.value, expectedRevision: conversation.revision || '0',
+      });
+      renderConversation();
+      prompt.value = '';
+      context.value = '';
+      status.textContent = 'Saved. Replies do not execute queries.';
+    } catch (error) {
+      status.textContent = error.message + ' Your draft is unchanged; reload history before resending.';
+      try { await loadConversation(); } catch (_) { conversation = null; }
+    } finally {
+      chatBusy = false;
+      updateChatSend();
+      prompt.disabled = context.disabled = false;
+      if (!chatPanel.hidden) prompt.focus();
+    }
+  });
+}
+
+/* ---- cell conversation ------------------------------------------------ */
+
+/* One history per cell, kept in the browser only; the server owns the stored
+ * conversation under the notebook+cell key. */
+const cellChats = new Map();
+
+function cellChatParts(cell) {
+  return {
+    panel: cell.querySelector('.cell-chat'),
+    history: cell.querySelector('.cell-chat-history'),
+    status: cell.querySelector('.cell-chat-status'),
+    prompt: cell.querySelector('.cell-chat-prompt'),
+    send: cell.querySelector('.cell-chat-send'),
+  };
+}
+
+function cellChatState(id) {
+  if (!cellChats.has(id)) cellChats.set(id, { revision: '0', messages: [], busy: false, loaded: false });
+  return cellChats.get(id);
+}
+
+/* The cell's own SQL and last output. Never the notebook conversation, never
+ * another cell: the server grounds on exactly this text. */
+function cellChatContext(cell) {
+  const sql = cell.querySelector('.editor').value.trim();
+  const out = cell.querySelector('.out-content');
+  const output = (out ? out.innerText : '').trim().slice(0, 4000);
+  let text = sql ? 'Current cell SQL:\n' + sql : '';
+  if (output) text += (text ? '\n\n' : '') + 'Last run output:\n' + output;
+  return text.slice(0, 8192);
+}
+
+function renderCellChat(cell) {
+  const { history } = cellChatParts(cell);
+  const state = cellChatState(cell.dataset.id);
+  history.replaceChildren();
+  for (const message of state.messages) {
+    const entry = document.createElement('article');
+    entry.className = 'chat-message ' + (message.role === 'assistant' ? 'assistant' : 'user');
+    const label = document.createElement('strong');
+    label.textContent = message.role === 'assistant' ? message.helper || 'Assistant' : 'You';
+    const text = document.createElement('div');
+    text.className = 'chat-text';
+    text.textContent = message.content;
+    entry.append(label, text);
+    if (message.role === 'assistant') {
+      /* One suggestion per reply: the last fenced SQL block is the answer. */
+      const blocks = [...message.content.matchAll(/```sql\s*\n([\s\S]*?)```/gi)];
+      if (blocks.length > 0) {
+        const suggested = blocks[blocks.length - 1][1].trim();
+        const apply = document.createElement('button');
+        apply.type = 'button';
+        apply.className = 'btn';
+        apply.textContent = 'Replace this cell';
+        apply.addEventListener('click', () => {
+          const editor = cell.querySelector('.editor');
+          editor.value = suggested;
+          resize(editor);
+          setDirty(true);
+        });
+        entry.appendChild(apply);
+      }
+    }
+    history.appendChild(entry);
+  }
+  history.scrollTop = history.scrollHeight;
+}
+
+async function loadCellChat(cell) {
+  const state = cellChatState(cell.dataset.id);
+  const loaded = await chatRpc('GetConversation', { notebook: nb.id, cell: cell.dataset.id });
+  if (!state.loaded || BigInt(loaded.revision || '0') >= BigInt(state.revision || '0')) {
+    state.revision = loaded.revision || '0';
+    state.messages = loaded.messages || [];
+    state.loaded = true;
+    renderCellChat(cell);
+  }
+}
+
+async function openCellChat(cell) {
+  const parts = cellChatParts(cell);
+  parts.panel.hidden = false;
+  parts.prompt.focus();
+  try {
+    await loadCellChat(cell);
+    parts.status.textContent = '';
+  } catch (error) {
+    parts.status.textContent = error.message;
+  }
+}
+
+function closeCellChat(cell) {
+  cellChatParts(cell).panel.hidden = true;
+}
+
+function toggleCellChat(cell) {
+  if (!cell) return;
+  if (cellChatParts(cell).panel.hidden) openCellChat(cell);
+  else closeCellChat(cell);
+}
+
+async function sendCellChat(cell) {
+  const parts = cellChatParts(cell);
+  const state = cellChatState(cell.dataset.id);
+  if (state.busy) return;
+  const chosen = helperValue();
+  if (!chosen) { parts.status.textContent = 'Register and select a helper first.'; return; }
+  state.busy = true;
+  parts.send.disabled = true;
+  parts.prompt.disabled = true;
+  parts.status.textContent = 'Waiting for the helper…';
+  try {
+    if (!state.loaded) await loadCellChat(cell);
+    const sent = await chatRpc('SendMessage', {
+      notebook: nb.id, cell: cell.dataset.id, helper: chosen,
+      prompt: parts.prompt.value, context: cellChatContext(cell),
+      expectedRevision: state.revision || '0',
+    });
+    state.revision = sent.revision || state.revision;
+    state.messages = sent.messages || [];
+    state.loaded = true;
+    renderCellChat(cell);
+    parts.prompt.value = '';
+    parts.status.textContent = 'Saved. Replies do not execute queries.';
+  } catch (error) {
+    parts.status.textContent = error.message + ' Your draft is unchanged; reopen to reload history.';
+  } finally {
+    state.busy = false;
+    parts.send.disabled = false;
+    parts.prompt.disabled = false;
+    if (!parts.panel.hidden) parts.prompt.focus();
+  }
+}
+
+if (cellsRoot) {
+  cellsRoot.addEventListener('click', (event) => {
+    const close = event.target.closest && event.target.closest('.cell-chat-close');
+    if (!close) return;
+    const cell = close.closest('.cell');
+    if (cell) closeCellChat(cell);
+  });
+  cellsRoot.addEventListener('submit', (event) => {
+    if (!event.target.classList.contains('cell-chat-form')) return;
+    event.preventDefault();
+    const cell = event.target.closest('.cell');
+    if (cell) sendCellChat(cell);
+  });
+}

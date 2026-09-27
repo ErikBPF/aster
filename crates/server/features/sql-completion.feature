@@ -30,3 +30,17 @@ Feature: SQL completion
     When subject "alice" asks for completion after "select * from nope."
     Then the response status is 200
     And the suggestions are empty
+
+  Scenario: A schema prefix suggests its tables
+    When subject "alice" asks for completion after "select * from polaris-local.default."
+    Then the suggestions include table "orders"
+
+  Scenario: A table prefix suggests its columns
+    When subject "alice" asks for completion after "select order_id, total from polaris-local.default.orders."
+    Then the suggestions include column "order_id"
+    And the suggestions include column "total"
+
+  Scenario: A prefix that matches no column suggests nothing
+    When subject "alice" asks for completion after "select * from polaris-local.default.orders.nope"
+    Then the response status is 200
+    And the suggestions are empty

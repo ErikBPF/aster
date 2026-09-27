@@ -42,6 +42,9 @@ pub struct OidcConfig {
     /// Claim carrying group membership. Authentik emits `groups`; a Keycloak
     /// realm gets the same claim from its group-membership mapper.
     pub groups_claim: String,
+    /// Optional claim mapped by the deployed provider to its stable user UUID.
+    /// Aster does not assume OIDC `sub` is an Authentik API UUID.
+    pub user_uuid_claim: Option<String>,
     /// Scopes to request. Keycloak rejects a scope the realm does not define,
     /// so this is deployment configuration rather than a constant.
     pub scopes: Vec<String>,
@@ -58,6 +61,7 @@ impl std::fmt::Debug for OidcConfig {
             .field("admin_group", &self.admin_group)
             .field("editor_group", &self.editor_group)
             .field("groups_claim", &self.groups_claim)
+            .field("user_uuid_claim", &self.user_uuid_claim)
             .field("scopes", &self.scopes)
             .finish()
     }
@@ -85,6 +89,9 @@ impl OidcConfig {
                 .unwrap_or_else(|_| "aster-editors".into()),
             groups_claim: std::env::var("ASTER_IDP_GROUPS_CLAIM")
                 .unwrap_or_else(|_| "groups".into()),
+            user_uuid_claim: std::env::var("ASTER_IDP_USER_UUID_CLAIM")
+                .ok()
+                .filter(|claim| !claim.trim().is_empty()),
             scopes: std::env::var("ASTER_IDP_SCOPES")
                 .map(|value| {
                     value
@@ -209,9 +216,16 @@ impl IdentityProvider for OidcProvider {
             .map_err(|e| CoreError::Unauthorized(format!("id token rejected: {e}")))?;
 
         let groups = groups_from_jwt(&id_token.to_string(), &self.config.groups_claim);
+        let user_uuid = self
+            .config
+            .user_uuid_claim
+            .as_deref()
+            .and_then(|claim| user_uuid_from_jwt(&id_token.to_string(), claim));
         Ok(Identity {
             subject: claims.subject().to_string(),
             roles: map_roles(&groups, &self.config.admin_group, &self.config.editor_group),
+            groups,
+            user_uuid,
         })
     }
 }
@@ -242,16 +256,7 @@ pub fn map_roles(groups: &[String], admin_group: &str, editor_group: &str) -> Ve
 /// a second ID token type. Signature, issuer, audience and nonce are the
 /// library's job, not this function's.
 fn groups_from_jwt(jwt: &str, claim: &str) -> Vec<String> {
-    let Some(payload) = jwt.split('.').nth(1) else {
-        return Vec::new();
-    };
-    let bytes = B64
-        .decode(payload)
-        .or_else(|_| {
-            base64::engine::general_purpose::URL_SAFE.decode(payload.trim_end_matches('='))
-        })
-        .unwrap_or_default();
-    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+    let Some(value) = verified_payload(jwt) else {
         return Vec::new();
     };
     value
@@ -264,6 +269,35 @@ fn groups_from_jwt(jwt: &str, claim: &str) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+fn user_uuid_from_jwt(jwt: &str, claim: &str) -> Option<String> {
+    let value = verified_payload(jwt)?;
+    let candidate = value.get(claim)?.as_str()?;
+    let bytes = candidate.as_bytes();
+    if bytes.len() != 36
+        || bytes.iter().enumerate().any(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                *byte != b'-'
+            } else {
+                !byte.is_ascii_hexdigit()
+            }
+        })
+    {
+        return None;
+    }
+    Some(candidate.to_ascii_lowercase())
+}
+
+fn verified_payload(jwt: &str) -> Option<serde_json::Value> {
+    let payload = jwt.split('.').nth(1)?;
+    let bytes = B64
+        .decode(payload)
+        .or_else(|_| {
+            base64::engine::general_purpose::URL_SAFE.decode(payload.trim_end_matches('='))
+        })
+        .ok()?;
+    serde_json::from_slice(&bytes).ok()
 }
 
 fn invalid(message: String) -> CoreError {
@@ -333,5 +367,20 @@ mod tests {
         assert!(groups_from_jwt(&jwt_with(r#"{"sub":"alice"}"#), "groups").is_empty());
         assert!(groups_from_jwt("not-a-jwt", "groups").is_empty());
         assert!(groups_from_jwt("", "groups").is_empty());
+    }
+
+    #[test]
+    fn stable_user_uuid_requires_a_configured_valid_claim() {
+        let jwt =
+            jwt_with(r#"{"sub":"opaque-sub","user_uuid":"BBBBBBBB-BBBB-4BBB-8BBB-BBBBBBBBBBBB"}"#);
+        assert_eq!(
+            user_uuid_from_jwt(&jwt, "user_uuid").as_deref(),
+            Some("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
+        );
+        assert_eq!(user_uuid_from_jwt(&jwt, "other"), None);
+        assert_eq!(
+            user_uuid_from_jwt(&jwt_with(r#"{"user_uuid":"alice"}"#), "user_uuid"),
+            None
+        );
     }
 }

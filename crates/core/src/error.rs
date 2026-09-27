@@ -2,6 +2,8 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum CoreError {
+    #[error("conflict: {0}")]
+    Conflict(String),
     #[error("engine error: {0}")]
     Engine(String),
     /// The engine ran the statement and refused it: a SQL, analysis or planning

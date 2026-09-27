@@ -3,16 +3,18 @@
 //! `engine_from_config`.
 
 use std::sync::Arc;
+use std::{io::Read, time::Duration};
 
 use aster_core::{
     Column, CoreError, EngineConfig, EngineId, EngineInfo, Health, QueryEngine, QueryRequest,
-    QueryResult, Result,
+    QueryResult, Result, TrinoDelegationConfig,
 };
 use async_trait::async_trait;
 
 pub struct TrinoEngine {
     info: EngineInfo,
     client: reqwest::Client,
+    delegation: Option<(TrinoDelegationConfig, reqwest::Client)>,
 }
 
 impl TrinoEngine {
@@ -29,41 +31,88 @@ impl TrinoEngine {
                 routing_group,
             },
             client: reqwest::Client::new(),
-        }
-    }
-}
-
-#[async_trait]
-impl QueryEngine for TrinoEngine {
-    fn info(&self) -> &EngineInfo {
-        &self.info
-    }
-
-    async fn health(&self) -> Health {
-        let url = format!("{}/v1/info", self.info.endpoint.trim_end_matches('/'));
-        match self.client.get(url).send().await {
-            Ok(response) if response.status().is_success() => Health::Healthy,
-            Ok(_) => Health::Degraded,
-            Err(_) => Health::Unavailable,
+            delegation: None,
         }
     }
 
-    async fn execute(&self, request: QueryRequest) -> Result<QueryResult> {
+    pub fn new_authenticated(
+        id: impl Into<String>,
+        endpoint: impl Into<String>,
+        routing_group: Option<String>,
+        delegation: TrinoDelegationConfig,
+    ) -> Result<Self> {
+        let endpoint = endpoint.into();
+        let url = reqwest::Url::parse(&endpoint)
+            .map_err(|_| CoreError::Invalid("invalid protected Trino endpoint".into()))?;
+        if url.scheme() != "https"
+            || url.host_str().is_none()
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || !matches!(url.path(), "" | "/")
+            || url.query().is_some()
+            || url.fragment().is_some()
+        {
+            return Err(CoreError::Invalid(
+                "invalid protected Trino endpoint".into(),
+            ));
+        }
+        let mut pem = Vec::new();
+        std::fs::File::open(&delegation.ca_file)
+            .and_then(|file| file.take(65_537).read_to_end(&mut pem))
+            .map_err(|_| CoreError::Unauthorized("Trino trust root unavailable".into()))?;
+        if pem.len() > 65_536 {
+            return Err(CoreError::Unauthorized(
+                "Trino trust root unavailable".into(),
+            ));
+        }
+        let certificate = reqwest::Certificate::from_pem(&pem)
+            .map_err(|_| CoreError::Unauthorized("Trino trust root unavailable".into()))?;
+        let client = reqwest::Client::builder()
+            .tls_built_in_root_certs(false)
+            .add_root_certificate(certificate)
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(Duration::from_secs(30))
+            .build()
+            .map_err(|_| CoreError::Unauthorized("Trino trust root unavailable".into()))?;
+        let mut engine = Self::new(id, endpoint, routing_group);
+        engine.delegation = Some((delegation, client));
+        Ok(engine)
+    }
+
+    fn service_token(delegation: &TrinoDelegationConfig) -> Result<String> {
+        let mut token = String::new();
+        std::fs::File::open(&delegation.token_file)
+            .and_then(|file| file.take(8193).read_to_string(&mut token))
+            .map_err(|_| CoreError::Unauthorized("Trino delegation unavailable".into()))?;
+        if token.len() > 8192 {
+            return Err(CoreError::Unauthorized(
+                "Trino delegation unavailable".into(),
+            ));
+        }
+        let token = token.trim_end_matches(['\r', '\n']);
+        if token.is_empty() || token.len() > 8192 || token.chars().any(char::is_control) {
+            return Err(CoreError::Unauthorized(
+                "Trino delegation unavailable".into(),
+            ));
+        }
+        Ok(token.into())
+    }
+
+    async fn execute_with(
+        &self,
+        request: QueryRequest,
+        headers: reqwest::header::HeaderMap,
+        client: &reqwest::Client,
+    ) -> Result<QueryResult> {
         let base = self.info.endpoint.trim_end_matches('/');
         let max_rows = request.max_rows.unwrap_or(1000);
-        let headers = statement_headers(&self.info, &request);
-
-        let mut payload: serde_json::Value = self
-            .client
-            .post(format!("{base}/v1/statement"))
-            .headers(headers.clone())
-            .body(request.sql)
-            .send()
-            .await
-            .map_err(|error| CoreError::Engine(error.to_string()))?
-            .json()
-            .await
-            .map_err(|error| CoreError::Engine(error.to_string()))?;
+        let mut payload: serde_json::Value = trino_payload(
+            client
+                .post(format!("{base}/v1/statement"))
+                .headers(headers.clone())
+                .body(request.sql),
+        )
+        .await?;
 
         let mut columns: Vec<Column> = Vec::new();
         let mut rows: Vec<Vec<serde_json::Value>> = Vec::new();
@@ -107,27 +156,20 @@ impl QueryEngine for TrinoEngine {
 
             match payload.get("nextUri").and_then(|value| value.as_str()) {
                 Some(next) => {
-                    payload = self
-                        .client
-                        .get(engine_endpoint(&self.info, next))
-                        .headers(headers.clone())
-                        .send()
-                        .await
-                        .map_err(|error| CoreError::Engine(error.to_string()))?
-                        .json()
-                        .await
-                        .map_err(|error| CoreError::Engine(error.to_string()))?;
+                    payload = trino_payload(
+                        client
+                            .get(engine_endpoint(&self.info, next))
+                            .headers(headers.clone()),
+                    )
+                    .await?;
                 }
                 None => break,
             }
         }
 
-        // A crawled page advertised more work; tell the coordinator to stop
-        // instead of leaving the query running after we stop reading it.
         if truncated {
             if let Some(next) = payload.get("nextUri").and_then(|value| value.as_str()) {
-                let _ = self
-                    .client
+                let _ = client
                     .delete(engine_endpoint(&self.info, next))
                     .headers(headers)
                     .send()
@@ -140,6 +182,83 @@ impl QueryEngine for TrinoEngine {
             rows,
             truncated,
         })
+    }
+}
+
+async fn trino_payload(request: reqwest::RequestBuilder) -> Result<serde_json::Value> {
+    let response = request
+        .send()
+        .await
+        .map_err(|_| CoreError::Engine("Trino request failed".into()))?;
+    if matches!(response.status().as_u16(), 401 | 403) {
+        return Err(CoreError::Unauthorized("Trino delegation rejected".into()));
+    }
+    if !response.status().is_success() {
+        return Err(CoreError::Engine(format!(
+            "Trino returned HTTP {}",
+            response.status().as_u16()
+        )));
+    }
+    response
+        .json()
+        .await
+        .map_err(|_| CoreError::Engine("invalid Trino response".into()))
+}
+
+#[async_trait]
+impl QueryEngine for TrinoEngine {
+    fn info(&self) -> &EngineInfo {
+        &self.info
+    }
+
+    async fn health(&self) -> Health {
+        let url = format!("{}/v1/info", self.info.endpoint.trim_end_matches('/'));
+        let request = if let Some((delegation, client)) = &self.delegation {
+            let Ok(token) = Self::service_token(delegation) else {
+                return Health::Unavailable;
+            };
+            client
+                .get(url)
+                .bearer_auth(token)
+                .header("X-Trino-User", "aster_service")
+        } else {
+            self.client.get(url)
+        };
+        match request.send().await {
+            Ok(response) if response.status().is_success() => Health::Healthy,
+            Ok(_) => Health::Degraded,
+            Err(_) => Health::Unavailable,
+        }
+    }
+
+    async fn execute_as_verified(
+        &self,
+        request: QueryRequest,
+        subject: &str,
+    ) -> Result<QueryResult> {
+        let Some((delegation, client)) = &self.delegation else {
+            return Err(CoreError::Unauthorized(
+                "Trino authenticated delegation is not configured".into(),
+            ));
+        };
+        if subject.is_empty() || subject.len() > 256 || subject.chars().any(char::is_control) {
+            return Err(CoreError::Unauthorized("invalid Trino subject".into()));
+        }
+        let token = Self::service_token(delegation)?;
+        let mut headers = statement_headers(&self.info, &request);
+        let user = reqwest::header::HeaderValue::from_str(subject)
+            .map_err(|_| CoreError::Unauthorized("invalid Trino subject".into()))?;
+        let mut bearer = reqwest::header::HeaderValue::from_str(&format!("Bearer {token}"))
+            .map_err(|_| CoreError::Unauthorized("Trino delegation unavailable".into()))?;
+        bearer.set_sensitive(true);
+        headers.insert("X-Trino-User", user);
+        headers.insert(reqwest::header::AUTHORIZATION, bearer);
+        self.execute_with(request, headers, client).await
+    }
+
+    async fn execute(&self, request: QueryRequest) -> Result<QueryResult> {
+        let headers = statement_headers(&self.info, &request);
+        self.execute_with(request, headers, &self.client).await
     }
 }
 
@@ -190,9 +309,12 @@ fn engine_endpoint(info: &EngineInfo, advertised: &str) -> String {
     }
 }
 
+pub type SparkTokenResolver = Arc<dyn Fn(&str) -> Result<String> + Send + Sync>;
+
 pub struct SparkEngine {
     info: EngineInfo,
     session: tokio::sync::OnceCell<spark_connect::SparkSession>,
+    protected_token_for: Option<SparkTokenResolver>,
 }
 
 impl SparkEngine {
@@ -209,7 +331,39 @@ impl SparkEngine {
                 routing_group,
             },
             session: tokio::sync::OnceCell::new(),
+            protected_token_for: None,
         }
+    }
+
+    /// Dormant protected transport seam. The production config factory does
+    /// not construct this until an authenticated proxy and backend policy are
+    /// proven together. The fixture supplies a fresh subject-bound credential.
+    pub fn new_authenticated(
+        id: impl Into<String>,
+        endpoint: impl Into<String>,
+        routing_group: Option<String>,
+        token_for: SparkTokenResolver,
+    ) -> Result<Self> {
+        let endpoint = endpoint.into();
+        let url = reqwest::Url::parse(&endpoint)
+            .map_err(|_| CoreError::Invalid("invalid protected Spark endpoint".into()))?;
+        let local = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "::1"));
+        if !matches!(url.scheme(), "https" | "http")
+            || (url.scheme() == "http" && !local)
+            || url.host_str().is_none()
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || !matches!(url.path(), "" | "/")
+            || url.query().is_some()
+            || url.fragment().is_some()
+        {
+            return Err(CoreError::Invalid(
+                "invalid protected Spark endpoint".into(),
+            ));
+        }
+        let mut engine = Self::new(id, endpoint, routing_group);
+        engine.protected_token_for = Some(token_for);
+        Ok(engine)
     }
 
     /// The client connects once per engine and reuses the session; the connect
@@ -245,13 +399,81 @@ impl QueryEngine for SparkEngine {
     }
 
     async fn health(&self) -> Health {
+        if self.protected_token_for.is_some() {
+            // A shared health session has no verified subject. The protected
+            // fixture exercises its credentialed transport on each query.
+            return Health::Unavailable;
+        }
         match self.session().await {
             Ok(_) => Health::Healthy,
             Err(_) => Health::Unavailable,
         }
     }
 
+    async fn execute_as_verified(
+        &self,
+        request: QueryRequest,
+        subject: &str,
+    ) -> Result<QueryResult> {
+        let Some(token_for) = &self.protected_token_for else {
+            return Err(CoreError::Unauthorized(
+                "Spark authenticated proxy is not configured".into(),
+            ));
+        };
+        if subject.is_empty() || subject.len() > 256 || subject.chars().any(char::is_control) {
+            return Err(CoreError::Unauthorized("invalid Spark subject".into()));
+        }
+        if std::env::var_os("SPARK_CONNECT_AUTHENTICATE_TOKEN").is_some() {
+            return Err(CoreError::Unauthorized(
+                "ambient Spark token is forbidden".into(),
+            ));
+        }
+        if request
+            .catalog
+            .as_deref()
+            .is_some_and(|catalog| !catalog.is_empty())
+        {
+            return Err(CoreError::Invalid(
+                "the spark engine has no catalog switching yet".into(),
+            ));
+        }
+        let token = token_for(subject)
+            .map_err(|_| CoreError::Unauthorized("Spark proxy credential unavailable".into()))?;
+        if token.is_empty() || token.len() > 8192 || token.chars().any(char::is_control) {
+            return Err(CoreError::Unauthorized(
+                "Spark proxy credential unavailable".into(),
+            ));
+        }
+        let endpoint = connect_url(&self.info.endpoint);
+        let subject = url::form_urlencoded::byte_serialize(subject.as_bytes()).collect::<String>();
+        let token = url::form_urlencoded::byte_serialize(token.as_bytes()).collect::<String>();
+        let separator = if endpoint.ends_with('/') || endpoint.contains(";use_ssl=") {
+            ";"
+        } else {
+            "/;"
+        };
+        let remote = format!("{endpoint}{separator}user_id={subject};token={token}");
+        let sql = request.sql;
+        let max_rows = request.max_rows.unwrap_or(1000);
+        tokio::task::spawn_blocking(move || {
+            let session = spark_connect::SparkSession::builder()
+                .remote(&remote)
+                .get_or_create()
+                .map_err(|_| CoreError::Engine("Spark proxy connection failed".into()))?;
+            let result = run_spark_query(&session, &sql, max_rows);
+            let _ = session.stop();
+            result
+        })
+        .await
+        .map_err(|_| CoreError::Engine("Spark proxy query failed".into()))?
+    }
+
     async fn execute(&self, request: QueryRequest) -> Result<QueryResult> {
+        if self.protected_token_for.is_some() {
+            return Err(CoreError::Unauthorized(
+                "protected Spark cannot use a shared session".into(),
+            ));
+        }
         if let Some(catalog) = request.catalog.as_deref() {
             if !catalog.is_empty() {
                 return Err(CoreError::Invalid(
@@ -546,11 +768,16 @@ impl QueryEngine for MockEngine {
 pub fn engine_from_config(config: &EngineConfig) -> Result<Arc<dyn QueryEngine>> {
     let routing_group = config.routing_group.clone();
     let engine: Arc<dyn QueryEngine> = match config.kind.as_str() {
-        "trino" => Arc::new(TrinoEngine::new(
-            &config.id,
-            &config.endpoint,
-            routing_group,
-        )),
+        "trino" => Arc::new(if let Some(delegation) = &config.delegation {
+            TrinoEngine::new_authenticated(
+                &config.id,
+                &config.endpoint,
+                routing_group,
+                delegation.clone(),
+            )?
+        } else {
+            TrinoEngine::new(&config.id, &config.endpoint, routing_group)
+        }),
         "spark" => Arc::new(SparkEngine::new(
             &config.id,
             &config.endpoint,
@@ -578,6 +805,7 @@ mod tests {
             kind: kind.into(),
             endpoint: "http://engine.invalid:8080".into(),
             routing_group: None,
+            delegation: None,
         }
     }
 
@@ -746,6 +974,25 @@ mod tests {
             panic!("expected a refusal");
         };
         assert!(error.to_string().contains("catalog"));
+    }
+
+    #[tokio::test]
+    async fn protected_trino_and_spark_refuse_without_backend_delegation() {
+        let request = QueryRequest {
+            sql: "SELECT 1".into(),
+            catalog: None,
+            schema: None,
+            max_rows: None,
+        };
+        for engine in [
+            engine_from_config(&engine_config("trino")).unwrap(),
+            engine_from_config(&engine_config("spark")).unwrap(),
+        ] {
+            assert!(matches!(
+                engine.execute_as_verified(request.clone(), "alice").await,
+                Err(CoreError::Unauthorized(_))
+            ));
+        }
     }
 
     #[test]

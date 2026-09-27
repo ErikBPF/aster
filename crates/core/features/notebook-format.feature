@@ -16,3 +16,11 @@ Feature: Notebooks serialize as a diff-friendly text file
     Given the text "# title: Sales\nSELECT 1\n"
     When the text is parsed as a notebook
     Then parsing fails as invalid
+
+  Scenario: A SQL comment resembling a cell marker remains SQL
+    Given a notebook with the title "Sales"
+    And a cell "c1" holding "SELECT 1"
+    And that cell has a SQL comment resembling a cell marker
+    When the notebook is written to text and read back
+    Then the notebook has 1 cells
+    And that SQL comment remains in cell "c1"

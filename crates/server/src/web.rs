@@ -1,11 +1,13 @@
 use std::sync::Arc;
 
-use aster_core::{authorize, Action, CoreError, Health, Notebook, Principal, TableRef};
+use aster_core::{
+    authorize, Action, CoreError, Health, Notebook, NotebookStore, Principal, TableRef,
+};
 use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 
-use crate::{cookie, now, principal, ApiError, AppState};
+use crate::{ai, cookie, now, principal, ApiError, AppState};
 
 // Assets live beside the crate so the markup, the styles and the script stay
 // readable; `include_str!` keeps them in the binary with no extra service.
@@ -20,6 +22,17 @@ fn escape(value: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+fn catalog_path(parts: &[&str]) -> String {
+    let mut url = reqwest::Url::parse("http://aster.invalid/catalog").expect("static URL");
+    {
+        let mut segments = url.path_segments_mut().expect("static URL path");
+        for part in parts {
+            segments.push(part);
+        }
+    }
+    url.path().to_string()
 }
 
 fn nav(current: &str, items: &[(&str, &str, &str)]) -> String {
@@ -97,6 +110,9 @@ pub async fn index(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
+    if state.team_workspaces.is_some() {
+        return Err(CoreError::Unauthorized("team notebook context required".into()).into());
+    }
     let Some(principal) = browser_principal(&state, &headers).await else {
         return Ok(sign_in_redirect());
     };
@@ -153,13 +169,62 @@ pub async fn notebook_view(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
+    if state.team_workspaces.is_some() {
+        return Err(CoreError::Unauthorized("team notebook context required".into()).into());
+    }
     let Some(principal) = browser_principal(&state, &headers).await else {
         return Ok(sign_in_redirect());
     };
     authorize(&principal, Action::ReadNotebook)?;
-    let notebook = state.notebooks.get(&id).await?;
-    let body = notebook_body(&notebook);
-    Ok(Html(layout("notebooks", &notebook.title, &principal, &body)).into_response())
+    let snapshot = state.notebook_snapshot(&id).await?;
+    let body = notebook_body(&snapshot.notebook, &snapshot.content_revision, None);
+    Ok(Html(layout(
+        "notebooks",
+        &snapshot.notebook.title,
+        &principal,
+        &body,
+    ))
+    .into_response())
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TeamNotebookQuery {
+    workspace: Option<String>,
+}
+
+pub async fn team_notebook_view(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((team, id)): Path<(String, String)>,
+    Query(query): Query<TeamNotebookQuery>,
+) -> Result<Response, ApiError> {
+    let personal = match query.workspace.as_deref() {
+        None | Some("session") => false,
+        Some("personal") => true,
+        _ => return Err(CoreError::Invalid("invalid workspace selection".into()).into()),
+    };
+    let (principal, sid) = crate::team_member_session(&state, &headers, &team).await?;
+    authorize(&principal, Action::ReadNotebook)?;
+    let workspaces = state
+        .team_workspaces
+        .as_ref()
+        .ok_or_else(|| CoreError::NotFound("team notebooks are disabled".into()))?;
+    let store = workspaces.workspace(&team, &principal, &sid, personal)?;
+    let snapshot = store.snapshot(&id).await?;
+    let workspace = if personal { "personal" } else { "session" };
+    let body = notebook_body(
+        &snapshot.notebook,
+        &snapshot.content_revision,
+        Some((&team, workspace)),
+    );
+    Ok(Html(layout(
+        "notebooks",
+        &snapshot.notebook.title,
+        &principal,
+        &body,
+    ))
+    .into_response())
 }
 
 /// Pages redirect a browser into the login flow; API routes answer 403 instead.
@@ -178,7 +243,11 @@ fn set_cookie(response: &mut Response, value: &str) {
     );
 }
 
-fn notebook_body(notebook: &Notebook) -> String {
+fn notebook_body(
+    notebook: &Notebook,
+    content_revision: &str,
+    team_context: Option<(&str, &str)>,
+) -> String {
     let mut cells = String::new();
     for cell in &notebook.cells {
         let engine = cell
@@ -201,9 +270,24 @@ fn notebook_body(notebook: &Notebook) -> String {
              </div>\
              <div class=\"select-wrap\"><span class=\"muted\">engine</span>\
              <select class=\"engine\" data-current=\"{engine}\"></select></div></div>\
+             <div class=\"cell-split\">\
+             <div class=\"cell-main\">\
              <textarea class=\"editor\" spellcheck=\"false\">{sql}</textarea>\
              <div class=\"out\"><span class=\"prompt out\">Out&nbsp;[&nbsp;]</span>\
-             <div class=\"out-content\"></div></div></div></section>",
+             <div class=\"out-content\"></div></div></div>\
+             <aside class=\"cell-chat\" aria-label=\"Cell conversation\" hidden>\
+             <div class=\"chat-heading\"><strong>Cell assistant</strong>\
+             <button type=\"button\" class=\"btn cell-chat-close\">Close</button></div>\
+             <p class=\"status\">For this cell only. Sends this cell's SQL and last output; \
+             it cannot read the notebook conversation or another cell's.</p>\
+             <div class=\"cell-chat-history chat-history\" tabindex=\"0\" role=\"log\" \
+             aria-label=\"Cell conversation messages\" aria-live=\"polite\"></div>\
+             <p class=\"cell-chat-status status\" role=\"status\"></p>\
+             <form class=\"cell-chat-form\"><label>Message</label>\
+             <textarea class=\"cell-chat-prompt\" rows=\"3\" maxlength=\"8192\" required \
+             placeholder=\"Ask about this query\"></textarea>\
+             <button type=\"submit\" class=\"btn primary cell-chat-send\">Send</button></form></aside>\
+             </div></div></section>",
             id = escape(&cell.id),
             engine = escape(&engine),
             sql = escape(&cell.sql),
@@ -215,14 +299,39 @@ fn notebook_body(notebook: &Notebook) -> String {
         .unwrap_or_else(|_| "null".into())
         .replace('<', "\\u003c");
 
+    let (crumb, sync_button, context_attributes) = match team_context {
+        Some((team, workspace)) => {
+            let path = format!("/teams/{}/notebooks/{}", escape(team), escape(&notebook.id));
+            (
+                format!(
+                    "team {} / <a href=\"{path}?workspace=session\">Session</a> · \
+                     <a href=\"{path}?workspace=personal\">Personal</a> /",
+                    escape(team)
+                ),
+                "<button type=\"button\" class=\"btn\" data-action=\"sync\">Sync</button>",
+                format!(
+                    " data-team=\"{}\" data-workspace=\"{}\"",
+                    escape(team),
+                    escape(workspace)
+                ),
+            )
+        }
+        None => (
+            "<a href=\"/\">notebooks</a> /".to_owned(),
+            "",
+            String::new(),
+        ),
+    };
     format!(
         "<div class=\"page-head\"><div>\
-         <p class=\"crumb\"><a href=\"/\">notebooks</a> / {id}</p>\
+         <p class=\"crumb\">{crumb} {id}</p>\
          <h1>{title}</h1></div></div>\
          <div class=\"nb-bar\">\
          <button type=\"button\" class=\"btn\" data-action=\"add\">+ Cell</button>\
          <button type=\"button\" class=\"btn\" data-action=\"run-all\">▶ Run all</button>\
          <button type=\"button\" class=\"btn primary\" data-action=\"save\">Save</button>\
+         {sync_button}\
+         <button type=\"button\" class=\"btn\" id=\"chat-toggle\" aria-controls=\"chat-panel\" aria-expanded=\"false\">Chat</button>\
          <div class=\"spacer\"></div>\
          <label class=\"helper\">helper\
          <span class=\"select-wrap\"><select class=\"helper-select\" id=\"helper\"></select></span>\
@@ -232,9 +341,25 @@ fn notebook_body(notebook: &Notebook) -> String {
          run and move on with <span class=\"kbd\">Shift</span> <span class=\"kbd\">Enter</span>, \
          save with <span class=\"kbd\">⌘/Ctrl</span> <span class=\"kbd\">S</span></p>\
          <div class=\"cells\" id=\"cells\">{cells}</div>\
-         <script type=\"application/json\" id=\"nb\">{json}</script>",
+         <aside id=\"chat-panel\" class=\"chat-panel\" aria-label=\"Notebook conversation\" hidden>\
+         <div class=\"chat-heading\"><strong>Notebook assistant</strong>\
+         <button type=\"button\" class=\"btn\" id=\"chat-expand\" aria-pressed=\"false\">Expand</button>\
+         <button type=\"button\" class=\"btn\" id=\"chat-close\">Close</button></div>\
+         <p class=\"status\">Private to you and this notebook. Changing helper sends this history to that helper.</p>\
+         <div id=\"chat-history\" class=\"chat-history\" tabindex=\"0\" role=\"log\" aria-label=\"Conversation messages\" aria-live=\"polite\"></div>\
+         <p id=\"chat-status\" role=\"status\" class=\"status\"></p>\
+         <form id=\"chat-form\"><label for=\"chat-context\">Attached cell SQL (optional)</label>\
+         <textarea id=\"chat-context\" rows=\"2\" maxlength=\"8192\"></textarea>\
+         <label for=\"chat-prompt\">Message</label>\
+         <textarea id=\"chat-prompt\" rows=\"3\" maxlength=\"8192\" required placeholder=\"Ask a question or refine a query\"></textarea>\
+         <button type=\"submit\" class=\"btn primary\" id=\"chat-send\">Send</button></form></aside>\
+         <script type=\"application/json\" id=\"nb\" data-content-revision=\"{content_revision}\"{context_attributes}>{json}</script>",
+        crumb = crumb,
+        sync_button = sync_button,
+        context_attributes = context_attributes,
         id = escape(&notebook.id),
         title = escape(&notebook.title),
+        content_revision = escape(content_revision),
     )
 }
 
@@ -303,9 +428,8 @@ pub async fn callback(
     let identity = identity_provider.complete(&code, verifier, nonce).await?;
     let record = state
         .sessions
-        .create(
-            &identity.subject,
-            identity.roles,
+        .create_verified(
+            &identity,
             headers
                 .get(header::USER_AGENT)
                 .and_then(|value| value.to_str().ok())
@@ -363,10 +487,18 @@ pub async fn catalog(
         "<div class=\"page-head\"><div><h1>Catalog</h1>\
          <p class=\"status\">namespaces exposed by each registered metastore</p></div></div>",
     );
-    if state.catalogs.list().is_empty() {
+    if !state
+        .catalogs
+        .list()
+        .iter()
+        .any(|entry| crate::catalog_metadata_visible(&state, &entry.id().0))
+    {
         body.push_str("<div class=\"empty\">no catalogs registered</div>");
     }
     for catalog in state.catalogs.list() {
+        if !crate::catalog_metadata_visible(&state, &catalog.id().0) {
+            continue;
+        }
         let id = catalog.id().to_string();
         let health = catalog.health().await;
         body.push_str(&format!(
@@ -383,11 +515,7 @@ pub async fn catalog(
             Ok(namespaces) => {
                 body.push_str("<ul class=\"list\">");
                 for namespace in namespaces {
-                    let url = format!(
-                        "/catalog/{}/{namespace}",
-                        escape(&id),
-                        namespace = escape(&namespace.name)
-                    );
+                    let url = escape(&catalog_path(&[&id, &namespace.name]));
                     body.push_str(&format!(
                         "<li><a href=\"{url}\">{name}</a></li>",
                         name = escape(&namespace.name)
@@ -413,6 +541,7 @@ pub async fn contracts(
         return Ok(sign_in_redirect());
     };
     authorize(&principal, Action::ReadNotebook)?;
+    crate::require_unscoped_metadata(&state)?;
 
     let mut body = String::from(
         "<div class=\"page-head\"><div><h1>Data contracts</h1>\
@@ -464,24 +593,23 @@ pub async fn catalog_namespace(
         return Ok(sign_in_redirect());
     };
     authorize(&principal, Action::ReadNotebook)?;
+    crate::require_catalog_metadata(&state, &id)?;
 
     let catalog = state
         .catalogs
         .get(&aster_core::CatalogId::new(id.clone()))
         .ok_or_else(|| CoreError::NotFound("unknown catalog".into()))?;
-    let tables = catalog.list_tables(&namespace).await?;
+    let tables = catalog.list_table_descriptors(&namespace).await?;
 
     let mut items = String::new();
-    for table in &tables {
-        let url = format!(
-            "/catalog/{}/{}/{name}",
-            escape(&id),
-            escape(&namespace),
-            name = escape(&table.name)
-        );
+    for descriptor in &tables {
+        let table = &descriptor.table;
+        let url = escape(&catalog_path(&[&id, &namespace, &table.name]));
         items.push_str(&format!(
-            "<li data-name=\"{name}\"><a href=\"{url}\">{name}</a></li>",
-            name = escape(&table.name)
+            "<li data-name=\"{name}\"><a href=\"{url}\">{name}</a> \
+             <span class=\"muted\">{format}</span></li>",
+            name = escape(&table.name),
+            format = escape(descriptor.format.as_deref().unwrap_or("format unspecified")),
         ));
     }
     if items.is_empty() {
@@ -515,17 +643,50 @@ pub async fn catalog_table(
         return Ok(sign_in_redirect());
     };
     authorize(&principal, Action::ReadNotebook)?;
+    crate::require_catalog_metadata(&state, &id)?;
 
     let catalog = state
         .catalogs
         .get(&aster_core::CatalogId::new(id.clone()))
         .ok_or_else(|| CoreError::NotFound("unknown catalog".into()))?;
-    let schema = catalog
-        .table_schema(&TableRef {
-            namespace: namespace.clone(),
-            name: table.clone(),
-        })
-        .await?;
+    let table_ref = TableRef {
+        namespace: namespace.clone(),
+        name: table.clone(),
+    };
+    let descriptor = catalog
+        .list_table_descriptors(&namespace)
+        .await?
+        .into_iter()
+        .find(|entry| entry.table.name == table)
+        .ok_or_else(|| CoreError::NotFound("unknown table".into()))?;
+    let namespace_url = escape(&catalog_path(&[&id, &namespace]));
+    if !descriptor.schema_available {
+        let body = format!(
+            "<p class=\"crumb\"><a href=\"{namespace_url}\">{namespace}</a></p>\
+             <div class=\"page-head\"><h1>{table}</h1></div>\
+             <div class=\"panel\"><p>Format: {format}</p>\
+             <p>Base location: {location}</p>\
+             <p>Schema unavailable. Data access has not been validated.</p></div>",
+            namespace_url = namespace_url,
+            namespace = escape(&namespace),
+            table = escape(&table),
+            format = escape(descriptor.format.as_deref().unwrap_or("unspecified")),
+            location = escape(
+                descriptor
+                    .base_location
+                    .as_deref()
+                    .unwrap_or("not provided")
+            ),
+        );
+        return Ok(Html(layout(
+            "catalog",
+            &format!("{id}/{namespace}/{table}"),
+            &principal,
+            &body,
+        ))
+        .into_response());
+    }
+    let schema = catalog.table_schema(&table_ref).await?;
 
     let mut rows = String::new();
     for column in &schema.columns {
@@ -539,14 +700,14 @@ pub async fn catalog_table(
     }
     let body = format!(
         "<p class=\"crumb\"><a href=\"/catalog\">catalog</a> / \
-         <a href=\"/catalog/{catalog}/{namespace}\">{namespace}</a></p>\
+         <a href=\"{namespace_url}\">{namespace}</a></p>\
          <div class=\"page-head\"><div><h1>{table}</h1>\
          <p class=\"status\">{count} column(s)</p></div>\
          <div class=\"spacer\"></div>\
-         <a class=\"btn\" href=\"/catalog/{catalog}/{namespace}\">back to tables</a></div>\
+         <a class=\"btn\" href=\"{namespace_url}\">back to tables</a></div>\
          <div class=\"panel\"><table class=\"schema\">\
          <tr><th>column</th><th>type</th><th>nullable</th></tr>{rows}</table></div>",
-        catalog = escape(&id),
+        namespace_url = namespace_url,
         namespace = escape(&namespace),
         table = escape(&table),
         count = schema.columns.len(),
@@ -579,7 +740,7 @@ pub async fn llm_settings(
              <form method=\"post\" action=\"/settings/llm/{id}/delete\">\
              <button class=\"btn ghost danger\">remove</button></form></li>",
             id = escape(&helper.id),
-            base_url = escape(&helper.base_url),
+            base_url = escape(ai::safe_base_url(&helper.base_url)),
             model = escape(&helper.model),
         ));
     }

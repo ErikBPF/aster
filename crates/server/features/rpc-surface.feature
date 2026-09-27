@@ -32,6 +32,18 @@ Feature: Multiprotocol RPC surface
     Then the call reaches the engine
     And the audit trail records the query for "alice"
 
+  @catalog-routing
+  Scenario: RPC engine choices use the same selected catalog binding
+    Given engine "spark-b" is registered without a catalog binding
+    And subject "alice" is granted engine "spark-b"
+    When "alice" calls ListEngines for browse catalog "polaris-local"
+    Then only RPC engine "trino-local" is offered
+
+  @catalog-routing
+  Scenario: An engine grant without a read role cannot enumerate RPC engines
+    When "alice" without a role calls ListEngines for browse catalog "polaris-local"
+    Then the RPC call is permission denied
+
   Scenario: An unauthenticated caller is refused
     When an unidentified caller calls ListNotebooks
     Then the call fails as unauthenticated
