@@ -28,6 +28,7 @@ Feature: Repository conventions and starting setup
   Scenario: The local stack is declared and starts
     Then docker-compose.yml defines postgres, the server and the controller
     And the compose file is valid YAML for the container engine
+    And its default published ports bind to loopback
     And the server answers the health endpoint once the stack is up
 
   Scenario: The chart renders valid Kubernetes resources

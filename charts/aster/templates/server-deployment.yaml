@@ -1,3 +1,18 @@
+{{- if and .Values.ingress.enabled (or (ne .Values.server.identity.kind "oidc") (not .Values.server.identity.issuer)) }}
+{{- fail "ingress requires server.identity.kind=oidc and a configured issuer" }}
+{{- end }}
+{{- if .Values.server.sharedModels.enabled }}
+{{- if not .Values.server.sharedModels.allowedOrigins }}{{ fail "shared models require server.sharedModels.allowedOrigins" }}{{ end }}
+{{- if not .Values.server.sharedModels.activeKey }}{{ fail "shared models require server.sharedModels.activeKey" }}{{ end }}
+{{- if not .Values.server.sharedModels.keysetSecretName }}{{ fail "shared models require server.sharedModels.keysetSecretName" }}{{ end }}
+{{- end }}
+{{- if .Values.server.sharedModels.authorityEnabled }}
+{{- if not .Values.server.sharedModels.enabled }}{{ fail "shared-model authority requires the shared-model registry" }}{{ end }}
+{{- if or (ne .Values.server.identity.kind "oidc") (not .Values.server.identity.issuer) (not .Values.server.identity.userUuidClaim) }}{{ fail "shared-model authority requires OIDC and a signed user UUID claim" }}{{ end }}
+{{- if not (hasPrefix "https://" .Values.server.sharedModels.authentikApiOrigin) }}{{ fail "shared-model authority requires an HTTPS Authentik API origin" }}{{ end }}
+{{- if or (not .Values.server.sharedModels.adminGroupUuid) (not .Values.server.sharedModels.editorGroupUuid) (not .Values.server.sharedModels.readTokenSecretName) }}{{ fail "shared-model authority requires Authentik group UUIDs and a read-token Secret" }}{{ end }}
+{{- end }}
+{{- if and .Values.server.sharedModels.useEnabled (not .Values.server.sharedModels.authorityEnabled) }}{{ fail "shared-model use requires current identity authority" }}{{ end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -50,6 +65,8 @@ spec:
               value: {{ include "aster.engines" . }}
             - name: ASTER_CATALOGS
               value: {{ include "aster.catalogs" . }}
+            - name: ASTER_CATALOG_BINDINGS
+              value: {{ .Values.server.catalogBindings | quote }}
             - name: ASTER_IDP_KIND
               value: {{ .Values.server.identity.kind | quote }}
             - name: ASTER_OIDC_ISSUER
@@ -66,6 +83,10 @@ spec:
               value: {{ .Values.server.identity.adminGroup | quote }}
             - name: ASTER_OIDC_EDITOR_GROUP
               value: {{ .Values.server.identity.editorGroup | quote }}
+            {{- if .Values.server.identity.userUuidClaim }}
+            - name: ASTER_IDP_USER_UUID_CLAIM
+              value: {{ .Values.server.identity.userUuidClaim | quote }}
+            {{- end }}
             - name: ASTER_METRICS_BIND
               value: {{ printf "0.0.0.0:%v" .Values.server.metricsPort | quote }}
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
@@ -76,6 +97,38 @@ spec:
               value: {{ .Values.server.handshakeTtlSeconds | quote }}
             - name: ASTER_USER_STATE_TTL_SECONDS
               value: {{ .Values.server.userStateTtlSeconds | quote }}
+            {{- if .Values.server.sharedModels.enabled }}
+            - name: ASTER_SHARED_MODELS_ENABLED
+              value: "1"
+            - name: ASTER_SHARED_MODEL_ALLOWED_ORIGINS
+              value: {{ .Values.server.sharedModels.allowedOrigins | quote }}
+            - name: ASTER_SHARED_MODEL_ACTIVE_KEY
+              value: {{ .Values.server.sharedModels.activeKey | quote }}
+            - name: ASTER_SHARED_MODEL_KEYS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.server.sharedModels.keysetSecretName | quote }}
+                  key: shared_model_keys
+            {{- end }}
+            {{- if .Values.server.sharedModels.authorityEnabled }}
+            - name: ASTER_SHARED_MODEL_AUTHORITY_ENABLED
+              value: "1"
+            - name: ASTER_AUTHENTIK_API_ORIGIN
+              value: {{ .Values.server.sharedModels.authentikApiOrigin | quote }}
+            - name: ASTER_AUTHENTIK_ADMIN_GROUP_UUID
+              value: {{ .Values.server.sharedModels.adminGroupUuid | quote }}
+            - name: ASTER_AUTHENTIK_EDITOR_GROUP_UUID
+              value: {{ .Values.server.sharedModels.editorGroupUuid | quote }}
+            - name: ASTER_AUTHENTIK_READ_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.server.sharedModels.readTokenSecretName | quote }}
+                  key: authentik_read_token
+            {{- end }}
+            {{- if .Values.server.sharedModels.useEnabled }}
+            - name: ASTER_SHARED_MODEL_USE_ENABLED
+              value: "1"
+            {{- end }}
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:

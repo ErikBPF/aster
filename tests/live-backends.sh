@@ -111,6 +111,7 @@ wait_for_http "http://127.0.0.1:${gateway_port}/v1/info"
 
 ASTER_BIND="127.0.0.1:${server_port}" \
 ASTER_ENGINES="trino-gw;trino;http://127.0.0.1:${gateway_port};lab,spark-live;spark;http://127.0.0.1:${spark_port}" \
+ASTER_CATALOG_BINDINGS="polaris;trino-gw;polaris;unprotected,polaris;spark-live;polaris;unprotected" \
 ASTER_GRANTS="alice:trino-gw,alice:spark-live" \
 "$binary" >"$work/server.log" 2>&1 &
 pids+=($!)

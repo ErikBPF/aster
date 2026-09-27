@@ -12,11 +12,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use aster_core::{
-    AppConfig, AuditSink, Catalog, CatalogConfig, CatalogId, CatalogRegistry, Column, ColumnSchema,
-    CoreError, EngineConfig, EngineId, EngineInfo, EngineRegistry, Grants, Health, InMemoryAudit,
-    InMemoryGrants, InMemoryHandshakes, InMemoryLlm, InMemorySessions, InMemoryUserState,
-    Namespace, NotebookStore, QueryEngine, QueryRequest, QueryResult, TableRef, TableSchema,
-    UserState, WorkingState,
+    AppConfig, AuditSink, BindingPolicy, Catalog, CatalogBindingConfig, CatalogConfig, CatalogId,
+    CatalogRegistry, Column, ColumnSchema, CoreError, EngineConfig, EngineId, EngineInfo,
+    EngineRegistry, Grants, Health, InMemoryAudit, InMemoryGrants, InMemoryHandshakes, InMemoryLlm,
+    InMemorySessions, InMemoryUserState, Namespace, Notebook, NotebookOwners, NotebookStore,
+    QueryEngine, QueryRequest, QueryResult, TableRef, TableSchema, UserState, WorkingState,
 };
 use aster_server::{app_recorded, AppState, GitNotebookStore};
 use axum::body::Body;
@@ -93,8 +93,14 @@ impl Catalog for StubCatalog {
         }])
     }
 
-    async fn list_tables(&self, _namespace: &str) -> aster_core::Result<Vec<TableRef>> {
-        Ok(vec![])
+    async fn list_tables(&self, namespace: &str) -> aster_core::Result<Vec<TableRef>> {
+        Ok(match namespace {
+            "default" => vec![TableRef {
+                namespace: "default".into(),
+                name: "orders".into(),
+            }],
+            _ => vec![],
+        })
     }
 
     async fn table_schema(&self, table: &TableRef) -> aster_core::Result<TableSchema> {
@@ -130,6 +136,12 @@ struct Contract {
     engine_without_catalog: bool,
     /// Temporary git checkout for the notebook scenarios.
     dir: Option<PathBuf>,
+    owner_revision: Option<String>,
+    owner_head: Option<String>,
+    race_statuses: Option<(StatusCode, StatusCode)>,
+    owner_source: Option<String>,
+    notebook_owners: Arc<aster_core::InMemoryNotebookOwners>,
+    notebook_write: Arc<tokio::sync::Mutex<()>>,
     grants: Option<Arc<InMemoryGrants>>,
     audit: Option<Arc<InMemoryAudit>>,
     user_state: Option<Arc<InMemoryUserState>>,
@@ -143,6 +155,16 @@ struct Contract {
     /// Working state carried between steps.
     pending: WorkingState,
     engine: Option<String>,
+    extra_engine: Option<String>,
+    extra_bound_catalog: Option<String>,
+    binding_disabled: bool,
+    exchanges: Arc<aster_core::InMemoryExchanges>,
+    exchange_notebook: Option<String>,
+    exchange_cell: Option<String>,
+    exchange_original_revision: Option<String>,
+    exchange_summary: Option<Value>,
+    exchange_query: Option<Value>,
+    exchange_result: Option<Value>,
     catalog: Option<String>,
 }
 
@@ -196,6 +218,20 @@ impl Contract {
             catalog_seen: Arc::clone(&self.catalog_seen),
             without_catalog: self.engine_without_catalog,
         }));
+        if let Some(extra) = &self.extra_engine {
+            engines.register(Arc::new(StubEngine {
+                info: EngineInfo {
+                    id: EngineId::new(extra.clone()),
+                    kind: "stub".into(),
+                    endpoint: "http://engine.invalid".into(),
+                    routing_group: None,
+                },
+                calls: Arc::clone(&self.calls),
+                refusal: Arc::clone(&self.refusal),
+                catalog_seen: Arc::clone(&self.catalog_seen),
+                without_catalog: false,
+            }));
+        }
         let mut catalogs = CatalogRegistry::new();
         catalogs.register(Arc::new(StubCatalog {
             id: CatalogId::new(
@@ -204,6 +240,11 @@ impl Contract {
                     .unwrap_or_else(|| "polaris-local".into()),
             ),
         }));
+        if let Some(extra) = &self.extra_bound_catalog {
+            catalogs.register(Arc::new(StubCatalog {
+                id: CatalogId::new(extra.clone()),
+            }));
+        }
 
         let config = AppConfig {
             bind: "127.0.0.1:0".into(),
@@ -212,7 +253,17 @@ impl Contract {
                 kind: "stub".into(),
                 endpoint: "http://engine.invalid".into(),
                 routing_group: None,
-            }],
+                delegation: None,
+            }]
+            .into_iter()
+            .chain(self.extra_engine.iter().map(|extra| EngineConfig {
+                id: extra.clone(),
+                kind: "stub".into(),
+                endpoint: "http://engine.invalid".into(),
+                routing_group: None,
+                delegation: None,
+            }))
+            .collect(),
             catalogs: vec![CatalogConfig {
                 id: self
                     .catalog
@@ -223,7 +274,39 @@ impl Contract {
                 catalog: None,
                 token: None,
                 credential: None,
-            }],
+            }]
+            .into_iter()
+            .chain(self.extra_bound_catalog.iter().map(|extra| CatalogConfig {
+                id: extra.clone(),
+                kind: "stub".into(),
+                endpoint: "http://catalog.invalid".into(),
+                catalog: None,
+                token: None,
+                credential: None,
+            }))
+            .collect(),
+            catalog_bindings: (!self.binding_disabled)
+                .then_some(CatalogBindingConfig {
+                    catalog: self
+                        .catalog
+                        .clone()
+                        .unwrap_or_else(|| "polaris-local".into()),
+                    engine: id.clone(),
+                    native_catalog: "polaris".into(),
+                    policy: BindingPolicy::Unprotected,
+                })
+                .into_iter()
+                .chain(
+                    self.extra_bound_catalog
+                        .iter()
+                        .map(|extra| CatalogBindingConfig {
+                            catalog: extra.clone(),
+                            engine: id.clone(),
+                            native_catalog: extra.clone(),
+                            policy: BindingPolicy::Unprotected,
+                        }),
+                )
+                .collect(),
             default_engine: self.default_engine.as_ref().map(|engine| engine.0.clone()),
             default_catalog: self.default_catalog.clone(),
         };
@@ -233,13 +316,22 @@ impl Contract {
                 .expect("notebook store"),
         );
         Arc::new(AppState {
+            conversations: Arc::new(aster_core::InMemoryConversations::default()),
+            exchanges: self.exchanges.clone(),
             config,
             engines,
             catalogs,
             grants: grants_dyn(self),
             audit: audit_dyn(self),
             notebooks,
+            notebook_owners: self.notebook_owners.clone(),
+            notebook_write: self.notebook_write.clone(),
+            team_workspaces: None,
+            team_git_targets: None,
             llm: Arc::new(InMemoryLlm::new()),
+            shared_models: None,
+            current_identity: None,
+            shared_model_use_enabled: false,
             contracts: Arc::new(Vec::new()),
             http: reqwest::Client::new(),
             sessions: Arc::new(InMemorySessions::new(3600)),
@@ -437,6 +529,87 @@ async fn is_granted(world: &mut Contract, subject: String, engine: String) {
         .grant(subject, engine)
 }
 
+#[given(expr = "engine {string} is registered without a catalog binding")]
+async fn extra_unbound_engine(world: &mut Contract, engine: String) {
+    world.extra_engine = Some(engine);
+}
+
+#[given(expr = "no catalog binding is configured")]
+async fn no_catalog_binding(world: &mut Contract) {
+    world.binding_disabled = true;
+}
+
+#[given(expr = "the engine also binds catalog {string}")]
+async fn extra_bound_catalog(world: &mut Contract, catalog: String) {
+    world.extra_bound_catalog = Some(catalog);
+}
+
+#[when(expr = "{string} calls ListEngines for browse catalog {string}")]
+async fn rpc_list_engines_in_context(world: &mut Contract, subject: String, context: String) {
+    let request = connect(
+        "ListEngines",
+        Some(&subject),
+        "editor",
+        json!({"catalogContext": context}),
+    );
+    world.send(request).await;
+    world.rpc = world.json.clone();
+}
+
+#[when(expr = "{string} without a role calls ListEngines for browse catalog {string}")]
+async fn rpc_list_engines_without_role(world: &mut Contract, subject: String, context: String) {
+    let request = connect(
+        "ListEngines",
+        Some(&subject),
+        "none",
+        json!({"catalogContext": context}),
+    );
+    world.send(request).await;
+    world.rpc = world.json.clone();
+}
+
+#[then(expr = "the RPC call is permission denied")]
+async fn rpc_permission_denied(world: &mut Contract) {
+    assert_eq!(world.rpc_json()["code"], "permission_denied");
+}
+
+#[then(expr = "only RPC engine {string} is offered")]
+async fn only_rpc_engine_offered(world: &mut Contract, engine: String) {
+    let ids: Vec<&str> = world.rpc_json()["engines"]
+        .as_array()
+        .expect("RPC engines")
+        .iter()
+        .filter_map(|item| item["id"].as_str())
+        .collect();
+    assert_eq!(ids, vec![engine.as_str()]);
+}
+
+#[when(expr = "subject {string} lists engines for browse catalog {string}")]
+async fn list_engines_in_context(world: &mut Contract, subject: String, context: String) {
+    let request = caller(
+        "GET",
+        &format!("/api/engines?catalog_context={context}"),
+        Some(&subject),
+        "editor",
+        None,
+    );
+    world.send(request).await;
+}
+
+#[then(expr = "only engine {string} is offered")]
+async fn only_engine_offered(world: &mut Contract, engine: String) {
+    let ids: Vec<&str> = world
+        .json
+        .as_ref()
+        .expect("JSON inventory")
+        .as_array()
+        .expect("engine array")
+        .iter()
+        .filter_map(|item| item["id"].as_str())
+        .collect();
+    assert_eq!(ids, vec![engine.as_str()]);
+}
+
 #[given(expr = "subject {string} has only the {string} role")]
 async fn viewer_role(_world: &mut Contract, _subject: String, _role: String) {}
 
@@ -474,6 +647,10 @@ async fn health(world: &mut Contract) {
 
 #[when(expr = "the engine inventory is requested")]
 async fn engines(world: &mut Contract) {
+    world
+        .grants
+        .get_or_insert_with(|| Arc::new(InMemoryGrants::new()))
+        .grant("alice", "trino-local");
     let request = caller("GET", "/api/engines", Some("alice"), "editor", None);
     world.send(request).await;
 }
@@ -526,6 +703,45 @@ async fn query_to_engine(world: &mut Contract, subject: String, engine: String) 
     world.send(request).await;
 }
 
+#[when(expr = "subject {string} queries {string} in browse catalog {string}")]
+async fn query_in_browse_catalog(
+    world: &mut Contract,
+    subject: String,
+    engine: String,
+    catalog_context: String,
+) {
+    let request = caller(
+        "POST",
+        "/api/query",
+        Some(&subject),
+        "editor",
+        Some(json!({"sql": "SELECT 1", "engine": engine, "catalog_context": catalog_context})),
+    );
+    world.send(request).await;
+}
+
+#[when(
+    expr = "subject {string} queries {string} in browse catalog {string} with SQL catalog {string}"
+)]
+async fn query_in_browse_catalog_with_alias(
+    world: &mut Contract,
+    subject: String,
+    engine: String,
+    context: String,
+    alias: String,
+) {
+    let request = caller(
+        "POST",
+        "/api/query",
+        Some(&subject),
+        "editor",
+        Some(
+            json!({"sql": "SELECT 1", "engine": engine, "catalog_context": context, "catalog": alias}),
+        ),
+    );
+    world.send(request).await;
+}
+
 #[when(expr = "subject {string} sends a query")]
 async fn query(world: &mut Contract, subject: String) {
     let request = caller(
@@ -573,6 +789,16 @@ async fn suggestions_include_catalog(world: &mut Contract, label: String) {
 #[then(expr = "the suggestions include schema {string}")]
 async fn suggestions_include_schema(world: &mut Contract, label: String) {
     assert_suggestion(world, &label, "schema");
+}
+
+#[then(expr = "the suggestions include table {string}")]
+async fn suggestions_include_table(world: &mut Contract, label: String) {
+    assert_suggestion(world, &label, "table");
+}
+
+#[then(expr = "the suggestions include column {string}")]
+async fn suggestions_include_column(world: &mut Contract, label: String) {
+    assert_suggestion(world, &label, "column");
 }
 
 #[then(expr = "the suggestions are empty")]
@@ -684,7 +910,7 @@ async fn rpc_save_notebook(world: &mut Contract, subject: String, id: String, sq
         "SaveNotebook",
         Some(&subject),
         "editor",
-        json!({"id": id, "notebook": {"id": id, "title": "Sales", "cells": [{"id": "c1", "sql": sql}]}}),
+        json!({"id": id, "ifAbsent": true, "notebook": {"id": id, "title": "Sales", "cells": [{"id": "c1", "sql": sql}]}}),
     );
     world.send(request).await;
     world.rpc = world.json.clone();
@@ -917,6 +1143,43 @@ async fn audit_recorded(world: &mut Contract, subject: String) {
     );
 }
 
+#[then(expr = "the engine was not called")]
+async fn engine_not_called(world: &mut Contract) {
+    assert_eq!(world.calls.load(Ordering::SeqCst), 0, "engine was called");
+}
+
+#[then(expr = "a refused audit event is recorded for subject {string}")]
+async fn refused_audit_recorded(world: &mut Contract, subject: String) {
+    let events = world
+        .audit
+        .as_ref()
+        .expect("audit sink")
+        .events()
+        .await
+        .expect("audit events");
+    assert!(
+        events
+            .iter()
+            .any(|event| event.subject == subject && !event.ok),
+        "no refused audit event for {subject}"
+    );
+}
+
+#[then(expr = "the latest audit event names browse catalog {string}")]
+async fn audit_names_browse_catalog(world: &mut Contract, context: String) {
+    let events = world
+        .audit
+        .as_ref()
+        .expect("audit sink")
+        .events()
+        .await
+        .expect("audit events");
+    assert_eq!(
+        events.last().expect("audit event").catalog.as_deref(),
+        Some(context.as_str())
+    );
+}
+
 #[then(expr = "the response carries a non-empty revision")]
 async fn non_empty_revision(world: &mut Contract) {
     let revision = world
@@ -1137,13 +1400,16 @@ async fn call_does_not_succeed(world: &mut Contract) {
 
 #[given(expr = "subject {string} has saved notebook {string} titled {string}")]
 async fn saved_notebook_titled(world: &mut Contract, subject: String, id: String, title: String) {
-    let request = caller(
+    let mut request = caller(
         "PUT",
         &format!("/api/notebooks/{id}"),
         Some(&subject),
         "editor",
         Some(json!({"id": id, "title": title, "cells": [{"id": "c1", "sql": "SELECT 1"}]})),
     );
+    request
+        .headers_mut()
+        .insert(header::IF_NONE_MATCH, "*".parse().unwrap());
     world.send(request).await;
 }
 
@@ -1221,14 +1487,723 @@ async fn save_notebook_via_api(
     id: &str,
     sql: &str,
 ) {
-    let request = caller(
+    let current = notebook_blob(world, id);
+    let mut request = caller(
         "PUT",
         &format!("/api/notebooks/{id}"),
         subject,
         role,
         Some(json!({"id": id, "title": "Sales", "cells": [{"id": "c1", "sql": sql}]})),
     );
+    match current {
+        Some(oid) => {
+            request
+                .headers_mut()
+                .insert(header::IF_MATCH, format!("\"{oid}\"").parse().unwrap());
+        }
+        None => {
+            request
+                .headers_mut()
+                .insert(header::IF_NONE_MATCH, "*".parse().unwrap());
+        }
+    }
     world.send(request).await;
+}
+
+fn notebook_blob(world: &mut Contract, id: &str) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(world.checkout())
+        .args(["rev-parse", "--verify", &format!("HEAD:{id}.aster")])
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn owner_notebook(id: &str, sql: &str) -> Notebook {
+    Notebook {
+        id: id.into(),
+        title: "Sales".into(),
+        cells: vec![aster_core::Cell {
+            id: "c1".into(),
+            sql: sql.into(),
+            engine: None,
+        }],
+    }
+}
+
+fn git_read(world: &mut Contract, args: &[&str]) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(world.checkout())
+        .args(args)
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+async fn owner_put(
+    world: &mut Contract,
+    subject: &str,
+    role: &str,
+    id: &str,
+    sql: &str,
+    precondition: Option<(&str, String)>,
+) {
+    let mut request = caller(
+        "PUT",
+        &format!("/api/notebooks/{id}"),
+        Some(subject),
+        role,
+        Some(json!(owner_notebook(id, sql))),
+    );
+    if let Some((name, value)) = precondition {
+        request.headers_mut().insert(
+            name.parse::<header::HeaderName>().unwrap(),
+            value.parse().unwrap(),
+        );
+    }
+    world.send(request).await;
+}
+
+async fn owner_assign(world: &mut Contract, subject: &str, role: &str, body: Value) {
+    let request = caller(
+        "PUT",
+        "/api/admin/notebooks/sales/owner",
+        Some(subject),
+        role,
+        Some(body),
+    );
+    world.send(request).await;
+}
+
+#[given("a notebook is committed on the legacy source branch without an owner")]
+async fn owner_legacy_unassigned(world: &mut Contract) {
+    let store = GitNotebookStore::open(world.checkout(), "session/alice").unwrap();
+    store
+        .save(&owner_notebook("sales", "SELECT 1"), "seed")
+        .await
+        .unwrap();
+    drop(store);
+    world.owner_revision = notebook_blob(world, "sales");
+    world.owner_head = git_read(world, &["rev-parse", "HEAD"]);
+}
+
+#[when("an editor saves a change with the current content revision")]
+async fn owner_unassigned_save(world: &mut Contract) {
+    let oid = world.owner_revision.clone().unwrap();
+    owner_put(
+        world,
+        "alice",
+        "editor",
+        "sales",
+        "SELECT 2",
+        Some(("if-match", format!("\"{oid}\""))),
+    )
+    .await;
+}
+
+#[then("the save is refused without changing the file, index or branch revision")]
+async fn owner_save_refused_unchanged(world: &mut Contract) {
+    assert_eq!(world.status, Some(StatusCode::FORBIDDEN));
+    let head = git_read(world, &["rev-parse", "HEAD"]);
+    let blob = notebook_blob(world, "sales");
+    assert_eq!(world.owner_head, head);
+    assert_eq!(world.owner_revision, blob);
+    assert_eq!(
+        git_read(world, &["diff", "--cached", "--name-only"]).as_deref(),
+        Some("")
+    );
+    assert_eq!(
+        git_read(world, &["status", "--porcelain"]).as_deref(),
+        Some("")
+    );
+}
+
+#[given("a committed legacy notebook has a known content revision")]
+async fn owner_known_legacy(world: &mut Contract) {
+    owner_legacy_unassigned(world).await;
+}
+
+#[when("a verified administrator assigns an exact owner against that revision")]
+async fn owner_admin_assign(world: &mut Contract) {
+    owner_assign(
+        world,
+        "root",
+        "admin",
+        json!({"owner":"alice", "expected_content_revision":world.owner_revision.clone().unwrap()}),
+    )
+    .await;
+    assert_eq!(world.status, Some(StatusCode::OK));
+}
+
+#[then("the assignment is recorded without changing Git")]
+async fn owner_recorded_without_git(world: &mut Contract) {
+    let head = git_read(world, &["rev-parse", "HEAD"]);
+    let blob = notebook_blob(world, "sales");
+    assert_eq!(world.owner_head, head);
+    assert_eq!(world.owner_revision, blob);
+    let events = world.notebook_owners.events().unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].owner, "alice");
+}
+
+#[then("an ordinary editor cannot assign or correct the owner")]
+async fn owner_editor_cannot_assign(world: &mut Contract) {
+    owner_assign(world, "bob", "editor", json!({"owner":"bob", "expected_owner":"alice", "expected_content_revision":world.owner_revision.clone().unwrap(), "reason":"unauthorized"})).await;
+    assert_eq!(world.status, Some(StatusCode::FORBIDDEN));
+}
+
+#[when("that administrator corrects a mistaken owner with the current owner and revision")]
+async fn owner_admin_correct(world: &mut Contract) {
+    owner_assign(world, "root", "admin", json!({"owner":"bob", "expected_owner":"alice", "expected_content_revision":world.owner_revision.clone().unwrap(), "reason":"correct typo"})).await;
+    assert_eq!(world.status, Some(StatusCode::OK));
+}
+
+#[then("the old owner loses write access immediately")]
+async fn owner_old_owner_revoked(world: &mut Contract) {
+    let oid = world.owner_revision.clone().unwrap();
+    owner_put(
+        world,
+        "alice",
+        "editor",
+        "sales",
+        "SELECT 2",
+        Some(("if-match", format!("\"{oid}\""))),
+    )
+    .await;
+    assert_eq!(world.status, Some(StatusCode::FORBIDDEN));
+}
+
+#[then("the correction reason and administrator are recorded")]
+async fn owner_correction_audited(world: &mut Contract) {
+    let events = world.notebook_owners.events().unwrap();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[1].expected_owner.as_deref(), Some("alice"));
+    assert_eq!(events[1].owner, "bob");
+    assert_eq!(events[1].actor, "root");
+    assert_eq!(events[1].reason.as_deref(), Some("correct typo"));
+}
+
+#[given("Alice owns a notebook and two tabs loaded the same content revision")]
+async fn owner_two_tabs(world: &mut Contract) {
+    owner_put(
+        world,
+        "alice",
+        "editor",
+        "sales",
+        "SELECT 1",
+        Some(("if-none-match", "*".into())),
+    )
+    .await;
+    assert_eq!(world.status, Some(StatusCode::OK));
+    world.owner_revision = notebook_blob(world, "sales");
+}
+
+#[when("the first tab saves a change")]
+async fn owner_first_tab(world: &mut Contract) {
+    let oid = world.owner_revision.clone().unwrap();
+    owner_put(
+        world,
+        "alice",
+        "editor",
+        "sales",
+        "SELECT 2",
+        Some(("if-match", format!("\"{oid}\""))),
+    )
+    .await;
+    assert_eq!(world.status, Some(StatusCode::OK));
+}
+
+#[then("the second tab's save is refused as a conflict")]
+async fn owner_second_tab_conflict(world: &mut Contract) {
+    let oid = world.owner_revision.clone().unwrap();
+    owner_put(
+        world,
+        "alice",
+        "editor",
+        "sales",
+        "SELECT 3",
+        Some(("if-match", format!("\"{oid}\""))),
+    )
+    .await;
+    assert_eq!(world.status, Some(StatusCode::CONFLICT));
+}
+
+#[then("the first tab's committed content remains readable")]
+async fn owner_first_tab_readable(world: &mut Contract) {
+    let request = caller("GET", "/api/notebooks/sales", Some("alice"), "editor", None);
+    world.send(request).await;
+    assert_eq!(world.json.as_ref().unwrap()["cells"][0]["sql"], "SELECT 2");
+}
+
+#[given("Alice loaded notebook sales with its content revision")]
+async fn owner_loaded_sales(world: &mut Contract) {
+    owner_two_tabs(world).await;
+}
+
+#[when("another notebook is committed before Alice saves sales")]
+async fn owner_unrelated_commit(world: &mut Contract) {
+    owner_put(
+        world,
+        "alice",
+        "editor",
+        "other",
+        "SELECT 9",
+        Some(("if-none-match", "*".into())),
+    )
+    .await;
+    assert_eq!(world.status, Some(StatusCode::OK));
+}
+
+#[then("Alice can save sales with her original content revision")]
+async fn owner_unrelated_allows_save(world: &mut Contract) {
+    let oid = world.owner_revision.clone().unwrap();
+    owner_put(
+        world,
+        "alice",
+        "editor",
+        "sales",
+        "SELECT 2",
+        Some(("if-match", format!("\"{oid}\""))),
+    )
+    .await;
+    assert_eq!(world.status, Some(StatusCode::OK));
+}
+
+#[given("no committed notebook has the requested ID")]
+async fn owner_absent(world: &mut Contract) {
+    world.checkout();
+}
+
+#[when("Alice creates it without an explicit absence precondition")]
+async fn owner_missing_precondition(world: &mut Contract) {
+    owner_put(world, "alice", "editor", "sales", "SELECT 1", None).await;
+}
+
+#[then("the create is refused before a Git write")]
+async fn owner_missing_precondition_no_write(world: &mut Contract) {
+    assert_eq!(world.status, Some(StatusCode::BAD_REQUEST));
+    assert!(git_read(world, &["rev-parse", "--verify", "HEAD"]).is_none());
+    assert!(git_read(world, &["status", "--porcelain"])
+        .unwrap()
+        .is_empty());
+}
+
+#[given("Alice is creating a notebook while an admin assigns legacy ownership")]
+async fn owner_create_assignment_race(world: &mut Contract) {
+    world.checkout();
+}
+
+#[when("both operations target the same notebook ID")]
+async fn owner_race(world: &mut Contract) {
+    use std::io::Write;
+    let state = world.state();
+    let source = state.notebooks.source_key();
+    let mut child = std::process::Command::new("git")
+        .args(["hash-object", "--stdin"])
+        .current_dir(world.checkout())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(owner_notebook("sales", "SELECT 1").to_text().as_bytes())
+        .unwrap();
+    let oid = String::from_utf8(child.wait_with_output().unwrap().stdout)
+        .unwrap()
+        .trim()
+        .to_string();
+    let mut create = caller(
+        "PUT",
+        "/api/notebooks/sales",
+        Some("alice"),
+        "editor",
+        Some(json!(owner_notebook("sales", "SELECT 1"))),
+    );
+    create
+        .headers_mut()
+        .insert(header::IF_NONE_MATCH, "*".parse().unwrap());
+    let assign = caller(
+        "PUT",
+        "/api/admin/notebooks/sales/owner",
+        Some("root"),
+        "admin",
+        Some(json!({"owner":"bob", "expected_content_revision":oid})),
+    );
+    let app = app_recorded(state);
+    let (created, assigned) = tokio::join!(app.clone().oneshot(create), app.oneshot(assign));
+    world.race_statuses = Some((created.unwrap().status(), assigned.unwrap().status()));
+    world.owner_source = Some(source);
+}
+
+#[then("one serial order determines the owner")]
+async fn owner_race_one_winner(world: &mut Contract) {
+    let (created, assigned) = world.race_statuses.unwrap();
+    assert_eq!(created, StatusCode::OK);
+    assert!(matches!(
+        assigned,
+        StatusCode::NOT_FOUND | StatusCode::CONFLICT
+    ));
+    let record = world
+        .notebook_owners
+        .record(world.owner_source.as_deref().unwrap(), "sales")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(record.owner, "alice");
+}
+
+#[then("no caller commits under another owner's assignment")]
+async fn owner_race_git_consistent(world: &mut Contract) {
+    assert_eq!(
+        git_read(world, &["show", "HEAD:sales.aster"]).unwrap(),
+        owner_notebook("sales", "SELECT 1").to_text().trim_end()
+    );
+    assert!(git_read(world, &["log", "-1", "--pretty=%s"])
+        .unwrap()
+        .starts_with("alice:"));
+}
+
+// --- notebook session exchange -------------------------------------------
+
+use aster_core::ExchangeStore as _;
+
+/// Create the notebook through the real API so the git-backed document
+/// survives the per-request AppState rebuilds of this harness.
+async fn exchange_open(world: &mut Contract, notebook: &str, cell: &str, sql: &str) {
+    let mut request = caller(
+        "PUT",
+        &format!("/api/notebooks/{notebook}"),
+        Some("alice"),
+        "editor",
+        Some(serde_json::json!({
+            "id": notebook,
+            "title": notebook,
+            "cells": [{"id": cell, "sql": sql, "engine": null}],
+        })),
+    );
+    request
+        .headers_mut()
+        .insert(header::IF_NONE_MATCH, "*".parse().unwrap());
+    world.send(request).await;
+    assert_eq!(world.status, Some(StatusCode::OK), "{}", world.body);
+    world.exchange_notebook = Some(notebook.to_string());
+    world.exchange_cell = Some(cell.to_string());
+}
+
+/// Record a cell's last result directly in the exchange store the router uses.
+async fn exchange_record(world: &Contract, notebook: &str, cell: &str, column: &str, rows: &str) {
+    world
+        .exchanges
+        .set_result(
+            "alice",
+            notebook,
+            cell,
+            aster_core::CellResult {
+                columns: vec![column.to_string()],
+                rows_json: vec![rows.to_string()],
+                truncated: false,
+            },
+        )
+        .await
+        .expect("record result");
+}
+
+async fn exchange_call(world: &mut Contract, method: &str, body: Value) -> Value {
+    let request = connect(method, Some("alice"), "editor", body);
+    world.send(request).await;
+    world.json.clone().unwrap_or(Value::Null)
+}
+
+async fn exchange_revision(world: &mut Contract, notebook: &str, cell: &str) -> String {
+    let response = exchange_call(
+        world,
+        "FetchQuery",
+        serde_json::json!({"notebook": notebook, "cell": cell}),
+    )
+    .await;
+    response["contentRevision"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn exchange_notebook(world: &Contract) -> String {
+    world.exchange_notebook.clone().expect("notebook")
+}
+
+fn exchange_cell(world: &Contract) -> String {
+    world.exchange_cell.clone().expect("cell")
+}
+
+#[given(expr = "a notebook {string} with a cell {string} whose SQL is {string}")]
+async fn exchange_given_notebook(
+    world: &mut Contract,
+    notebook: String,
+    cell: String,
+    sql: String,
+) {
+    exchange_open(world, &notebook, &cell, &sql).await;
+    world.exchange_original_revision = Some(exchange_revision(world, &notebook, &cell).await);
+}
+
+#[given(
+    expr = "a notebook {string} with a cell {string} whose SQL is {string} and whose last result column is {string}"
+)]
+async fn exchange_given_notebook_with_result(
+    world: &mut Contract,
+    notebook: String,
+    cell: String,
+    sql: String,
+    column: String,
+) {
+    exchange_open(world, &notebook, &cell, &sql).await;
+    exchange_record(world, &notebook, &cell, &column, "[1]").await;
+}
+
+#[given(expr = "a notebook {string} with no summary")]
+async fn exchange_given_without_summary(world: &mut Contract, notebook: String) {
+    exchange_open(world, &notebook, "q1", "SELECT 1 AS one").await;
+}
+
+#[given(expr = "a notebook {string} and a notebook {string} that each have a cell {string}")]
+async fn exchange_given_two_notebooks(
+    world: &mut Contract,
+    first: String,
+    second: String,
+    cell: String,
+) {
+    exchange_open(world, &first, &cell, "SELECT 1 AS one").await;
+    exchange_record(world, &first, &cell, "one", "[1]").await;
+    exchange_open(world, &second, &cell, "SELECT 9 AS nine").await;
+    exchange_record(world, &second, &cell, "nine", "[9]").await;
+    /* Opening the second notebook moved the world's current notebook; this
+    scenario is about the first one, so point it back. */
+    world.exchange_notebook = Some(first);
+}
+
+#[when(expr = "the notebook session fetches the query and the result for cell {string}")]
+async fn exchange_when_fetches_query_and_result(world: &mut Contract, cell: String) {
+    let notebook = exchange_notebook(world);
+    let query = exchange_call(
+        world,
+        "FetchQuery",
+        serde_json::json!({"notebook": notebook, "cell": cell}),
+    )
+    .await;
+    world.exchange_query = Some(query);
+    let result = exchange_call(
+        world,
+        "FetchResult",
+        serde_json::json!({"notebook": notebook, "cell": cell}),
+    )
+    .await;
+    world.exchange_result = Some(result);
+}
+
+#[then(expr = "it receives the SQL {string} and the result column {string}")]
+async fn exchange_then_sql_and_column(world: &mut Contract, sql: String, column: String) {
+    let query = world.exchange_query.clone().expect("query response");
+    assert_eq!(query["sql"], serde_json::json!(sql), "{query}");
+    let result = world.exchange_result.clone().expect("result response");
+    let columns = result["columns"].as_array().cloned().unwrap_or_default();
+    assert!(columns.contains(&serde_json::json!(column)), "{result}");
+}
+
+#[when(expr = "the notebook session updates the query of cell {string} to {string}")]
+async fn exchange_when_updates_query(world: &mut Contract, cell: String, sql: String) {
+    let notebook = exchange_notebook(world);
+    let expected = world
+        .exchange_original_revision
+        .clone()
+        .expect("original revision");
+    let updated = exchange_call(
+        world,
+        "UpdateQuery",
+        serde_json::json!({
+            "notebook": notebook, "cell": cell, "sql": sql,
+            "expectedContentRevision": expected,
+        }),
+    )
+    .await;
+    world.exchange_query = Some(updated);
+}
+
+#[then(expr = "cell {string} holds {string} at a higher revision")]
+async fn exchange_then_cell_holds(world: &mut Contract, cell: String, sql: String) {
+    let notebook = exchange_notebook(world);
+    let updated = world.exchange_query.clone().expect("update response");
+    let revision = updated["contentRevision"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    assert_ne!(
+        revision,
+        world.exchange_original_revision.clone().unwrap_or_default(),
+        "the revision did not move"
+    );
+    let fetched = exchange_call(
+        world,
+        "FetchQuery",
+        serde_json::json!({"notebook": notebook, "cell": cell}),
+    )
+    .await;
+    assert_eq!(fetched["sql"], serde_json::json!(sql), "{fetched}");
+    assert_eq!(
+        fetched["contentRevision"],
+        serde_json::json!(revision),
+        "{fetched}"
+    );
+}
+
+#[then(expr = "an update carrying the previous revision is refused as a conflict")]
+async fn exchange_then_stale_refused(world: &mut Contract) {
+    let notebook = exchange_notebook(world);
+    let cell = exchange_cell(world);
+    let stale = world
+        .exchange_original_revision
+        .clone()
+        .expect("original revision");
+    let request = connect(
+        "UpdateQuery",
+        Some("alice"),
+        "editor",
+        serde_json::json!({
+            "notebook": notebook, "cell": cell,
+            "sql": "SELECT 3 AS three", "expectedContentRevision": stale,
+        }),
+    );
+    world.send(request).await;
+    assert_eq!(world.status, Some(StatusCode::CONFLICT), "{}", world.body);
+}
+
+#[when(expr = "the notebook session sends the summary {string}")]
+async fn exchange_when_sends_summary(world: &mut Contract, summary: String) {
+    let notebook = exchange_notebook(world);
+    let sent = exchange_call(
+        world,
+        "SendSummary",
+        serde_json::json!({"notebook": notebook, "summary": summary}),
+    )
+    .await;
+    world.exchange_summary = Some(sent);
+}
+
+#[then(expr = "a later fetch of the summary returns {string}")]
+async fn exchange_then_summary_round_trips(world: &mut Contract, summary: String) {
+    let notebook = exchange_notebook(world);
+    let fetched = exchange_call(
+        world,
+        "FetchSummary",
+        serde_json::json!({"notebook": notebook}),
+    )
+    .await;
+    assert_eq!(fetched["summary"], serde_json::json!(summary), "{fetched}");
+}
+
+#[when(
+    expr = "the notebook session fetches the summary, the query and the result for cell {string}"
+)]
+async fn exchange_when_fetches_all(world: &mut Contract, cell: String) {
+    let notebook = exchange_notebook(world);
+    let summary = exchange_call(
+        world,
+        "FetchSummary",
+        serde_json::json!({"notebook": notebook}),
+    )
+    .await;
+    let query = exchange_call(
+        world,
+        "FetchQuery",
+        serde_json::json!({"notebook": notebook, "cell": cell}),
+    )
+    .await;
+    let result = exchange_call(
+        world,
+        "FetchResult",
+        serde_json::json!({"notebook": notebook, "cell": cell}),
+    )
+    .await;
+    world.exchange_summary = Some(summary);
+    world.exchange_query = Some(query);
+    world.exchange_result = Some(result);
+}
+
+#[then("what it receives is the summary, the query and the result")]
+async fn exchange_then_receives_all(world: &mut Contract) {
+    let summary = world.exchange_summary.clone().expect("summary response");
+    /* The notebook may carry no summary yet; the fetch still carries the index. */
+    assert!(summary["cells"].is_array(), "{summary}");
+    let query = world.exchange_query.clone().expect("query response");
+    assert!(query["sql"].is_string(), "{query}");
+    let result = world.exchange_result.clone().expect("result response");
+    assert!(result["columns"].is_array(), "{result}");
+}
+
+#[then("none of what it receives carries a conversation transcript")]
+async fn exchange_then_no_transcript(world: &mut Contract) {
+    for response in [
+        world.exchange_summary.clone(),
+        world.exchange_query.clone(),
+        world.exchange_result.clone(),
+    ] {
+        let value = response.expect("response");
+        assert!(value.get("messages").is_none(), "{value}");
+        assert!(value.get("role").is_none(), "{value}");
+    }
+}
+
+#[when(expr = "a session for {string} fetches the result for cell {string}")]
+async fn exchange_when_fetches_for(world: &mut Contract, notebook: String, cell: String) {
+    let result = exchange_call(
+        world,
+        "FetchResult",
+        serde_json::json!({"notebook": notebook, "cell": cell}),
+    )
+    .await;
+    world.exchange_result = Some(result);
+}
+
+#[then(expr = "it receives the result held by {string}")]
+async fn exchange_then_receives_held(world: &mut Contract, notebook: String) {
+    let result = world.exchange_result.clone().expect("result response");
+    let rows = result["rowsJson"].as_array().cloned().unwrap_or_default();
+    let expected = if notebook == exchange_notebook(world) {
+        "[1]"
+    } else {
+        "[9]"
+    };
+    assert!(rows.contains(&serde_json::json!(expected)), "{result}");
+}
+
+#[then(expr = "a fetch for {string} returns the result held by {string}")]
+async fn exchange_then_other_holds(world: &mut Contract, notebook: String, held_by: String) {
+    let cell = exchange_cell(world);
+    let other = exchange_call(
+        world,
+        "FetchResult",
+        serde_json::json!({"notebook": notebook, "cell": cell}),
+    )
+    .await;
+    /* The endpoint has no session binding: the caller names the notebook, and
+    each notebook keeps its own recorded result, so asking for the other one
+    returns the other one's rows. */
+    let expected = if held_by == "ops" { "[9]" } else { "[1]" };
+    let rows = other["rowsJson"].as_array().cloned().unwrap_or_default();
+    assert!(
+        rows.contains(&serde_json::json!(expected)),
+        "{notebook} should hold {expected}: {other}"
+    );
 }
 
 /// Only the features that are bound to this harness run: the repository marks

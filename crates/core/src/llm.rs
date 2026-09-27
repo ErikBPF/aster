@@ -14,6 +14,7 @@ pub struct LlmConfig {
     pub subject: String,
     /// Short name the caller chose, unique per subject (for example `lab-qwen`).
     pub id: String,
+    #[serde(skip_serializing)]
     pub base_url: String,
     pub model: String,
     #[serde(skip_serializing)]
@@ -26,7 +27,7 @@ impl std::fmt::Debug for LlmConfig {
         f.debug_struct("LlmConfig")
             .field("subject", &self.subject)
             .field("id", &self.id)
-            .field("base_url", &self.base_url)
+            .field("base_url", &"<redacted>")
             .field("model", &self.model)
             .field("api_key", &"<redacted>")
             .finish()
@@ -190,5 +191,24 @@ mod tests {
     fn the_api_key_never_serializes() {
         let json = serde_json::to_string(&config("alice", "lab-qwen")).unwrap();
         assert!(!json.contains("secret-token"));
+    }
+
+    #[test]
+    fn legacy_url_credentials_never_serialize() {
+        let mut legacy = config("alice", "legacy");
+        legacy.base_url = "http://url-user:url-secret@example.invalid/v1".into();
+        let json = serde_json::to_string(&legacy).unwrap();
+        assert!(!json.contains("url-user"));
+        assert!(!json.contains("url-secret"));
+    }
+
+    #[test]
+    fn debug_does_not_expose_legacy_url_credentials() {
+        let mut legacy = config("alice", "legacy");
+        legacy.base_url = "http://url-user:url-secret@example.invalid/v1".into();
+        let debug = format!("{legacy:?}");
+        assert!(!debug.contains("url-user"));
+        assert!(!debug.contains("url-secret"));
+        assert!(!debug.contains("secret-token"));
     }
 }

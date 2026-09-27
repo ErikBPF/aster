@@ -15,6 +15,13 @@ package aster.v1;
 import "google/api/annotations.proto";
 
 service Aster {
+  rpc GetConversation(GetConversationRequest) returns (Conversation) {
+    option (google.api.http) = { get: "/v1/notebooks/{notebook}/conversation" };
+  }
+  rpc SendMessage(SendMessageRequest) returns (Conversation) {
+    option (google.api.http) = { post: "/v1/notebooks/{notebook}/conversation" body: "*" };
+  }
+
   // Working state of the caller. The subject comes from the session, never
   // from the request.
   rpc GetState(GetStateRequest) returns (WorkingState) {
@@ -30,6 +37,14 @@ service Aster {
     };
   }
 
+  rpc GetNotebookHelper(GetNotebookHelperRequest) returns (NotebookHelper) {
+    option (google.api.http) = { get: "/v1/notebooks/{notebook}/helper" };
+  }
+
+  rpc PutNotebookHelper(PutNotebookHelperRequest) returns (NotebookHelper) {
+    option (google.api.http) = { put: "/v1/notebooks/{notebook}/helper" body: "*" };
+  }
+
   rpc ListEngines(ListEnginesRequest) returns (ListEnginesResponse) {
     option (google.api.http) = {
       get: "/v1/engines"
@@ -39,6 +54,12 @@ service Aster {
   rpc ListCatalogs(ListCatalogsRequest) returns (ListCatalogsResponse) {
     option (google.api.http) = {
       get: "/v1/catalogs"
+    };
+  }
+
+  rpc ListTables(ListTablesRequest) returns (ListTablesResponse) {
+    option (google.api.http) = {
+      get: "/v1/catalogs/{catalog}/namespaces/{namespace}/tables"
     };
   }
 
@@ -61,6 +82,10 @@ service Aster {
     };
   }
 
+  rpc AssignNotebookOwner(AssignNotebookOwnerRequest) returns (AssignNotebookOwnerResponse) {
+    option (google.api.http) = { put: "/v1/admin/notebooks/{id}/owner" body: "*" };
+  }
+
   rpc RunQuery(RunQueryRequest) returns (QueryResult) {
     option (google.api.http) = {
       post: "/v1/query"
@@ -73,6 +98,40 @@ service Aster {
   rpc RenderSemantic(RenderSemanticRequest) returns (RenderSemanticResponse) {
     option (google.api.http) = {
       get: "/v1/semantic/{target}/{catalog}/{namespace}/{table}"
+    };
+  }
+
+  // The notebook session exchange. Every operation is scoped to one notebook
+  // and none of them reads a cell conversation.
+  rpc FetchQuery(FetchQueryRequest) returns (FetchQueryResponse) {
+    option (google.api.http) = {
+      get: "/v1/notebooks/{notebook}/cells/{cell}/query"
+    };
+  }
+
+  rpc FetchResult(FetchResultRequest) returns (FetchResultResponse) {
+    option (google.api.http) = {
+      get: "/v1/notebooks/{notebook}/cells/{cell}/result"
+    };
+  }
+
+  rpc UpdateQuery(UpdateQueryRequest) returns (UpdateQueryResponse) {
+    option (google.api.http) = {
+      post: "/v1/notebooks/{notebook}/cells/{cell}/query"
+      body: "*"
+    };
+  }
+
+  rpc FetchSummary(FetchSummaryRequest) returns (FetchSummaryResponse) {
+    option (google.api.http) = {
+      get: "/v1/notebooks/{notebook}/summary"
+    };
+  }
+
+  rpc SendSummary(SendSummaryRequest) returns (SendSummaryResponse) {
+    option (google.api.http) = {
+      post: "/v1/notebooks/{notebook}/summary"
+      body: "*"
     };
   }
 }
@@ -91,7 +150,25 @@ message WorkingState {
   optional string engine = 3;
 }
 
-message ListEnginesRequest {}
+message GetNotebookHelperRequest {
+  string notebook = 1;
+  optional string team = 2;
+  optional string workspace = 3;
+}
+message PutNotebookHelperRequest {
+  string notebook = 1;
+  string helper = 2;
+  optional string team = 3;
+  optional string workspace = 4;
+}
+message NotebookHelper {
+  string notebook = 1;
+  optional string helper = 2;
+}
+
+message ListEnginesRequest {
+  optional string catalog_context = 1;
+}
 
 message Engine {
   string id = 1;
@@ -117,7 +194,27 @@ message ListCatalogsResponse {
   repeated Catalog catalogs = 1;
 }
 
-message ListNotebooksRequest {}
+message ListTablesRequest {
+  string catalog = 1;
+  string namespace = 2;
+}
+
+message TableDescriptor {
+  string namespace = 1;
+  string name = 2;
+  optional string format = 3;
+  optional string base_location = 4;
+  optional bool schema_available = 5;
+}
+
+message ListTablesResponse {
+  repeated TableDescriptor tables = 1;
+}
+
+message ListNotebooksRequest {
+  optional string team = 1;
+  optional string workspace = 2;
+}
 
 message ListNotebooksResponse {
   repeated string ids = 1;
@@ -125,6 +222,8 @@ message ListNotebooksResponse {
 
 message GetNotebookRequest {
   string id = 1;
+  optional string team = 2;
+  optional string workspace = 3;
 }
 
 message Cell {
@@ -137,23 +236,44 @@ message Notebook {
   string id = 1;
   string title = 2;
   repeated Cell cells = 3;
+  optional string content_revision = 4;
 }
 
 message SaveNotebookRequest {
   string id = 1;
   Notebook notebook = 2;
+  optional string expected_content_revision = 3;
+  bool if_absent = 4;
 }
 
 message SaveNotebookResponse {
   string revision = 1;
+  string content_revision = 2;
 }
+
+message AssignNotebookOwnerRequest {
+  string id = 1;
+  string owner = 2;
+  string expected_content_revision = 3;
+  optional string expected_owner = 4;
+  optional string reason = 5;
+}
+
+message AssignNotebookOwnerResponse {}
 
 message RunQueryRequest {
   string sql = 1;
   optional string engine = 2;
+  // Engine-native SQL catalog alias retained for existing callers.
   optional string catalog = 3;
   optional string schema = 4;
   optional uint32 max_rows = 5;
+  // Selected browse catalog instance; the server validates its engine binding.
+  optional string catalog_context = 6;
+  // The notebook and cell this run belongs to. When both are set, the server
+  // records the cell's last result for the notebook session exchange.
+  optional string notebook = 7;
+  optional string cell = 8;
 }
 
 message Column {
@@ -182,4 +302,80 @@ message RenderSemanticResponse {
   // Suggested repository path for the rendered file.
   string path = 2;
   string content = 3;
+}
+
+message GetConversationRequest {
+  string notebook = 1;
+  optional string team = 2;
+  optional string workspace = 3;
+  // Cell-scoped conversation. The key becomes notebook+cell, so a cell
+  // conversation never shares history with the notebook conversation or
+  // with another cell. Absent means the notebook conversation itself.
+  optional string cell = 4;
+}
+message SendMessageRequest {
+  string notebook = 1;
+  string helper = 2;
+  string prompt = 3;
+  string context = 4;
+  optional int64 expected_revision = 5;
+  optional string team = 6;
+  optional string workspace = 7;
+  optional string cell = 8;
+}
+message ChatMessage {
+  string role = 1;
+  string content = 2;
+  string helper = 3;
+}
+message Conversation {
+  string id = 1;
+  int64 revision = 2;
+  repeated ChatMessage messages = 3;
+}
+
+message FetchQueryRequest {
+  string notebook = 1;
+  string cell = 2;
+}
+message FetchQueryResponse {
+  string sql = 1;
+  string content_revision = 2;
+}
+message FetchResultRequest {
+  string notebook = 1;
+  string cell = 2;
+}
+message FetchResultResponse {
+  repeated string columns = 1;
+  repeated string rows_json = 2;
+  bool truncated = 3;
+}
+message UpdateQueryRequest {
+  string notebook = 1;
+  string cell = 2;
+  string sql = 3;
+  // The content revision the caller read; a stale one is refused as a conflict.
+  string expected_content_revision = 4;
+}
+message UpdateQueryResponse {
+  string content_revision = 1;
+}
+message NotebookCell {
+  string id = 1;
+  string sql = 2;
+}
+message FetchSummaryRequest {
+  string notebook = 1;
+}
+message FetchSummaryResponse {
+  optional string summary = 1;
+  repeated NotebookCell cells = 2;
+}
+message SendSummaryRequest {
+  string notebook = 1;
+  string summary = 2;
+}
+message SendSummaryResponse {
+  string summary = 1;
 }

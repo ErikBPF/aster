@@ -335,3 +335,53 @@ table.res td.num { text-align: right; }
   .cell { grid-template-columns: 1fr; }
   .cell-gutter { border-right: 0; border-bottom: 1px solid var(--border); text-align: left; padding: 0.25rem 0.5rem; }
 }
+
+/* Collapsible notebook conversation; wide mode leaves space for the notebook. */
+.chat-panel[hidden] { display: none; }
+.chat-panel {
+  position: fixed; top: 4rem; right: 0; bottom: 0; z-index: 20;
+  width: min(26rem, 100vw); display: flex; flex-direction: column; gap: .7rem;
+  padding: 1rem; background: var(--panel); border-left: 1px solid var(--border);
+  box-shadow: var(--shadow); overflow: auto;
+}
+.chat-heading { display: flex; align-items: center; gap: .5rem; }
+.chat-heading strong { flex: 1; }
+.chat-history { flex: 1; min-height: 8rem; overflow: auto; }
+.chat-message { padding: .75rem; margin-bottom: .75rem; border: 1px solid var(--border); border-radius: var(--radius); }
+.chat-message.user { background: var(--panel-2); }
+.chat-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.chat-panel form { display: flex; flex-direction: column; gap: .35rem; }
+.chat-panel textarea { width: 100%; resize: vertical; }
+.chat-panel button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.chat-open .wrap { margin-right: 26rem; }
+.chat-wide .chat-panel { width: min(44rem, 80vw); }
+.chat-wide .wrap { margin-right: min(44rem, 80vw); }
+@media (max-width: 900px) {
+  .chat-open .wrap, .chat-wide .wrap { margin-right: auto; }
+  .chat-wide .chat-panel { width: 100vw; }
+}
+
+/* Inline cell conversation: the editor keeps at least 70% of the cell and the
+   assistant at most 30%. Closed by default, so a cell looks unchanged. */
+.cell-split { display: flex; align-items: stretch; gap: 0.6rem; min-width: 0; }
+.cell-main { flex: 1 1 auto; min-width: 0; }
+.cell-chat[hidden] { display: none; }
+.cell-chat {
+  flex: 0 0 30%;
+  max-width: 30%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.6rem 0.75rem;
+  border-left: 1px solid var(--border);
+  background: var(--panel-2);
+  overflow: auto;
+}
+.cell-chat form { display: flex; flex-direction: column; gap: 0.35rem; }
+.cell-chat textarea { width: 100%; resize: vertical; font-family: var(--mono); font-size: 0.85rem; }
+.cell-chat .chat-history {
+  min-height: 6rem;
+  max-height: 18rem;
+  overflow-y: auto;
+}
