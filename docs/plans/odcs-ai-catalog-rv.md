@@ -1,5 +1,13 @@
 # ODCS-first AI and catalog: RV
 
+> **Historical evidence after sanitization:** all deployment, publication and
+> verification claims below describe the original source and environment. History
+> has since been rewritten locally, including runtime configuration identifiers;
+> earlier statements that history was untouched or changes were documentation-only
+> do not describe this candidate. Placeholder targets have not been deployed.
+> Candidate validation must be recorded separately; old commit/image references
+> remain original evidence identifiers, not rewritten-source verification.
+
 ## Public publication preparation, 2026-10-09
 
 The user authorized publishing this repository and its accumulated changes, then
