@@ -46,11 +46,13 @@ impl Catalog for GenericCatalog {
     }
     async fn list_namespaces(&self) -> Result<Vec<Namespace>> {
         Ok(vec![Namespace {
+            segments: Vec::new(),
             name: "sales".into(),
         }])
     }
     async fn list_tables(&self, _: &str) -> Result<Vec<TableRef>> {
         Ok(vec![TableRef {
+            namespace_segments: Vec::new(),
             namespace: "sales".into(),
             name: "delta_orders".into(),
         }])
@@ -59,6 +61,7 @@ impl Catalog for GenericCatalog {
         Ok(vec![
             TableDescriptor {
                 table: TableRef {
+                    namespace_segments: Vec::new(),
                     namespace: "sales".into(),
                     name: "delta_orders".into(),
                 },
@@ -68,6 +71,7 @@ impl Catalog for GenericCatalog {
             },
             TableDescriptor {
                 table: TableRef {
+                    namespace_segments: Vec::new(),
                     namespace: "sales".into(),
                     name: "delta %20orders".into(),
                 },
@@ -132,6 +136,7 @@ fn test_app() -> (Router, Arc<AtomicUsize>) {
         shared_model_use_enabled: false,
         conversations: Arc::new(InMemoryConversations::default()),
         exchanges: Arc::new(InMemoryExchanges::default()),
+        compiled_contracts: None,
         contracts: Arc::new(vec![]),
         http: reqwest::Client::new(),
         sessions: Arc::new(InMemorySessions::new(3600)),

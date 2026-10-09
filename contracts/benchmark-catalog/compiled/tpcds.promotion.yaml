@@ -1,0 +1,222 @@
+{
+  "apiVersion": "v3.2.0",
+  "kind": "DataContract",
+  "id": "aster-benchmark-tpcds-promotion",
+  "version": "0.1.0",
+  "name": "TPCDS — promotion",
+  "status": "draft",
+  "domain": "synthetic-benchmarks",
+  "tags": [
+    "tpcds",
+    "tiny",
+    "synthetic"
+  ],
+  "description": {
+    "purpose": "Describe the native tpcds.tiny.promotion benchmark table for notebook exploration.",
+    "usage": "Interactive SQL and catalog/contract demonstrations on the isolated Build-host demo.",
+    "limitations": "Synthetic generated benchmark data, not production records. No business ownership, freshness SLA, monetary unit, key uniqueness or measured quality guarantee is asserted. Catalog context routes queries; it does not enforce SQL target authorization."
+  },
+  "team": {
+    "name": "Aster benchmark demo",
+    "description": "Demo stewardship label only. Actual access is controlled independently by current Authentik membership and server-managed grants."
+  },
+  "schema": [
+    {
+      "name": "promotion",
+      "physicalName": "promotion",
+      "businessName": "Promotion",
+      "description": "Native TPCDS tiny-scale promotion relation. Schema is observed from the generator; business constraints are not inferred.",
+      "properties": [
+        {
+          "name": "p_promo_sk",
+          "physicalName": "p_promo_sk",
+          "businessName": "p promo sk",
+          "logicalType": "integer",
+          "physicalType": "bigint",
+          "required": false,
+          "description": "Native tpcds.tiny.promotion.p_promo_sk benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "p_promo_id",
+          "physicalName": "p_promo_id",
+          "businessName": "p promo id",
+          "logicalType": "string",
+          "physicalType": "char(16)",
+          "required": false,
+          "description": "Native tpcds.tiny.promotion.p_promo_id benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "p_start_date_sk",
+          "physicalName": "p_start_date_sk",
+          "businessName": "p start date sk",
+          "logicalType": "integer",
+          "physicalType": "bigint",
+          "required": false,
+          "description": "Native tpcds.tiny.promotion.p_start_date_sk benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "p_end_date_sk",
+          "physicalName": "p_end_date_sk",
+          "businessName": "p end date sk",
+          "logicalType": "integer",
+          "physicalType": "bigint",
+          "required": false,
+          "description": "Native tpcds.tiny.promotion.p_end_date_sk benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "p_item_sk",
+          "physicalName": "p_item_sk",
+          "businessName": "p item sk",
+          "logicalType": "integer",
+          "physicalType": "bigint",
+          "required": false,
+          "description": "Native tpcds.tiny.promotion.p_item_sk benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "p_cost",
+          "physicalName": "p_cost",
+          "businessName": "p cost",
+          "logicalType": "number",
+          "physicalType": "decimal(15,2)",
+          "required": false,
+          "description": "Native tpcds.tiny.promotion.p_cost benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "p_response_targe",
+          "physicalName": "p_response_targe",
+          "businessName": "p response targe",
+          "logicalType": "integer",
+          "physicalType": "integer",
+          "required": false,
+          "description": "Native tpcds.tiny.promotion.p_response_targe benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "p_promo_name",
+          "physicalName": "p_promo_name",
+          "businessName": "p promo name",
+          "logicalType": "string",
+          "physicalType": "char(50)",
+          "required": false,
+          "description": "Native tpcds.tiny.promotion.p_promo_name benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "p_channel_dmail",
+          "physicalName": "p_channel_dmail",
+          "businessName": "p channel dmail",
+          "logicalType": "string",
+          "physicalType": "char(1)",
+          "required": false,
+          "description": "Native tpcds.tiny.promotion.p_channel_dmail benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "p_channel_email",
+          "physicalName": "p_channel_email",
+          "businessName": "p channel email",
+          "logicalType": "string",
+          "physicalType": "char(1)",
+          "required": false,
+          "description": "Native tpcds.tiny.promotion.p_channel_email benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "p_channel_catalog",
+          "physicalName": "p_channel_catalog",
+          "businessName": "p channel catalog",
+          "logicalType": "string",
+          "physicalType": "char(1)",
+          "required": false,
+          "description": "Native tpcds.tiny.promotion.p_channel_catalog benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "p_channel_tv",
+          "physicalName": "p_channel_tv",
+          "businessName": "p channel tv",
+          "logicalType": "string",
+          "physicalType": "char(1)",
+          "required": false,
+          "description": "Native tpcds.tiny.promotion.p_channel_tv benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "p_channel_radio",
+          "physicalName": "p_channel_radio",
+          "businessName": "p channel radio",
+          "logicalType": "string",
+          "physicalType": "char(1)",
+          "required": false,
+          "description": "Native tpcds.tiny.promotion.p_channel_radio benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "p_channel_press",
+          "physicalName": "p_channel_press",
+          "businessName": "p channel press",
+          "logicalType": "string",
+          "physicalType": "char(1)",
+          "required": false,
+          "description": "Native tpcds.tiny.promotion.p_channel_press benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "p_channel_event",
+          "physicalName": "p_channel_event",
+          "businessName": "p channel event",
+          "logicalType": "string",
+          "physicalType": "char(1)",
+          "required": false,
+          "description": "Native tpcds.tiny.promotion.p_channel_event benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "p_channel_demo",
+          "physicalName": "p_channel_demo",
+          "businessName": "p channel demo",
+          "logicalType": "string",
+          "physicalType": "char(1)",
+          "required": false,
+          "description": "Native tpcds.tiny.promotion.p_channel_demo benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "p_channel_details",
+          "physicalName": "p_channel_details",
+          "businessName": "p channel details",
+          "logicalType": "string",
+          "physicalType": "varchar(100)",
+          "required": false,
+          "description": "Native tpcds.tiny.promotion.p_channel_details benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "p_purpose",
+          "physicalName": "p_purpose",
+          "businessName": "p purpose",
+          "logicalType": "string",
+          "physicalType": "char(15)",
+          "required": false,
+          "description": "Native tpcds.tiny.promotion.p_purpose benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "p_discount_active",
+          "physicalName": "p_discount_active",
+          "businessName": "p discount active",
+          "logicalType": "string",
+          "physicalType": "char(1)",
+          "required": false,
+          "description": "Native tpcds.tiny.promotion.p_discount_active benchmark column; type and nullability captured from Trino information_schema."
+        }
+      ]
+    }
+  ],
+  "customProperties": [
+    {
+      "property": "benchmarkCatalog",
+      "value": "tpcds"
+    },
+    {
+      "property": "benchmarkSchema",
+      "value": "tiny"
+    },
+    {
+      "property": "synthetic",
+      "value": true
+    },
+    {
+      "property": "qualityRulesExecuted",
+      "value": false
+    }
+  ]
+}

@@ -18,7 +18,10 @@ use aster_core::{
 };
 
 mod ai;
+mod ai_context;
 mod api;
+mod catalog_inventory;
+mod contract_reads;
 mod contracts;
 mod conversations;
 mod current_identity;
@@ -27,6 +30,7 @@ mod github_app;
 mod gitstore;
 mod identity;
 mod notebook_workspaces;
+pub mod odcs_intake;
 mod providers;
 mod shared_models;
 mod shared_models_pg;
@@ -86,6 +90,8 @@ pub struct AppState {
     pub exchanges: Arc<dyn aster_core::ExchangeStore>,
     /// Contract files, read once at startup; deployment artifacts, not user data.
     pub contracts: Arc<Vec<DataContract>>,
+    /// Internal preserved artifacts; never serialized as legacy contract responses.
+    pub compiled_contracts: Option<Arc<odcs_intake::CompiledBundle>>,
     pub http: reqwest::Client,
     pub sessions: Arc<dyn SessionRegistry>,
     /// OIDC handshake payloads, redeemed once per login (D20).
@@ -113,15 +119,18 @@ async fn build_state(config: AppConfig) -> anyhow::Result<Arc<AppState>> {
         engines.register(aster_engines::engine_from_config(engine_config)?);
     }
 
+    // Catalog credentials use the same selected store as the other server secrets.
+    let secrets = providers::secret_store(&providers::kind("ASTER_SECRET_STORE", "env"))?;
     let mut catalogs = CatalogRegistry::new();
     for catalog_config in &config.catalogs {
-        catalogs.register(aster_catalogs::catalog_from_config(catalog_config)?);
+        catalogs.register(
+            aster_catalogs::catalog_from_config_with_secrets(catalog_config, &*secrets).await?,
+        );
     }
 
     let seeds = parse_grants(&std::env::var("ASTER_GRANTS").unwrap_or_default());
 
     // Where a secret lives is a provider decision; the process asks for a key.
-    let secrets = providers::secret_store(&providers::kind("ASTER_SECRET_STORE", "env"))?;
     let database_url = secrets.get("DATABASE_URL").await?;
     let state_url = secrets.get("ASTER_STATE_URL").await?;
 
@@ -189,7 +198,7 @@ async fn build_state(config: AppConfig) -> anyhow::Result<Arc<AppState>> {
         std::env::var("ASTER_NOTEBOOK_BRANCH").unwrap_or_else(|_| "session".into());
     let notebooks = providers::notebooks(
         &providers::kind("ASTER_NOTEBOOK_STORE", "git"),
-        notebook_dir,
+        notebook_dir.clone(),
         notebook_branch,
     )?;
 
@@ -216,12 +225,16 @@ async fn build_state(config: AppConfig) -> anyhow::Result<Arc<AppState>> {
     .await?;
     tracing::info!(metadata = %metadata_kind, state = %state_kind, "providers selected");
 
-    let contract_dir = std::env::var("ASTER_CONTRACTS_DIR").unwrap_or_else(|_| "contracts".into());
-    let contracts = contracts::load(std::path::Path::new(&contract_dir));
-    tracing::info!(
-        "loaded {} data contract(s) from {contract_dir}",
-        contracts.len()
-    );
+    let compiled_contracts = tokio::task::spawn_blocking(odcs_intake::from_env).await??;
+    // Compiled intake is internal until S3 supplies whole-contract admission.
+    let contracts = if compiled_contracts.is_some() {
+        Vec::new()
+    } else {
+        let contract_dir =
+            std::env::var("ASTER_CONTRACTS_DIR").unwrap_or_else(|_| "contracts".into());
+        tokio::task::spawn_blocking(move || contracts::load(std::path::Path::new(&contract_dir)))
+            .await?
+    };
 
     let identity_kind = providers::kind(
         "ASTER_IDP_KIND",
@@ -256,6 +269,10 @@ async fn build_state(config: AppConfig) -> anyhow::Result<Arc<AppState>> {
         "1" => true,
         _ => anyhow::bail!("ASTER_TEAM_GIT_ENABLED must be 0 or 1"),
     };
+    let team_policy_file = std::env::var("ASTER_TEAM_POLICY_FILE").ok();
+    if team_policy_file.is_some() && team_git_enabled {
+        anyhow::bail!("choose team policy or team Git registration, not both");
+    }
     let shared_model_use_enabled = match std::env::var("ASTER_SHARED_MODEL_USE_ENABLED")
         .unwrap_or_else(|_| "0".into())
         .as_str()
@@ -268,7 +285,7 @@ async fn build_state(config: AppConfig) -> anyhow::Result<Arc<AppState>> {
         anyhow::bail!("shared-model use requires current identity authority");
     }
     let current_identity: Option<Arc<dyn aster_core::CurrentIdentityProvider>> =
-        match authority_enabled || team_git_enabled {
+        match authority_enabled || team_git_enabled || team_policy_file.is_some() {
             false => None,
             true => {
                 if authority_enabled && shared_models.is_none() {
@@ -305,6 +322,15 @@ async fn build_state(config: AppConfig) -> anyhow::Result<Arc<AppState>> {
                     )?
                 } else {
                     current_identity::AuthentikCurrentIdentity::new_for_team_git(&origin, token)?
+                };
+                let reader = if let Ok(path) = std::env::var("ASTER_AUTHENTIK_CA_FILE") {
+                    let pem = tokio::task::spawn_blocking(move || {
+                        odcs_intake::read_regular(std::path::Path::new(&path), 65536)
+                    })
+                    .await??;
+                    reader.with_ca(&pem)?
+                } else {
+                    reader
                 };
                 Some(Arc::new(reader))
             }
@@ -353,6 +379,33 @@ async fn build_state(config: AppConfig) -> anyhow::Result<Arc<AppState>> {
         None
     };
 
+    let team_workspaces = if let Some(path) = team_policy_file {
+        Some(Arc::new(
+            tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+                let bytes = odcs_intake::read_regular(std::path::Path::new(&path), 65_536)?;
+                let policy: std::collections::HashMap<String, notebook_workspaces::TeamPolicy> =
+                    serde_json::from_slice(&bytes)?;
+                if policy.is_empty()
+                    || policy.values().any(|rule| {
+                        current_identity::uuid(&rule.member_claim).as_deref()
+                            != Some(rule.member_claim.as_str())
+                            || current_identity::uuid(&rule.maintainer_claim).as_deref()
+                                != Some(rule.maintainer_claim.as_str())
+                            || rule.member_claim == rule.maintainer_claim
+                    })
+                {
+                    anyhow::bail!("team policy requires distinct stable Authentik group UUIDs");
+                }
+                Ok(TeamWorkspaces::new(
+                    std::path::Path::new(&notebook_dir).join(".aster-teams"),
+                    policy,
+                )?)
+            })
+            .await??,
+        ))
+    } else {
+        None
+    };
     let metrics = Arc::new(Metrics::new());
     Ok(Arc::new(AppState {
         config,
@@ -363,7 +416,7 @@ async fn build_state(config: AppConfig) -> anyhow::Result<Arc<AppState>> {
         notebooks,
         notebook_owners: metadata.notebook_owners,
         notebook_write: Arc::new(tokio::sync::Mutex::new(())),
-        team_workspaces: None,
+        team_workspaces,
         team_git_targets,
         llm: metadata.llm,
         shared_models,
@@ -372,6 +425,7 @@ async fn build_state(config: AppConfig) -> anyhow::Result<Arc<AppState>> {
         conversations: conversation_store,
         exchanges: exchange_store,
         contracts: Arc::new(contracts),
+        compiled_contracts: compiled_contracts.map(Arc::new),
         http: ai::outbound_http_client()?,
         sessions: stores.sessions,
         handshakes: stores.handshakes,
@@ -387,6 +441,135 @@ async fn build_state(config: AppConfig) -> anyhow::Result<Arc<AppState>> {
 #[cfg(test)]
 mod team_git_boot_tests {
     use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires disposable PostgreSQL; run this test alone"]
+    async fn benchmark_local_notebooks_survive_postgres_and_git_reopen() {
+        let root = tempfile::tempdir().unwrap();
+        // This ignored test runs alone in a disposable database process.
+        unsafe {
+            std::env::set_var(
+                "DATABASE_URL",
+                std::env::var("ASTER_TEST_METADATA_URL").unwrap(),
+            );
+            std::env::set_var("ASTER_METADATA_STORE", "postgres");
+            std::env::set_var("ASTER_STATE_STORE", "memory");
+            std::env::set_var("ASTER_NOTEBOOK_MODE", "local");
+            std::env::set_var("ASTER_NOTEBOOK_DIR", root.path());
+        }
+        let config = AppConfig {
+            bind: String::new(),
+            engines: vec![],
+            catalogs: vec![],
+            catalog_bindings: vec![],
+            default_engine: None,
+            default_catalog: None,
+        };
+        let state = build_state(config.clone()).await.unwrap();
+        let document: Notebook = serde_json::from_value(serde_json::json!({
+            "id":"benchmark", "title":"Persistent", "cells":[{"id":"c1", "sql":"SELECT count(*) FROM nation",
+            "engine":null,"metadata":{"catalog_context":"tpch","schema":"tiny"}}]
+        })).unwrap();
+        let saved = state
+            .save_notebook_owned(&document, "alice", NotebookPrecondition::Absent)
+            .await
+            .unwrap();
+        drop(state);
+        let reopened = build_state(config).await.unwrap();
+        let snapshot = reopened
+            .owned_notebook_snapshot("benchmark", "alice")
+            .await
+            .unwrap();
+        assert_eq!(snapshot.content_revision, saved.content_revision);
+        assert_eq!(
+            serde_json::to_value(&snapshot.notebook).unwrap(),
+            serde_json::to_value(&document).unwrap()
+        );
+        assert_eq!(
+            reopened.owned_notebooks("alice").await.unwrap(),
+            vec!["benchmark"]
+        );
+        assert!(reopened.owned_notebooks("bob").await.unwrap().is_empty());
+        assert!(matches!(
+            reopened.owned_notebook_snapshot("benchmark", "bob").await,
+            Err(CoreError::Unauthorized(_))
+        ));
+        assert!(matches!(
+            reopened
+                .save_notebook_owned(
+                    &document,
+                    "bob",
+                    NotebookPrecondition::Blob(saved.content_revision)
+                )
+                .await,
+            Err(CoreError::Unauthorized(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn authentik_catalog_team_boot_without_github_or_shared_models() {
+        if std::env::var_os("ASTER_TEAM_BOOT_CHILD").is_none() {
+            let root = tempfile::tempdir().unwrap();
+            let policy = root.path().join("teams.json");
+            std::fs::write(&policy, r#"{"aster-editors":{"member_claim":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","maintainer_claim":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","allowed_repositories":["ErikBPF/aster"]}}"#).unwrap();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "team_git_boot_tests::authentik_catalog_team_boot_without_github_or_shared_models", "--nocapture"])
+                .env("ASTER_TEAM_BOOT_CHILD", "1")
+                .env("ASTER_NOTEBOOK_MODE", "local")
+                .env("ASTER_TEAM_POLICY_FILE", &policy)
+                .env("ASTER_NOTEBOOK_DIR", root.path().join("notebooks"))
+                .env("ASTER_METADATA_STORE", "memory")
+                .env("ASTER_STATE_STORE", "memory")
+                .env("ASTER_TEAM_GIT_ENABLED", "0")
+                .env("ASTER_SHARED_MODELS_ENABLED", "0")
+                .env("ASTER_SHARED_MODEL_AUTHORITY_ENABLED", "0")
+                .env("ASTER_SHARED_MODEL_USE_ENABLED", "0")
+                .env("ASTER_OIDC_ISSUER", "https://id.example.invalid/application/o/aster/")
+                .env("ASTER_IDP_KIND", "oidc")
+                .env("ASTER_IDP_USER_UUID_CLAIM", "aster_user_uuid")
+                .env("ASTER_AUTHENTIK_API_ORIGIN", "https://id.example.invalid/")
+                .env("ASTER_AUTHENTIK_READ_TOKEN", "disposable-test-token")
+                .env_remove("ASTER_GITHUB_APP_ID")
+                .env_remove("ASTER_GITHUB_APP_KEY_NAME")
+                .output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        let state = build_state(AppConfig {
+            bind: String::new(),
+            engines: vec![],
+            catalogs: vec![],
+            catalog_bindings: vec![],
+            default_engine: None,
+            default_catalog: None,
+        })
+        .await
+        .unwrap();
+        assert!(
+            state.current_identity.is_some(),
+            "fresh Authentik identity required"
+        );
+        let teams = state
+            .team_workspaces
+            .as_ref()
+            .expect("registered catalog teams");
+        let mut principal = aster_core::Principal {
+            subject: "alice".into(),
+            roles: vec![aster_core::Role::Viewer],
+            groups: vec!["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".into()],
+            user_uuid: Some("cccccccc-cccc-4ccc-8ccc-cccccccccccc".into()),
+        };
+        assert!(teams.member("aster-editors", &principal).is_ok());
+        principal.groups.clear();
+        assert!(teams.member("aster-editors", &principal).is_err());
+        assert!(state.team_git_targets.is_none());
+        assert!(state.shared_models.is_none());
+        assert!(state.local_notebooks_enabled());
+    }
 
     #[tokio::test]
     #[ignore = "requires disposable PostgreSQL from notebook-team-target-postgres.sh"]
@@ -494,6 +677,62 @@ impl IntoResponse for ApiError {
 }
 
 impl AppState {
+    /// Contract team membership remains active when local notebooks are selected.
+    pub(crate) fn local_notebooks_enabled(&self) -> bool {
+        self.team_workspaces.is_none()
+            || std::env::var("ASTER_NOTEBOOK_MODE").as_deref() == Ok("local")
+    }
+
+    fn require_local_notebooks(&self) -> aster_core::Result<()> {
+        if !self.local_notebooks_enabled() {
+            return Err(CoreError::Unauthorized(
+                "workspace-qualified notebook route required".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn admit_notebook(&self, id: &str, actor: &str) -> aster_core::Result<()> {
+        self.require_local_notebooks()?;
+        if !aster_core::llm::valid_id(id) {
+            return Err(CoreError::Invalid("invalid notebook id".into()));
+        }
+        let record = self
+            .notebook_owners
+            .record(&self.notebooks.source_key(), id)
+            .await?;
+        if record.as_ref().map(|record| record.owner.as_str()) != Some(actor) {
+            return Err(CoreError::Unauthorized(
+                "notebook is unassigned or owned by another user".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn owned_notebook_snapshot(
+        &self,
+        id: &str,
+        actor: &str,
+    ) -> aster_core::Result<NotebookSnapshot> {
+        let _read = self.notebook_write.lock().await;
+        self.admit_notebook(id, actor).await?;
+        self.notebook_snapshot(id).await
+    }
+
+    pub(crate) async fn owned_notebooks(&self, actor: &str) -> aster_core::Result<Vec<String>> {
+        self.require_local_notebooks()?;
+        let _read = self.notebook_write.lock().await;
+        let mut owned = Vec::new();
+        for id in self.notebooks.list(actor).await? {
+            match self.admit_notebook(&id, actor).await {
+                Ok(()) => owned.push(id),
+                Err(CoreError::Unauthorized(_)) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(owned)
+    }
+
     async fn notebook_snapshot(&self, id: &str) -> aster_core::Result<NotebookSnapshot> {
         self.notebooks.snapshot(id).await
     }
@@ -504,25 +743,17 @@ impl AppState {
         actor: &str,
         expected: NotebookPrecondition,
     ) -> aster_core::Result<NotebookSave> {
-        if self.team_workspaces.is_some() {
-            return Err(CoreError::Unauthorized(
-                "legacy notebook writes are disabled while team workspaces are active".into(),
-            ));
-        }
+        self.require_local_notebooks()?;
         let _write = self.notebook_write.lock().await;
+        if matches!(expected, NotebookPrecondition::Blob(_)) {
+            self.admit_notebook(&notebook.id, actor).await?;
+        }
         let source = self.notebooks.source_key();
         let record = self.notebook_owners.record(&source, &notebook.id).await?;
         match &expected {
             NotebookPrecondition::Absent if record.is_some() => {
                 return Err(CoreError::Conflict(
                     "notebook owner already assigned".into(),
-                ));
-            }
-            NotebookPrecondition::Blob(_)
-                if record.as_ref().map(|record| record.owner.as_str()) != Some(actor) =>
-            {
-                return Err(CoreError::Unauthorized(
-                    "notebook is unassigned or owned by another user".into(),
                 ));
             }
             NotebookPrecondition::Blob(oid)
@@ -756,6 +987,9 @@ async fn run_attempt(
     body: &QueryBody,
     engine_id: Option<&EngineId>,
 ) -> Result<(aster_core::QueryResult, String), CoreError> {
+    if let Some(notebook) = body.notebook.as_deref() {
+        conversations::check_notebook(state, principal, notebook).await?;
+    }
     let engine_id =
         engine_id.ok_or_else(|| CoreError::Invalid("no engine selected and no default".into()))?;
     let engine = state
@@ -1112,7 +1346,7 @@ async fn list_catalogs(
     authorize(&principal, aster_core::Action::ReadNotebook)?;
     let mut summaries = Vec::new();
     for catalog in state.catalogs.list() {
-        if !catalog_metadata_visible(&state, &catalog.id().0) {
+        if !catalog_inventory::visible(&state, &headers, &catalog.id().0).await {
             continue;
         }
         summaries.push(CatalogSummary {
@@ -1179,11 +1413,9 @@ async fn list_namespaces(
     let principal = principal(&state, &headers).await?;
     authorize(&principal, aster_core::Action::ReadNotebook)?;
     require_catalog_metadata(&state, &id)?;
-    let catalog = state
-        .catalogs
-        .get(&CatalogId::new(id))
-        .ok_or_else(|| CoreError::NotFound("unknown catalog".into()))?;
-    Ok(Json(catalog.list_namespaces().await?))
+    Ok(Json(
+        catalog_inventory::namespaces(&state, &headers, &id).await?,
+    ))
 }
 
 async fn list_tables(
@@ -1194,11 +1426,17 @@ async fn list_tables(
     let principal = principal(&state, &headers).await?;
     authorize(&principal, aster_core::Action::ReadNotebook)?;
     require_catalog_metadata(&state, &id)?;
-    let catalog = state
-        .catalogs
-        .get(&CatalogId::new(id))
-        .ok_or_else(|| CoreError::NotFound("unknown catalog".into()))?;
-    Ok(Json(catalog.list_table_descriptors(&namespace).await?))
+    if state.compiled_contracts.is_none() {
+        let catalog = state
+            .catalogs
+            .get(&CatalogId::new(id))
+            .ok_or_else(|| CoreError::NotFound("unknown catalog".into()))?;
+        return Ok(Json(catalog.list_table_descriptors(&namespace).await?));
+    }
+    let segments = aster_core::catalog::namespace_segments(&namespace, &[])?;
+    Ok(Json(
+        catalog_inventory::tables(&state, &headers, &id, &segments).await?,
+    ))
 }
 
 async fn list_notebooks(
@@ -1207,12 +1445,7 @@ async fn list_notebooks(
 ) -> Result<Json<Vec<String>>, ApiError> {
     let principal = principal(&state, &headers).await?;
     authorize(&principal, aster_core::Action::ReadNotebook)?;
-    if state.team_workspaces.is_some() {
-        return Err(
-            CoreError::Unauthorized("workspace-qualified notebook route required".into()).into(),
-        );
-    }
-    Ok(Json(state.notebooks.list(&principal.subject).await?))
+    Ok(Json(state.owned_notebooks(&principal.subject).await?))
 }
 
 #[derive(Deserialize)]
@@ -1317,6 +1550,15 @@ async fn complete(
     let wanted = |label: &str| label.to_ascii_lowercase().starts_with(&prefix);
 
     let mut candidates = Vec::new();
+    if state.compiled_contracts.is_some() {
+        // Legacy completion has no exact object scope or replay provenance.
+        for keyword in SQL_KEYWORDS {
+            if wanted(keyword) {
+                candidates.push(candidate((*keyword).to_string(), "keyword"));
+            }
+        }
+        return Ok(Json(candidates));
+    }
     let Some(catalog) = catalog else {
         for entry in state.catalogs.list() {
             if !catalog_metadata_visible(&state, &entry.id().0) {
@@ -1345,6 +1587,7 @@ async fn complete(
     match (schema, table) {
         (Some(schema), Some(table)) => {
             let reference = aster_core::TableRef {
+                namespace_segments: Vec::new(),
                 namespace: schema.to_string(),
                 name: table.to_string(),
             };
@@ -1384,12 +1627,9 @@ async fn get_notebook(
 ) -> Result<Response, ApiError> {
     let principal = principal(&state, &headers).await?;
     authorize(&principal, aster_core::Action::ReadNotebook)?;
-    if state.team_workspaces.is_some() {
-        return Err(
-            CoreError::Unauthorized("workspace-qualified notebook route required".into()).into(),
-        );
-    }
-    let snapshot = state.notebook_snapshot(&id).await?;
+    let snapshot = state
+        .owned_notebook_snapshot(&id, &principal.subject)
+        .await?;
     let mut response = Json(snapshot.notebook).into_response();
     response.headers_mut().insert(
         header::ETAG,
@@ -1567,6 +1807,7 @@ async fn team_notebook_context(
     let personal = personal_workspace(headers)?;
     team_notebook_context_selected(state, headers, team, id, personal)
         .await
+        .map(|(principal, key, _)| (principal, key))
         .map_err(Into::into)
 }
 
@@ -1576,7 +1817,7 @@ pub(crate) async fn team_notebook_context_selected(
     team: &str,
     id: &str,
     personal: bool,
-) -> aster_core::Result<(Principal, String)> {
+) -> aster_core::Result<(Principal, String, aster_core::Notebook)> {
     let workspaces = state
         .team_workspaces
         .as_deref()
@@ -1587,8 +1828,8 @@ pub(crate) async fn team_notebook_context_selected(
     authorize(&principal, aster_core::Action::ReadNotebook)?;
     let key = workspaces.notebook_context_key(team, &principal, &sid, personal, id)?;
     let store = workspaces.workspace(team, &principal, &sid, personal)?;
-    store.get(id).await?;
-    Ok((principal, key))
+    let document = store.get(id).await?;
+    Ok((principal, key, document))
 }
 
 async fn get_team_conversation(
@@ -1810,6 +2051,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/logout", get(web::logout))
         .route("/notebooks/{id}", get(web::notebook_view))
         .route("/catalog", get(web::catalog))
+        .route("/catalog/physical", get(web::physical_catalog))
         .route("/contracts", get(web::contracts))
         .route(
             "/settings/llm",

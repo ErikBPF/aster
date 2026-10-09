@@ -1,0 +1,31 @@
+# Description artifact inspired by Cube; NOT executable Cube configuration.
+formatVersion: 2
+mock: true
+catalog: mock-local
+namespaceSegments: [aster_raw]
+ownerTeam: aster-editors
+ownerGroup: /aster-editors
+tables:
+  - contract: {path: compiled/aster_raw.events.yaml, id: aster-mock-raw-events, version: 0.1.0, sha256: 838e7713321674daf5a8381915feb0bd7aa3e4b49a9cc1a103433e3fa95839d4}
+    object: /schema/0
+    physicalName: events
+    grain: {description: One received event-shaped row; duplicates possible, uniquenessVerified: false}
+    measures:
+      - {name: event_rows, type: count, description: Counts rows without deduplication.}
+    dimensions:
+      - {name: kind, type: string, sql: kind}
+      - {name: seen_at, type: time, sql: seen_at, timezone: unspecified}
+    joins: []
+    limitations: No payload fields, event-time window or identity join declared.
+  - contract: {path: compiled/aster_raw.clickstream.yaml, id: aster-mock-raw-clickstream, version: 0.1.0, sha256: cfede178d8e38b8b1fbe229e6357cee367c4d03cded71e12214b33e81f9cd925}
+    object: /schema/0
+    physicalName: clickstream
+    grain: {description: One click-shaped row; session labels may repeat, uniquenessVerified: false}
+    measures:
+      - {name: click_rows, type: count, description: 'Counts rows, not sessions or people.'}
+    dimensions:
+      - {name: session_id, type: string, sql: session_id}
+      - {name: path, type: string, sql: path}
+      - {name: country, type: string, sql: country}
+    joins: []
+    limitations: No timestamp or row key; daily rates and session duration are unsupported.

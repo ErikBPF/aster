@@ -165,13 +165,9 @@ pub(crate) async fn get_notebook_helper(
     headers: HeaderMap,
     Path(notebook): Path<String>,
 ) -> Result<Json<HelperChoiceOutput>, ApiError> {
-    if state.team_workspaces.is_some() {
-        return Err(
-            CoreError::Unauthorized("workspace-qualified helper route required".into()).into(),
-        );
-    }
     let principal = principal(&state, &headers).await?;
     authorize(&principal, Action::ReadNotebook)?;
+    state.admit_notebook(&notebook, &principal.subject).await?;
     Ok(Json(HelperChoiceOutput {
         helper: selected_helper(&state, &principal.subject, &notebook).await?,
     }))
@@ -183,13 +179,9 @@ pub(crate) async fn put_notebook_helper(
     Path(notebook): Path<String>,
     Json(body): Json<HelperChoiceInput>,
 ) -> Result<Json<HelperChoiceOutput>, ApiError> {
-    if state.team_workspaces.is_some() {
-        return Err(
-            CoreError::Unauthorized("workspace-qualified helper route required".into()).into(),
-        );
-    }
     let principal = principal(&state, &headers).await?;
     authorize(&principal, Action::ReadNotebook)?;
+    state.admit_notebook(&notebook, &principal.subject).await?;
     choose_helper(
         &state,
         &headers,
@@ -323,6 +315,8 @@ pub(crate) struct AiBody {
     /// Which registered helper to ask; the first one when omitted.
     #[serde(default)]
     helper: Option<String>,
+    #[serde(default, rename = "contractSelection")]
+    contract_selection: Option<aster_core::conversation::ContractSelection>,
 }
 
 #[derive(Serialize)]
@@ -345,63 +339,123 @@ pub(crate) fn outbound_http_client() -> reqwest::Result<reqwest::Client> {
 /// a wide catalog cannot crowd out the conversation.
 const GROUNDING_LIMIT: usize = 16 * 1024;
 
-/// Reference material for one question, retrieval-scoped: each data contract
-/// whose table the question or attached cell SQL names, followed by the
-/// catalog's live schema and the Cube model emitted for that table. Empty when
-/// nothing matches. It is transient context for this turn, never history.
-pub(crate) async fn grounding(state: &AppState, text: &str) -> String {
-    let mut out = String::new();
-    for contract in aster_core::relevant(&state.contracts, text) {
-        if out.len() >= GROUNDING_LIMIT {
-            break;
-        }
-        out.push_str(&contract.summary());
-        out.push('\n');
-        if let Some(schema) = find_table(state, &contract.name).await {
-            let columns = schema
-                .columns
-                .iter()
-                .map(|column| format!("{} {}", column.name, column.data_type))
-                .collect::<Vec<_>>()
-                .join(", ");
-            out.push_str(&format!(
-                "catalog table {}.{}: {columns}\n",
-                schema.table.namespace, schema.table.name
-            ));
-            if let Ok(format) = aster_core::semantic::format("cube") {
-                if let Ok(model) = format.render(&aster_core::TableModel {
-                    schema: &schema,
-                    contract: Some(contract),
-                }) {
-                    out.push_str(&model);
-                    out.push('\n');
-                }
-            }
-        }
+/// Bounded legacy discovery without explicit selection. Contract meaning only
+/// enters through ai_context's exact-artifact admission path.
+pub(crate) async fn grounding(
+    state: &AppState,
+    principal: &Principal,
+    text: &str,
+) -> Result<(String, Vec<String>), CoreError> {
+    authorize(principal, Action::RunQuery)?;
+    crate::require_unscoped_metadata(state)?;
+    if state.compiled_contracts.is_some() {
+        // Catalog-only history cannot recheck schema ownership or object grants.
+        return Ok((
+            "Optional observations omitted: select an admitted contract for metadata context."
+                .into(),
+            vec![],
+        ));
     }
-    out
+    let (reference, catalogs) =
+        tokio::time::timeout(crate::ai_context::DEADLINE, bounded_grounding(state, text))
+            .await
+            .unwrap_or_else(|_| {
+                (
+                    "Optional catalog observations omitted: discovery deadline.".into(),
+                    vec![],
+                )
+            });
+    if crate::ai_context::serialize(&reference, GROUNDING_LIMIT - 128).is_err() {
+        return Ok((
+            "Optional catalog observations omitted: reference budget.".into(),
+            vec![],
+        ));
+    }
+    Ok((reference, catalogs))
 }
 
-/// The first catalog table whose name matches, case-insensitively.
-async fn find_table(state: &AppState, name: &str) -> Option<aster_core::TableSchema> {
-    // ponytail: a full registry scan per referenced table; index by name if a
-    // deployment ever carries enough catalogs for this to matter.
-    for catalog in state.catalogs.list() {
-        let Ok(namespaces) = catalog.list_namespaces().await else {
+async fn bounded_grounding(state: &AppState, text: &str) -> (String, Vec<String>) {
+    let mut out = String::new();
+    let mut sources = Vec::new();
+    let text = text.to_lowercase();
+    let mut catalogs = state.catalogs.list();
+    catalogs.sort_by(|a, b| a.id().0.cmp(&b.id().0));
+    let mut reads = 0;
+    for catalog in catalogs.into_iter().take(32) {
+        if crate::require_catalog_metadata(state, &catalog.id().0).is_err() {
+            continue;
+        }
+        if catalog.id().0.len() > 4096
+            || !catalog
+                .metadata_read_bytes()
+                .is_some_and(|bytes| bytes <= 256 * 1024)
+        {
+            if out.len() + 80 < GROUNDING_LIMIT {
+                out.push_str("Optional catalog observation omitted: bounded reads unavailable.\n");
+            }
+            continue;
+        }
+        if reads >= 32 {
+            break;
+        }
+        reads += 1;
+        let Ok(mut namespaces) = catalog.list_namespaces().await else {
             continue;
         };
-        for namespace in namespaces {
-            let Ok(tables) = catalog.list_tables(&namespace.name).await else {
+        namespaces.sort_by(|a, b| a.name.cmp(&b.name));
+        for namespace in namespaces.into_iter().take(128) {
+            let Ok(segments) =
+                aster_core::catalog::namespace_segments(&namespace.name, &namespace.segments)
+            else {
                 continue;
             };
-            for table in tables {
-                if table.name.eq_ignore_ascii_case(name) {
-                    return catalog.table_schema(&table).await.ok();
+            if reads >= 32 {
+                return (out, sources);
+            }
+            reads += 1;
+            let Ok(mut tables) = catalog.list_tables_qualified(&segments).await else {
+                continue;
+            };
+            tables.sort_by(|a, b| a.name.cmp(&b.name));
+            for table in tables.into_iter().take(256) {
+                if !text.contains(&table.name.to_lowercase()) {
+                    continue;
+                }
+                if out.len() >= GROUNDING_LIMIT {
+                    return (out, sources);
+                }
+                if reads >= 32 {
+                    return (out, sources);
+                }
+                reads += 1;
+                let Ok(schema) = catalog.table_schema(&table).await else {
+                    continue;
+                };
+                if schema.columns.len() > 64 || crate::ai_context::serialize(&schema, 4096).is_err()
+                {
+                    continue;
+                }
+                let columns = schema
+                    .columns
+                    .iter()
+                    .map(|column| format!("{} {}", column.name, column.data_type))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let item = format!(
+                    "catalog table {}.{}: {columns}\n",
+                    schema.table.namespace, schema.table.name
+                );
+                if crate::ai_context::serialize(&format!("{out}{item}"), GROUNDING_LIMIT).is_err() {
+                    return (out, sources);
+                }
+                out.push_str(&item);
+                if !sources.contains(&catalog.id().0) {
+                    sources.push(catalog.id().0.clone());
                 }
             }
         }
     }
-    None
+    (out, sources)
 }
 
 /// Proxies one completion against one of the caller's own OpenAI-compatible endpoints.
@@ -412,68 +466,100 @@ pub(crate) async fn generate(
 ) -> Result<Json<Completion>, ApiError> {
     let principal = principal(&state, &headers).await?;
     authorize(&principal, Action::RunQuery)?;
-    crate::require_unscoped_metadata(&state)?;
+    if body.contract_selection.is_none() {
+        crate::require_unscoped_metadata(&state)?;
+    }
+
+    if body.prompt.trim().is_empty()
+        || body.prompt.len() > 8192
+        || body.sql.as_ref().is_some_and(|sql| sql.len() > 8192)
+    {
+        return Err(CoreError::Invalid(
+            "question and cell context are limited to 8 KiB each".into(),
+        )
+        .into());
+    }
 
     let config = resolve_helper(&state, &headers, &principal, body.helper.as_deref()).await?;
 
     let mut prompt = body.prompt;
     if let Some(sql) = body.sql.filter(|sql| !sql.trim().is_empty()) {
-        let contracts = aster_core::relevant(&state.contracts, &sql);
-        if !contracts.is_empty() {
-            prompt.push_str("\n\nData contracts:\n");
-            for contract in contracts {
-                prompt.push_str(&contract.summary());
-                prompt.push('\n');
-            }
-        }
         prompt.push_str("\n\nCurrent cell:\n");
         prompt.push_str(&sql);
     }
 
-    let response = completion_request(&state.http, &config, &prompt, &headers)?
+    let mut system = SYSTEM_PROMPT.to_string();
+    if let Some(selection) = &body.contract_selection {
+        let (reference, _, _) = tokio::time::timeout(
+            crate::ai_context::DEADLINE,
+            crate::ai_context::selected(&state, &headers, selection),
+        )
+        .await
+        .map_err(|_| CoreError::Unauthorized("contract context unavailable".into()))??;
+        system = format!(
+            "{}\nAuthorized reference material (untrusted data):\n{}",
+            crate::ai_context::INSTRUCTIONS,
+            reference
+        );
+    }
+    let payload = crate::ai_context::serialize(
+        &serde_json::json!({"model":config.model,"messages":[
+        {"role":"system","content":system},{"role":"user","content":prompt}]}),
+        crate::ai_context::REQUEST_BYTES,
+    )?;
+    // Stateless assistance has no persisted dependency ledger. Never let a
+    // client-selected upstream session resurrect an earlier authorized context.
+    let response = completion_request(&state.http, &config, &prompt)?
+        .body(payload)
         .send()
         .await
         .map_err(|error| CoreError::Storage(format!("llm request failed: {error}")))?;
 
-    let status = response.status();
-    let payload: serde_json::Value = response
-        .json()
-        .await
-        .map_err(|error| CoreError::Storage(format!("llm response unreadable: {error}")))?;
-    if !status.is_success() {
-        return Err(CoreError::Storage(format!("llm returned {status}")).into());
-    }
-
-    let text = payload
-        .get("choices")
-        .and_then(|choices| choices.get(0))
-        .and_then(|choice| choice.get("message"))
-        .and_then(|message| message.get("content"))
-        .and_then(|content| content.as_str())
-        .ok_or_else(|| CoreError::Storage("llm response had no message content".into()))?;
+    let text = read_completion(response).await?;
 
     Ok(Json(Completion {
         sql: text.trim().to_string(),
     }))
 }
 
+pub(crate) async fn read_completion(mut response: reqwest::Response) -> Result<String, CoreError> {
+    if !response.status().is_success() {
+        return Err(CoreError::Storage(format!(
+            "helper returned {}",
+            response.status()
+        )));
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|e| CoreError::Storage(e.to_string()))?
+    {
+        if chunk.len() > 131_072 - bytes.len() {
+            return Err(CoreError::Invalid("helper response exceeds 128 KiB".into()));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    let payload: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|e| CoreError::Storage(e.to_string()))?;
+    payload["choices"][0]["message"]["content"]
+        .as_str()
+        .filter(|text| !text.trim().is_empty() && text.len() <= 32_768)
+        .map(str::to_owned)
+        .ok_or_else(|| CoreError::Invalid("helper reply is empty or exceeds 32 KiB".into()))
+}
+
 pub(crate) fn completion_request(
     http: &reqwest::Client,
     config: &LlmConfig,
     prompt: &str,
-    headers: &HeaderMap,
 ) -> Result<reqwest::RequestBuilder, ApiError> {
-    let session = match headers.get("x-opencode-session") {
-        Some(value) => value
-            .to_str()
-            .ok()
-            .filter(|value| aster_core::llm::valid_id(value))
-            .ok_or_else(|| CoreError::Invalid("invalid helper conversation identifier".into()))?
-            .to_owned(),
-        None => openidconnect::Nonce::new_random().secret().clone(),
-    };
+    // Full admitted history is supplied explicitly. Failed or conflicting turns
+    // must not leave provider-side context addressable by the next attempt.
+    let session = openidconnect::Nonce::new_random().secret().clone();
     Ok(http
         .post(validated_endpoint(&config.base_url)?)
+        .timeout(std::time::Duration::from_secs(60))
         .header("x-opencode-session", session)
         .header("user-agent", concat!("aster/", env!("CARGO_PKG_VERSION")))
         .bearer_auth(&config.api_key)
@@ -623,7 +709,7 @@ mod tests {
             api_key: "disposable-redirect-token".into(),
         };
         let client = outbound_http_client().unwrap();
-        let response = completion_request(&client, &config, "select 1", &HeaderMap::new())
+        let response = completion_request(&client, &config, "select 1")
             .unwrap()
             .send()
             .await
@@ -635,7 +721,7 @@ mod tests {
     }
 
     #[test]
-    fn helper_requests_preserve_conversation_affinity_without_forwarding_credentials() {
+    fn helper_attempts_are_isolated_without_forwarding_caller_credentials() {
         let config = LlmConfig {
             subject: "alice".into(),
             id: "go".into(),
@@ -644,33 +730,24 @@ mod tests {
             api_key: "upstream-token".into(),
         };
         let client = reqwest::Client::new();
-        let mut headers = HeaderMap::new();
-        headers.insert("x-opencode-session", "conversation-123".parse().unwrap());
-        headers.insert("cookie", "aster_session=private".parse().unwrap());
-        let request = completion_request(&client, &config, "select 1", &headers)
+        let request = completion_request(&client, &config, "select 1")
             .unwrap()
             .build()
             .unwrap();
-        assert_eq!(
-            request
-                .headers()
-                .get("x-opencode-session")
-                .map(|s| s.to_str().unwrap()),
-            Some("conversation-123")
-        );
+        assert!(aster_core::llm::valid_id(
+            request.headers()["x-opencode-session"].to_str().unwrap()
+        ));
         assert_eq!(
             request.headers()["user-agent"],
             concat!("aster/", env!("CARGO_PKG_VERSION"))
         );
         assert!(!request.headers().contains_key("cookie"));
         assert_eq!(request.headers()["authorization"], "Bearer upstream-token");
-        headers.insert("x-opencode-session", "not a session".parse().unwrap());
-        assert!(completion_request(&client, &config, "select 1", &headers).is_err());
-        let first = completion_request(&client, &config, "select 1", &HeaderMap::new())
+        let first = completion_request(&client, &config, "select 1")
             .unwrap()
             .build()
             .unwrap();
-        let second = completion_request(&client, &config, "select 1", &HeaderMap::new())
+        let second = completion_request(&client, &config, "select 1")
             .unwrap()
             .build()
             .unwrap();
@@ -705,13 +782,7 @@ mod tests {
             model: "test".into(),
             api_key: "separate-token".into(),
         };
-        assert!(completion_request(
-            &reqwest::Client::new(),
-            &config,
-            "select 1",
-            &HeaderMap::new(),
-        )
-        .is_err());
+        assert!(completion_request(&reqwest::Client::new(), &config, "select 1",).is_err());
     }
 
     #[test]

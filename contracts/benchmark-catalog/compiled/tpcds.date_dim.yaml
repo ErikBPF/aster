@@ -1,0 +1,303 @@
+{
+  "apiVersion": "v3.2.0",
+  "kind": "DataContract",
+  "id": "aster-benchmark-tpcds-date_dim",
+  "version": "0.1.0",
+  "name": "TPCDS — date dim",
+  "status": "draft",
+  "domain": "synthetic-benchmarks",
+  "tags": [
+    "tpcds",
+    "tiny",
+    "synthetic"
+  ],
+  "description": {
+    "purpose": "Describe the native tpcds.tiny.date_dim benchmark table for notebook exploration.",
+    "usage": "Interactive SQL and catalog/contract demonstrations on the isolated Build-host demo.",
+    "limitations": "Synthetic generated benchmark data, not production records. No business ownership, freshness SLA, monetary unit, key uniqueness or measured quality guarantee is asserted. Catalog context routes queries; it does not enforce SQL target authorization."
+  },
+  "team": {
+    "name": "Aster benchmark demo",
+    "description": "Demo stewardship label only. Actual access is controlled independently by current Authentik membership and server-managed grants."
+  },
+  "schema": [
+    {
+      "name": "date_dim",
+      "physicalName": "date_dim",
+      "businessName": "Date Dim",
+      "description": "Native TPCDS tiny-scale date dim relation. Schema is observed from the generator; business constraints are not inferred.",
+      "properties": [
+        {
+          "name": "d_date_sk",
+          "physicalName": "d_date_sk",
+          "businessName": "d date sk",
+          "logicalType": "integer",
+          "physicalType": "bigint",
+          "required": false,
+          "description": "Native tpcds.tiny.date_dim.d_date_sk benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "d_date_id",
+          "physicalName": "d_date_id",
+          "businessName": "d date id",
+          "logicalType": "string",
+          "physicalType": "char(16)",
+          "required": false,
+          "description": "Native tpcds.tiny.date_dim.d_date_id benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "d_date",
+          "physicalName": "d_date",
+          "businessName": "d date",
+          "logicalType": "date",
+          "physicalType": "date",
+          "required": false,
+          "description": "Native tpcds.tiny.date_dim.d_date benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "d_month_seq",
+          "physicalName": "d_month_seq",
+          "businessName": "d month seq",
+          "logicalType": "integer",
+          "physicalType": "integer",
+          "required": false,
+          "description": "Native tpcds.tiny.date_dim.d_month_seq benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "d_week_seq",
+          "physicalName": "d_week_seq",
+          "businessName": "d week seq",
+          "logicalType": "integer",
+          "physicalType": "integer",
+          "required": false,
+          "description": "Native tpcds.tiny.date_dim.d_week_seq benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "d_quarter_seq",
+          "physicalName": "d_quarter_seq",
+          "businessName": "d quarter seq",
+          "logicalType": "integer",
+          "physicalType": "integer",
+          "required": false,
+          "description": "Native tpcds.tiny.date_dim.d_quarter_seq benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "d_year",
+          "physicalName": "d_year",
+          "businessName": "d year",
+          "logicalType": "integer",
+          "physicalType": "integer",
+          "required": false,
+          "description": "Native tpcds.tiny.date_dim.d_year benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "d_dow",
+          "physicalName": "d_dow",
+          "businessName": "d dow",
+          "logicalType": "integer",
+          "physicalType": "integer",
+          "required": false,
+          "description": "Native tpcds.tiny.date_dim.d_dow benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "d_moy",
+          "physicalName": "d_moy",
+          "businessName": "d moy",
+          "logicalType": "integer",
+          "physicalType": "integer",
+          "required": false,
+          "description": "Native tpcds.tiny.date_dim.d_moy benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "d_dom",
+          "physicalName": "d_dom",
+          "businessName": "d dom",
+          "logicalType": "integer",
+          "physicalType": "integer",
+          "required": false,
+          "description": "Native tpcds.tiny.date_dim.d_dom benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "d_qoy",
+          "physicalName": "d_qoy",
+          "businessName": "d qoy",
+          "logicalType": "integer",
+          "physicalType": "integer",
+          "required": false,
+          "description": "Native tpcds.tiny.date_dim.d_qoy benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "d_fy_year",
+          "physicalName": "d_fy_year",
+          "businessName": "d fy year",
+          "logicalType": "integer",
+          "physicalType": "integer",
+          "required": false,
+          "description": "Native tpcds.tiny.date_dim.d_fy_year benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "d_fy_quarter_seq",
+          "physicalName": "d_fy_quarter_seq",
+          "businessName": "d fy quarter seq",
+          "logicalType": "integer",
+          "physicalType": "integer",
+          "required": false,
+          "description": "Native tpcds.tiny.date_dim.d_fy_quarter_seq benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "d_fy_week_seq",
+          "physicalName": "d_fy_week_seq",
+          "businessName": "d fy week seq",
+          "logicalType": "integer",
+          "physicalType": "integer",
+          "required": false,
+          "description": "Native tpcds.tiny.date_dim.d_fy_week_seq benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "d_day_name",
+          "physicalName": "d_day_name",
+          "businessName": "d day name",
+          "logicalType": "string",
+          "physicalType": "char(9)",
+          "required": false,
+          "description": "Native tpcds.tiny.date_dim.d_day_name benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "d_quarter_name",
+          "physicalName": "d_quarter_name",
+          "businessName": "d quarter name",
+          "logicalType": "string",
+          "physicalType": "char(6)",
+          "required": false,
+          "description": "Native tpcds.tiny.date_dim.d_quarter_name benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "d_holiday",
+          "physicalName": "d_holiday",
+          "businessName": "d holiday",
+          "logicalType": "string",
+          "physicalType": "char(1)",
+          "required": false,
+          "description": "Native tpcds.tiny.date_dim.d_holiday benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "d_weekend",
+          "physicalName": "d_weekend",
+          "businessName": "d weekend",
+          "logicalType": "string",
+          "physicalType": "char(1)",
+          "required": false,
+          "description": "Native tpcds.tiny.date_dim.d_weekend benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "d_following_holiday",
+          "physicalName": "d_following_holiday",
+          "businessName": "d following holiday",
+          "logicalType": "string",
+          "physicalType": "char(1)",
+          "required": false,
+          "description": "Native tpcds.tiny.date_dim.d_following_holiday benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "d_first_dom",
+          "physicalName": "d_first_dom",
+          "businessName": "d first dom",
+          "logicalType": "integer",
+          "physicalType": "integer",
+          "required": false,
+          "description": "Native tpcds.tiny.date_dim.d_first_dom benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "d_last_dom",
+          "physicalName": "d_last_dom",
+          "businessName": "d last dom",
+          "logicalType": "integer",
+          "physicalType": "integer",
+          "required": false,
+          "description": "Native tpcds.tiny.date_dim.d_last_dom benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "d_same_day_ly",
+          "physicalName": "d_same_day_ly",
+          "businessName": "d same day ly",
+          "logicalType": "integer",
+          "physicalType": "integer",
+          "required": false,
+          "description": "Native tpcds.tiny.date_dim.d_same_day_ly benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "d_same_day_lq",
+          "physicalName": "d_same_day_lq",
+          "businessName": "d same day lq",
+          "logicalType": "integer",
+          "physicalType": "integer",
+          "required": false,
+          "description": "Native tpcds.tiny.date_dim.d_same_day_lq benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "d_current_day",
+          "physicalName": "d_current_day",
+          "businessName": "d current day",
+          "logicalType": "string",
+          "physicalType": "char(1)",
+          "required": false,
+          "description": "Native tpcds.tiny.date_dim.d_current_day benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "d_current_week",
+          "physicalName": "d_current_week",
+          "businessName": "d current week",
+          "logicalType": "string",
+          "physicalType": "char(1)",
+          "required": false,
+          "description": "Native tpcds.tiny.date_dim.d_current_week benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "d_current_month",
+          "physicalName": "d_current_month",
+          "businessName": "d current month",
+          "logicalType": "string",
+          "physicalType": "char(1)",
+          "required": false,
+          "description": "Native tpcds.tiny.date_dim.d_current_month benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "d_current_quarter",
+          "physicalName": "d_current_quarter",
+          "businessName": "d current quarter",
+          "logicalType": "string",
+          "physicalType": "char(1)",
+          "required": false,
+          "description": "Native tpcds.tiny.date_dim.d_current_quarter benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "d_current_year",
+          "physicalName": "d_current_year",
+          "businessName": "d current year",
+          "logicalType": "string",
+          "physicalType": "char(1)",
+          "required": false,
+          "description": "Native tpcds.tiny.date_dim.d_current_year benchmark column; type and nullability captured from Trino information_schema."
+        }
+      ]
+    }
+  ],
+  "customProperties": [
+    {
+      "property": "benchmarkCatalog",
+      "value": "tpcds"
+    },
+    {
+      "property": "benchmarkSchema",
+      "value": "tiny"
+    },
+    {
+      "property": "synthetic",
+      "value": true
+    },
+    {
+      "property": "qualityRulesExecuted",
+      "value": false
+    }
+  ]
+}

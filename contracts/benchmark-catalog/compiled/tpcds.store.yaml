@@ -1,0 +1,312 @@
+{
+  "apiVersion": "v3.2.0",
+  "kind": "DataContract",
+  "id": "aster-benchmark-tpcds-store",
+  "version": "0.1.0",
+  "name": "TPCDS — store",
+  "status": "draft",
+  "domain": "synthetic-benchmarks",
+  "tags": [
+    "tpcds",
+    "tiny",
+    "synthetic"
+  ],
+  "description": {
+    "purpose": "Describe the native tpcds.tiny.store benchmark table for notebook exploration.",
+    "usage": "Interactive SQL and catalog/contract demonstrations on the isolated Build-host demo.",
+    "limitations": "Synthetic generated benchmark data, not production records. No business ownership, freshness SLA, monetary unit, key uniqueness or measured quality guarantee is asserted. Catalog context routes queries; it does not enforce SQL target authorization."
+  },
+  "team": {
+    "name": "Aster benchmark demo",
+    "description": "Demo stewardship label only. Actual access is controlled independently by current Authentik membership and server-managed grants."
+  },
+  "schema": [
+    {
+      "name": "store",
+      "physicalName": "store",
+      "businessName": "Store",
+      "description": "Native TPCDS tiny-scale store relation. Schema is observed from the generator; business constraints are not inferred.",
+      "properties": [
+        {
+          "name": "s_store_sk",
+          "physicalName": "s_store_sk",
+          "businessName": "s store sk",
+          "logicalType": "integer",
+          "physicalType": "bigint",
+          "required": false,
+          "description": "Native tpcds.tiny.store.s_store_sk benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "s_store_id",
+          "physicalName": "s_store_id",
+          "businessName": "s store id",
+          "logicalType": "string",
+          "physicalType": "char(16)",
+          "required": false,
+          "description": "Native tpcds.tiny.store.s_store_id benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "s_rec_start_date",
+          "physicalName": "s_rec_start_date",
+          "businessName": "s rec start date",
+          "logicalType": "date",
+          "physicalType": "date",
+          "required": false,
+          "description": "Native tpcds.tiny.store.s_rec_start_date benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "s_rec_end_date",
+          "physicalName": "s_rec_end_date",
+          "businessName": "s rec end date",
+          "logicalType": "date",
+          "physicalType": "date",
+          "required": false,
+          "description": "Native tpcds.tiny.store.s_rec_end_date benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "s_closed_date_sk",
+          "physicalName": "s_closed_date_sk",
+          "businessName": "s closed date sk",
+          "logicalType": "integer",
+          "physicalType": "bigint",
+          "required": false,
+          "description": "Native tpcds.tiny.store.s_closed_date_sk benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "s_store_name",
+          "physicalName": "s_store_name",
+          "businessName": "s store name",
+          "logicalType": "string",
+          "physicalType": "varchar(50)",
+          "required": false,
+          "description": "Native tpcds.tiny.store.s_store_name benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "s_number_employees",
+          "physicalName": "s_number_employees",
+          "businessName": "s number employees",
+          "logicalType": "integer",
+          "physicalType": "integer",
+          "required": false,
+          "description": "Native tpcds.tiny.store.s_number_employees benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "s_floor_space",
+          "physicalName": "s_floor_space",
+          "businessName": "s floor space",
+          "logicalType": "integer",
+          "physicalType": "integer",
+          "required": false,
+          "description": "Native tpcds.tiny.store.s_floor_space benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "s_hours",
+          "physicalName": "s_hours",
+          "businessName": "s hours",
+          "logicalType": "string",
+          "physicalType": "char(20)",
+          "required": false,
+          "description": "Native tpcds.tiny.store.s_hours benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "s_manager",
+          "physicalName": "s_manager",
+          "businessName": "s manager",
+          "logicalType": "string",
+          "physicalType": "varchar(40)",
+          "required": false,
+          "description": "Native tpcds.tiny.store.s_manager benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "s_market_id",
+          "physicalName": "s_market_id",
+          "businessName": "s market id",
+          "logicalType": "integer",
+          "physicalType": "integer",
+          "required": false,
+          "description": "Native tpcds.tiny.store.s_market_id benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "s_geography_class",
+          "physicalName": "s_geography_class",
+          "businessName": "s geography class",
+          "logicalType": "string",
+          "physicalType": "varchar(100)",
+          "required": false,
+          "description": "Native tpcds.tiny.store.s_geography_class benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "s_market_desc",
+          "physicalName": "s_market_desc",
+          "businessName": "s market desc",
+          "logicalType": "string",
+          "physicalType": "varchar(100)",
+          "required": false,
+          "description": "Native tpcds.tiny.store.s_market_desc benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "s_market_manager",
+          "physicalName": "s_market_manager",
+          "businessName": "s market manager",
+          "logicalType": "string",
+          "physicalType": "varchar(40)",
+          "required": false,
+          "description": "Native tpcds.tiny.store.s_market_manager benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "s_division_id",
+          "physicalName": "s_division_id",
+          "businessName": "s division id",
+          "logicalType": "integer",
+          "physicalType": "integer",
+          "required": false,
+          "description": "Native tpcds.tiny.store.s_division_id benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "s_division_name",
+          "physicalName": "s_division_name",
+          "businessName": "s division name",
+          "logicalType": "string",
+          "physicalType": "varchar(50)",
+          "required": false,
+          "description": "Native tpcds.tiny.store.s_division_name benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "s_company_id",
+          "physicalName": "s_company_id",
+          "businessName": "s company id",
+          "logicalType": "integer",
+          "physicalType": "integer",
+          "required": false,
+          "description": "Native tpcds.tiny.store.s_company_id benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "s_company_name",
+          "physicalName": "s_company_name",
+          "businessName": "s company name",
+          "logicalType": "string",
+          "physicalType": "varchar(50)",
+          "required": false,
+          "description": "Native tpcds.tiny.store.s_company_name benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "s_street_number",
+          "physicalName": "s_street_number",
+          "businessName": "s street number",
+          "logicalType": "string",
+          "physicalType": "varchar(10)",
+          "required": false,
+          "description": "Native tpcds.tiny.store.s_street_number benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "s_street_name",
+          "physicalName": "s_street_name",
+          "businessName": "s street name",
+          "logicalType": "string",
+          "physicalType": "varchar(60)",
+          "required": false,
+          "description": "Native tpcds.tiny.store.s_street_name benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "s_street_type",
+          "physicalName": "s_street_type",
+          "businessName": "s street type",
+          "logicalType": "string",
+          "physicalType": "char(15)",
+          "required": false,
+          "description": "Native tpcds.tiny.store.s_street_type benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "s_suite_number",
+          "physicalName": "s_suite_number",
+          "businessName": "s suite number",
+          "logicalType": "string",
+          "physicalType": "char(10)",
+          "required": false,
+          "description": "Native tpcds.tiny.store.s_suite_number benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "s_city",
+          "physicalName": "s_city",
+          "businessName": "s city",
+          "logicalType": "string",
+          "physicalType": "varchar(60)",
+          "required": false,
+          "description": "Native tpcds.tiny.store.s_city benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "s_county",
+          "physicalName": "s_county",
+          "businessName": "s county",
+          "logicalType": "string",
+          "physicalType": "varchar(30)",
+          "required": false,
+          "description": "Native tpcds.tiny.store.s_county benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "s_state",
+          "physicalName": "s_state",
+          "businessName": "s state",
+          "logicalType": "string",
+          "physicalType": "char(2)",
+          "required": false,
+          "description": "Native tpcds.tiny.store.s_state benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "s_zip",
+          "physicalName": "s_zip",
+          "businessName": "s zip",
+          "logicalType": "string",
+          "physicalType": "char(10)",
+          "required": false,
+          "description": "Native tpcds.tiny.store.s_zip benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "s_country",
+          "physicalName": "s_country",
+          "businessName": "s country",
+          "logicalType": "string",
+          "physicalType": "varchar(20)",
+          "required": false,
+          "description": "Native tpcds.tiny.store.s_country benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "s_gmt_offset",
+          "physicalName": "s_gmt_offset",
+          "businessName": "s gmt offset",
+          "logicalType": "number",
+          "physicalType": "decimal(5,2)",
+          "required": false,
+          "description": "Native tpcds.tiny.store.s_gmt_offset benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "s_tax_precentage",
+          "physicalName": "s_tax_precentage",
+          "businessName": "s tax precentage",
+          "logicalType": "number",
+          "physicalType": "decimal(5,2)",
+          "required": false,
+          "description": "Native tpcds.tiny.store.s_tax_precentage benchmark column; type and nullability captured from Trino information_schema."
+        }
+      ]
+    }
+  ],
+  "customProperties": [
+    {
+      "property": "benchmarkCatalog",
+      "value": "tpcds"
+    },
+    {
+      "property": "benchmarkSchema",
+      "value": "tiny"
+    },
+    {
+      "property": "synthetic",
+      "value": true
+    },
+    {
+      "property": "qualityRulesExecuted",
+      "value": false
+    }
+  ]
+}

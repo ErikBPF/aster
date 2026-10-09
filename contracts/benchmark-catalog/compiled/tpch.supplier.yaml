@@ -1,0 +1,114 @@
+{
+  "apiVersion": "v3.2.0",
+  "kind": "DataContract",
+  "id": "aster-benchmark-tpch-supplier",
+  "version": "0.1.0",
+  "name": "TPCH — supplier",
+  "status": "draft",
+  "domain": "synthetic-benchmarks",
+  "tags": [
+    "tpch",
+    "tiny",
+    "synthetic"
+  ],
+  "description": {
+    "purpose": "Describe the native tpch.tiny.supplier benchmark table for notebook exploration.",
+    "usage": "Interactive SQL and catalog/contract demonstrations on the isolated Build-host demo.",
+    "limitations": "Synthetic generated benchmark data, not production records. No business ownership, freshness SLA, monetary unit, key uniqueness or measured quality guarantee is asserted. Catalog context routes queries; it does not enforce SQL target authorization."
+  },
+  "team": {
+    "name": "Aster benchmark demo",
+    "description": "Demo stewardship label only. Actual access is controlled independently by current Authentik membership and server-managed grants."
+  },
+  "schema": [
+    {
+      "name": "supplier",
+      "physicalName": "supplier",
+      "businessName": "Supplier",
+      "description": "Native TPCH tiny-scale supplier relation. Schema is observed from the generator; business constraints are not inferred.",
+      "properties": [
+        {
+          "name": "suppkey",
+          "physicalName": "suppkey",
+          "businessName": "suppkey",
+          "logicalType": "integer",
+          "physicalType": "bigint",
+          "required": true,
+          "description": "Native tpch.tiny.supplier.suppkey benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "name",
+          "physicalName": "name",
+          "businessName": "name",
+          "logicalType": "string",
+          "physicalType": "varchar(25)",
+          "required": true,
+          "description": "Native tpch.tiny.supplier.name benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "address",
+          "physicalName": "address",
+          "businessName": "address",
+          "logicalType": "string",
+          "physicalType": "varchar(40)",
+          "required": true,
+          "description": "Native tpch.tiny.supplier.address benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "nationkey",
+          "physicalName": "nationkey",
+          "businessName": "nationkey",
+          "logicalType": "integer",
+          "physicalType": "bigint",
+          "required": true,
+          "description": "Native tpch.tiny.supplier.nationkey benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "phone",
+          "physicalName": "phone",
+          "businessName": "phone",
+          "logicalType": "string",
+          "physicalType": "varchar(15)",
+          "required": true,
+          "description": "Native tpch.tiny.supplier.phone benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "acctbal",
+          "physicalName": "acctbal",
+          "businessName": "acctbal",
+          "logicalType": "number",
+          "physicalType": "double",
+          "required": true,
+          "description": "Native tpch.tiny.supplier.acctbal benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "comment",
+          "physicalName": "comment",
+          "businessName": "comment",
+          "logicalType": "string",
+          "physicalType": "varchar(101)",
+          "required": true,
+          "description": "Native tpch.tiny.supplier.comment benchmark column; type and nullability captured from Trino information_schema."
+        }
+      ]
+    }
+  ],
+  "customProperties": [
+    {
+      "property": "benchmarkCatalog",
+      "value": "tpch"
+    },
+    {
+      "property": "benchmarkSchema",
+      "value": "tiny"
+    },
+    {
+      "property": "synthetic",
+      "value": true
+    },
+    {
+      "property": "qualityRulesExecuted",
+      "value": false
+    }
+  ]
+}

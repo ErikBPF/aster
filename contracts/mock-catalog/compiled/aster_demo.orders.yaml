@@ -1,0 +1,23 @@
+# MOCK ONLY: descriptions are illustrative, not production promises.
+apiVersion: v3.2.0
+kind: DataContract
+id: aster-mock-demo-orders
+version: 0.1.0
+name: MOCK Aster demo orders
+status: draft
+description:
+  purpose: Describe the canned MockCatalog orders materialization for UI review.
+  limitations: No stored rows, currency, business SLA, uniqueness or customer relationship is established by this fixture.
+team:
+  name: aster-editors
+  description: Mock owner team; proposed mapping to the existing Keycloak alice group /aster-editors, not deployed authority.
+schema:
+  - name: orders
+    physicalName: orders
+    description: MOCK order-shaped rows. Illustrative row grain is one order; order_id uniqueness is not verified. Total is a synthetic amount, not booked revenue.
+    properties:
+      - {name: order_id, physicalName: order_id, logicalType: integer, physicalType: bigint, description: Mock order identifier; no uniqueness assertion.}
+      - {name: customer, physicalName: customer, logicalType: string, physicalType: varchar, semanticType: dimension, description: Customer label; not a customer_id foreign key.}
+      - {name: region, physicalName: region, logicalType: string, physicalType: varchar, semanticType: dimension, description: Synthetic grouping label.}
+      - {name: total, physicalName: total, logicalType: number, physicalType: 'decimal(12,2)', semanticType: measure, transformLogic: 'SUM(total)', description: 'Illustrative total of non-null mock amounts; unit unspecified. Cube equivalent uses sql total and type sum, never SUM(total) with type sum.'}
+      - {name: placed_at, physicalName: placed_at, logicalType: timestamp, physicalType: timestamp, semanticType: dimension, description: Mock placement time; timezone unspecified.}

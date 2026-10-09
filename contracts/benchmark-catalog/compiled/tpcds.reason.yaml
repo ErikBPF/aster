@@ -1,0 +1,78 @@
+{
+  "apiVersion": "v3.2.0",
+  "kind": "DataContract",
+  "id": "aster-benchmark-tpcds-reason",
+  "version": "0.1.0",
+  "name": "TPCDS — reason",
+  "status": "draft",
+  "domain": "synthetic-benchmarks",
+  "tags": [
+    "tpcds",
+    "tiny",
+    "synthetic"
+  ],
+  "description": {
+    "purpose": "Describe the native tpcds.tiny.reason benchmark table for notebook exploration.",
+    "usage": "Interactive SQL and catalog/contract demonstrations on the isolated Build-host demo.",
+    "limitations": "Synthetic generated benchmark data, not production records. No business ownership, freshness SLA, monetary unit, key uniqueness or measured quality guarantee is asserted. Catalog context routes queries; it does not enforce SQL target authorization."
+  },
+  "team": {
+    "name": "Aster benchmark demo",
+    "description": "Demo stewardship label only. Actual access is controlled independently by current Authentik membership and server-managed grants."
+  },
+  "schema": [
+    {
+      "name": "reason",
+      "physicalName": "reason",
+      "businessName": "Reason",
+      "description": "Native TPCDS tiny-scale reason relation. Schema is observed from the generator; business constraints are not inferred.",
+      "properties": [
+        {
+          "name": "r_reason_sk",
+          "physicalName": "r_reason_sk",
+          "businessName": "r reason sk",
+          "logicalType": "integer",
+          "physicalType": "bigint",
+          "required": false,
+          "description": "Native tpcds.tiny.reason.r_reason_sk benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "r_reason_id",
+          "physicalName": "r_reason_id",
+          "businessName": "r reason id",
+          "logicalType": "string",
+          "physicalType": "char(16)",
+          "required": false,
+          "description": "Native tpcds.tiny.reason.r_reason_id benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "r_reason_desc",
+          "physicalName": "r_reason_desc",
+          "businessName": "r reason desc",
+          "logicalType": "string",
+          "physicalType": "char(100)",
+          "required": false,
+          "description": "Native tpcds.tiny.reason.r_reason_desc benchmark column; type and nullability captured from Trino information_schema."
+        }
+      ]
+    }
+  ],
+  "customProperties": [
+    {
+      "property": "benchmarkCatalog",
+      "value": "tpcds"
+    },
+    {
+      "property": "benchmarkSchema",
+      "value": "tiny"
+    },
+    {
+      "property": "synthetic",
+      "value": true
+    },
+    {
+      "property": "qualityRulesExecuted",
+      "value": false
+    }
+  ]
+}

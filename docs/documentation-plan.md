@@ -2,7 +2,9 @@
 
 ## Request and outcome
 
-> lets double check if we have .feature files for the whole implementation. Lets also create a documentation plan for the whole project. We need sections for catalogs, compute engines, ai, git integration, how to deploy, how to contribute, etc. Lets check our example-platform docs for example
+Human seed (publication-safe excerpt; original preserved privately):
+
+> lets double check if we have .feature files for the whole implementation. Lets also create a documentation plan for the whole project. We need sections for catalogs, compute engines, ai, git integration, how to deploy, how to contribute, etc.
 
 Build one navigable project handbook in this repository. A new reader should be
 able to understand Aster's boundaries, run it, choose a catalog and engine, use
@@ -10,10 +12,8 @@ notebooks and AI, deploy and recover it, and contribute with the right tests.
 Each page must distinguish implemented behavior, tested behavior, and accepted
 work that is still planned.
 
-ExamplePlatform's `README.md` and `docs/readme.md` in the sibling repository
-informed the layout: one entry point, clear audiences, explicit document
-purpose, and links to deeper material. Aster needs operating and
-developer guides rather than ExamplePlatform's RFC/ADR/PRD hierarchy. No RFC, ADR,
+Use one entry point, clear audiences, explicit document purpose, and links to
+deeper material. Aster needs operating and developer guides. No RFC, ADR,
 or spec is a prerequisite for this documentation work.
 
 ## Feature-contract audit, 2026-09-23

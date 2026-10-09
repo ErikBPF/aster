@@ -1,0 +1,105 @@
+{
+  "apiVersion": "v3.2.0",
+  "kind": "DataContract",
+  "id": "aster-benchmark-tpcds-ship_mode",
+  "version": "0.1.0",
+  "name": "TPCDS — ship mode",
+  "status": "draft",
+  "domain": "synthetic-benchmarks",
+  "tags": [
+    "tpcds",
+    "tiny",
+    "synthetic"
+  ],
+  "description": {
+    "purpose": "Describe the native tpcds.tiny.ship_mode benchmark table for notebook exploration.",
+    "usage": "Interactive SQL and catalog/contract demonstrations on the isolated Build-host demo.",
+    "limitations": "Synthetic generated benchmark data, not production records. No business ownership, freshness SLA, monetary unit, key uniqueness or measured quality guarantee is asserted. Catalog context routes queries; it does not enforce SQL target authorization."
+  },
+  "team": {
+    "name": "Aster benchmark demo",
+    "description": "Demo stewardship label only. Actual access is controlled independently by current Authentik membership and server-managed grants."
+  },
+  "schema": [
+    {
+      "name": "ship_mode",
+      "physicalName": "ship_mode",
+      "businessName": "Ship Mode",
+      "description": "Native TPCDS tiny-scale ship mode relation. Schema is observed from the generator; business constraints are not inferred.",
+      "properties": [
+        {
+          "name": "sm_ship_mode_sk",
+          "physicalName": "sm_ship_mode_sk",
+          "businessName": "sm ship mode sk",
+          "logicalType": "integer",
+          "physicalType": "bigint",
+          "required": false,
+          "description": "Native tpcds.tiny.ship_mode.sm_ship_mode_sk benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "sm_ship_mode_id",
+          "physicalName": "sm_ship_mode_id",
+          "businessName": "sm ship mode id",
+          "logicalType": "string",
+          "physicalType": "char(16)",
+          "required": false,
+          "description": "Native tpcds.tiny.ship_mode.sm_ship_mode_id benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "sm_type",
+          "physicalName": "sm_type",
+          "businessName": "sm type",
+          "logicalType": "string",
+          "physicalType": "char(30)",
+          "required": false,
+          "description": "Native tpcds.tiny.ship_mode.sm_type benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "sm_code",
+          "physicalName": "sm_code",
+          "businessName": "sm code",
+          "logicalType": "string",
+          "physicalType": "char(10)",
+          "required": false,
+          "description": "Native tpcds.tiny.ship_mode.sm_code benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "sm_carrier",
+          "physicalName": "sm_carrier",
+          "businessName": "sm carrier",
+          "logicalType": "string",
+          "physicalType": "char(20)",
+          "required": false,
+          "description": "Native tpcds.tiny.ship_mode.sm_carrier benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "sm_contract",
+          "physicalName": "sm_contract",
+          "businessName": "sm contract",
+          "logicalType": "string",
+          "physicalType": "char(20)",
+          "required": false,
+          "description": "Native tpcds.tiny.ship_mode.sm_contract benchmark column; type and nullability captured from Trino information_schema."
+        }
+      ]
+    }
+  ],
+  "customProperties": [
+    {
+      "property": "benchmarkCatalog",
+      "value": "tpcds"
+    },
+    {
+      "property": "benchmarkSchema",
+      "value": "tiny"
+    },
+    {
+      "property": "synthetic",
+      "value": true
+    },
+    {
+      "property": "qualityRulesExecuted",
+      "value": false
+    }
+  ]
+}

@@ -1,0 +1,177 @@
+{
+  "apiVersion": "v3.2.0",
+  "kind": "DataContract",
+  "id": "aster-benchmark-tpcds-warehouse",
+  "version": "0.1.0",
+  "name": "TPCDS — warehouse",
+  "status": "draft",
+  "domain": "synthetic-benchmarks",
+  "tags": [
+    "tpcds",
+    "tiny",
+    "synthetic"
+  ],
+  "description": {
+    "purpose": "Describe the native tpcds.tiny.warehouse benchmark table for notebook exploration.",
+    "usage": "Interactive SQL and catalog/contract demonstrations on the isolated Build-host demo.",
+    "limitations": "Synthetic generated benchmark data, not production records. No business ownership, freshness SLA, monetary unit, key uniqueness or measured quality guarantee is asserted. Catalog context routes queries; it does not enforce SQL target authorization."
+  },
+  "team": {
+    "name": "Aster benchmark demo",
+    "description": "Demo stewardship label only. Actual access is controlled independently by current Authentik membership and server-managed grants."
+  },
+  "schema": [
+    {
+      "name": "warehouse",
+      "physicalName": "warehouse",
+      "businessName": "Warehouse",
+      "description": "Native TPCDS tiny-scale warehouse relation. Schema is observed from the generator; business constraints are not inferred.",
+      "properties": [
+        {
+          "name": "w_warehouse_sk",
+          "physicalName": "w_warehouse_sk",
+          "businessName": "w warehouse sk",
+          "logicalType": "integer",
+          "physicalType": "bigint",
+          "required": false,
+          "description": "Native tpcds.tiny.warehouse.w_warehouse_sk benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "w_warehouse_id",
+          "physicalName": "w_warehouse_id",
+          "businessName": "w warehouse id",
+          "logicalType": "string",
+          "physicalType": "char(16)",
+          "required": false,
+          "description": "Native tpcds.tiny.warehouse.w_warehouse_id benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "w_warehouse_name",
+          "physicalName": "w_warehouse_name",
+          "businessName": "w warehouse name",
+          "logicalType": "string",
+          "physicalType": "varchar(20)",
+          "required": false,
+          "description": "Native tpcds.tiny.warehouse.w_warehouse_name benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "w_warehouse_sq_ft",
+          "physicalName": "w_warehouse_sq_ft",
+          "businessName": "w warehouse sq ft",
+          "logicalType": "integer",
+          "physicalType": "integer",
+          "required": false,
+          "description": "Native tpcds.tiny.warehouse.w_warehouse_sq_ft benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "w_street_number",
+          "physicalName": "w_street_number",
+          "businessName": "w street number",
+          "logicalType": "string",
+          "physicalType": "char(10)",
+          "required": false,
+          "description": "Native tpcds.tiny.warehouse.w_street_number benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "w_street_name",
+          "physicalName": "w_street_name",
+          "businessName": "w street name",
+          "logicalType": "string",
+          "physicalType": "varchar(60)",
+          "required": false,
+          "description": "Native tpcds.tiny.warehouse.w_street_name benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "w_street_type",
+          "physicalName": "w_street_type",
+          "businessName": "w street type",
+          "logicalType": "string",
+          "physicalType": "char(15)",
+          "required": false,
+          "description": "Native tpcds.tiny.warehouse.w_street_type benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "w_suite_number",
+          "physicalName": "w_suite_number",
+          "businessName": "w suite number",
+          "logicalType": "string",
+          "physicalType": "char(10)",
+          "required": false,
+          "description": "Native tpcds.tiny.warehouse.w_suite_number benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "w_city",
+          "physicalName": "w_city",
+          "businessName": "w city",
+          "logicalType": "string",
+          "physicalType": "varchar(60)",
+          "required": false,
+          "description": "Native tpcds.tiny.warehouse.w_city benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "w_county",
+          "physicalName": "w_county",
+          "businessName": "w county",
+          "logicalType": "string",
+          "physicalType": "varchar(30)",
+          "required": false,
+          "description": "Native tpcds.tiny.warehouse.w_county benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "w_state",
+          "physicalName": "w_state",
+          "businessName": "w state",
+          "logicalType": "string",
+          "physicalType": "char(2)",
+          "required": false,
+          "description": "Native tpcds.tiny.warehouse.w_state benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "w_zip",
+          "physicalName": "w_zip",
+          "businessName": "w zip",
+          "logicalType": "string",
+          "physicalType": "char(10)",
+          "required": false,
+          "description": "Native tpcds.tiny.warehouse.w_zip benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "w_country",
+          "physicalName": "w_country",
+          "businessName": "w country",
+          "logicalType": "string",
+          "physicalType": "varchar(20)",
+          "required": false,
+          "description": "Native tpcds.tiny.warehouse.w_country benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "w_gmt_offset",
+          "physicalName": "w_gmt_offset",
+          "businessName": "w gmt offset",
+          "logicalType": "number",
+          "physicalType": "decimal(5,2)",
+          "required": false,
+          "description": "Native tpcds.tiny.warehouse.w_gmt_offset benchmark column; type and nullability captured from Trino information_schema."
+        }
+      ]
+    }
+  ],
+  "customProperties": [
+    {
+      "property": "benchmarkCatalog",
+      "value": "tpcds"
+    },
+    {
+      "property": "benchmarkSchema",
+      "value": "tiny"
+    },
+    {
+      "property": "synthetic",
+      "value": true
+    },
+    {
+      "property": "qualityRulesExecuted",
+      "value": false
+    }
+  ]
+}

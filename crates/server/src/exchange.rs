@@ -165,9 +165,11 @@ pub(crate) async fn fetch_query(
     notebook: &str,
     cell: &str,
 ) -> Result<(String, String)> {
-    crate::conversations::check_notebook(state, principal, notebook).await?;
+    aster_core::authorize(principal, aster_core::Action::ReadNotebook)?;
     cell_id(cell)?;
-    let snapshot = state.notebooks.snapshot(notebook).await?;
+    let snapshot = state
+        .owned_notebook_snapshot(notebook, &principal.subject)
+        .await?;
     let existing = find_cell(&snapshot.notebook, cell)?;
     Ok((existing.sql.clone(), snapshot.content_revision))
 }
@@ -191,8 +193,7 @@ pub(crate) async fn fetch_summary(
     principal: &Principal,
     notebook: &str,
 ) -> Result<(Option<String>, Vec<(String, String)>)> {
-    crate::conversations::check_notebook(state, principal, notebook).await?;
-    let document = state.notebooks.get(notebook).await?;
+    let document = crate::conversations::check_notebook(state, principal, notebook).await?;
     let cells = document
         .cells
         .iter()

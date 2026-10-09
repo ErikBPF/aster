@@ -1,0 +1,9 @@
+{
+  "manifestSha256": "624a6339d761d00826effa497328858a08af6289ac80a5c96e60a3f7fce6ea15",
+  "grantsSha256": "6694abd473d1f3796c112c6acc6a76e48290b4b654c6847c7a4767934a1d92ad",
+  "semantics": [
+    {"path":"semantics/aster_demo/semantics.yaml","sha256":"3500e751a95073880593dfc5679fcb12d73ca0ccfde2cca87d830f2ef2d8077e"},
+    {"path":"semantics/aster_demo.sales/semantics.yaml","sha256":"aeeadc7165e42d9c271bd3ac10c5147bca17731327fc75fce91a45b4bfed7230"},
+    {"path":"semantics/aster_raw/semantics.yaml","sha256":"d06ee9fafac08f7603dd0f6600a1577bf0ddeede6e4cad27ba2b4b23f4e4fea5"}
+  ]
+}

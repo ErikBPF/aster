@@ -1,0 +1,87 @@
+{
+  "apiVersion": "v3.2.0",
+  "kind": "DataContract",
+  "id": "aster-benchmark-tpcds-dbgen_version",
+  "version": "0.1.0",
+  "name": "TPCDS — dbgen version",
+  "status": "draft",
+  "domain": "synthetic-benchmarks",
+  "tags": [
+    "tpcds",
+    "tiny",
+    "synthetic"
+  ],
+  "description": {
+    "purpose": "Describe the native tpcds.tiny.dbgen_version benchmark table for notebook exploration.",
+    "usage": "Interactive SQL and catalog/contract demonstrations on the isolated Build-host demo.",
+    "limitations": "Synthetic generated benchmark data, not production records. No business ownership, freshness SLA, monetary unit, key uniqueness or measured quality guarantee is asserted. Catalog context routes queries; it does not enforce SQL target authorization."
+  },
+  "team": {
+    "name": "Aster benchmark demo",
+    "description": "Demo stewardship label only. Actual access is controlled independently by current Authentik membership and server-managed grants."
+  },
+  "schema": [
+    {
+      "name": "dbgen_version",
+      "physicalName": "dbgen_version",
+      "businessName": "Dbgen Version",
+      "description": "Native TPCDS tiny-scale dbgen version relation. Schema is observed from the generator; business constraints are not inferred.",
+      "properties": [
+        {
+          "name": "dv_version",
+          "physicalName": "dv_version",
+          "businessName": "dv version",
+          "logicalType": "string",
+          "physicalType": "varchar(16)",
+          "required": false,
+          "description": "Native tpcds.tiny.dbgen_version.dv_version benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "dv_create_date",
+          "physicalName": "dv_create_date",
+          "businessName": "dv create date",
+          "logicalType": "date",
+          "physicalType": "date",
+          "required": false,
+          "description": "Native tpcds.tiny.dbgen_version.dv_create_date benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "dv_create_time",
+          "physicalName": "dv_create_time",
+          "businessName": "dv create time",
+          "logicalType": "time",
+          "physicalType": "time(3)",
+          "required": false,
+          "description": "Native tpcds.tiny.dbgen_version.dv_create_time benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "dv_cmdline_args",
+          "physicalName": "dv_cmdline_args",
+          "businessName": "dv cmdline args",
+          "logicalType": "string",
+          "physicalType": "varchar(200)",
+          "required": false,
+          "description": "Native tpcds.tiny.dbgen_version.dv_cmdline_args benchmark column; type and nullability captured from Trino information_schema."
+        }
+      ]
+    }
+  ],
+  "customProperties": [
+    {
+      "property": "benchmarkCatalog",
+      "value": "tpcds"
+    },
+    {
+      "property": "benchmarkSchema",
+      "value": "tiny"
+    },
+    {
+      "property": "synthetic",
+      "value": true
+    },
+    {
+      "property": "qualityRulesExecuted",
+      "value": false
+    }
+  ]
+}

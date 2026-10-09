@@ -55,6 +55,10 @@ pub struct TeamWorkspaces {
 }
 
 impl TeamWorkspaces {
+    pub(crate) fn contains_team(&self, team: &str) -> bool {
+        self.policy.contains_key(team)
+    }
+
     pub fn new(root: impl Into<PathBuf>, policy: HashMap<String, TeamPolicy>) -> Result<Self> {
         let root = root.into();
         for (team, rule) in &policy {

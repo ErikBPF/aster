@@ -1,0 +1,132 @@
+{
+  "apiVersion": "v3.2.0",
+  "kind": "DataContract",
+  "id": "aster-benchmark-tpcds-customer_demographics",
+  "version": "0.1.0",
+  "name": "TPCDS — customer demographics",
+  "status": "draft",
+  "domain": "synthetic-benchmarks",
+  "tags": [
+    "tpcds",
+    "tiny",
+    "synthetic"
+  ],
+  "description": {
+    "purpose": "Describe the native tpcds.tiny.customer_demographics benchmark table for notebook exploration.",
+    "usage": "Interactive SQL and catalog/contract demonstrations on the isolated Build-host demo.",
+    "limitations": "Synthetic generated benchmark data, not production records. No business ownership, freshness SLA, monetary unit, key uniqueness or measured quality guarantee is asserted. Catalog context routes queries; it does not enforce SQL target authorization."
+  },
+  "team": {
+    "name": "Aster benchmark demo",
+    "description": "Demo stewardship label only. Actual access is controlled independently by current Authentik membership and server-managed grants."
+  },
+  "schema": [
+    {
+      "name": "customer_demographics",
+      "physicalName": "customer_demographics",
+      "businessName": "Customer Demographics",
+      "description": "Native TPCDS tiny-scale customer demographics relation. Schema is observed from the generator; business constraints are not inferred.",
+      "properties": [
+        {
+          "name": "cd_demo_sk",
+          "physicalName": "cd_demo_sk",
+          "businessName": "cd demo sk",
+          "logicalType": "integer",
+          "physicalType": "bigint",
+          "required": false,
+          "description": "Native tpcds.tiny.customer_demographics.cd_demo_sk benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cd_gender",
+          "physicalName": "cd_gender",
+          "businessName": "cd gender",
+          "logicalType": "string",
+          "physicalType": "char(1)",
+          "required": false,
+          "description": "Native tpcds.tiny.customer_demographics.cd_gender benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cd_marital_status",
+          "physicalName": "cd_marital_status",
+          "businessName": "cd marital status",
+          "logicalType": "string",
+          "physicalType": "char(1)",
+          "required": false,
+          "description": "Native tpcds.tiny.customer_demographics.cd_marital_status benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cd_education_status",
+          "physicalName": "cd_education_status",
+          "businessName": "cd education status",
+          "logicalType": "string",
+          "physicalType": "char(20)",
+          "required": false,
+          "description": "Native tpcds.tiny.customer_demographics.cd_education_status benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cd_purchase_estimate",
+          "physicalName": "cd_purchase_estimate",
+          "businessName": "cd purchase estimate",
+          "logicalType": "integer",
+          "physicalType": "integer",
+          "required": false,
+          "description": "Native tpcds.tiny.customer_demographics.cd_purchase_estimate benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cd_credit_rating",
+          "physicalName": "cd_credit_rating",
+          "businessName": "cd credit rating",
+          "logicalType": "string",
+          "physicalType": "char(10)",
+          "required": false,
+          "description": "Native tpcds.tiny.customer_demographics.cd_credit_rating benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cd_dep_count",
+          "physicalName": "cd_dep_count",
+          "businessName": "cd dep count",
+          "logicalType": "integer",
+          "physicalType": "integer",
+          "required": false,
+          "description": "Native tpcds.tiny.customer_demographics.cd_dep_count benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cd_dep_employed_count",
+          "physicalName": "cd_dep_employed_count",
+          "businessName": "cd dep employed count",
+          "logicalType": "integer",
+          "physicalType": "integer",
+          "required": false,
+          "description": "Native tpcds.tiny.customer_demographics.cd_dep_employed_count benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cd_dep_college_count",
+          "physicalName": "cd_dep_college_count",
+          "businessName": "cd dep college count",
+          "logicalType": "integer",
+          "physicalType": "integer",
+          "required": false,
+          "description": "Native tpcds.tiny.customer_demographics.cd_dep_college_count benchmark column; type and nullability captured from Trino information_schema."
+        }
+      ]
+    }
+  ],
+  "customProperties": [
+    {
+      "property": "benchmarkCatalog",
+      "value": "tpcds"
+    },
+    {
+      "property": "benchmarkSchema",
+      "value": "tiny"
+    },
+    {
+      "property": "synthetic",
+      "value": true
+    },
+    {
+      "property": "qualityRulesExecuted",
+      "value": false
+    }
+  ]
+}

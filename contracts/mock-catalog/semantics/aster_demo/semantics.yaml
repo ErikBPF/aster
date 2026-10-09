@@ -1,0 +1,32 @@
+# Description artifact inspired by Cube; NOT executable Cube configuration.
+formatVersion: 2
+mock: true
+catalog: mock-local
+namespaceSegments: [aster_demo]
+ownerTeam: aster-editors
+ownerGroup: /aster-editors
+tables:
+  - contract: {path: compiled/aster_demo.orders.yaml, id: aster-mock-demo-orders, version: 0.1.0, sha256: e930d91da5dbf4aa9c5c454b7d0899d6225eabccb05ba95309aa30ffaeb8a0b2}
+    object: /schema/0
+    physicalName: orders
+    grain: {description: One illustrative order-shaped row, uniquenessVerified: false}
+    measures:
+      - {name: order_rows, type: count, description: Count rows including repeated identifiers; not unique orders.}
+      - {name: total_amount, type: sum, sql: total, unit: unspecified, nulls: Ignore null inputs; empty-group behavior is backend-dependent.}
+      - {name: average_amount, type: avg, sql: total, description: Average non-null row amounts; never average averages.}
+    dimensions:
+      - {name: region, type: string, sql: region}
+      - {name: customer, type: string, sql: customer}
+      - {name: placed_at, type: time, sql: placed_at, timezone: unspecified}
+    joins: []
+    limitations: Customer is a label, not a declared key to customers. Time bucketing requires an explicit timezone and backend support.
+  - contract: {path: compiled/aster_demo.customers.yaml, id: aster-mock-demo-customers, version: 0.1.0, sha256: fafafa0997f1c45ee312dcea7c86afb9ea2679ecf4fbc8c67f85398b38bde885}
+    object: /schema/0
+    physicalName: customers
+    grain: {description: One illustrative customer-shaped row, uniquenessVerified: false}
+    measures:
+      - {name: customer_rows, type: count, description: 'Row count, not unique customers.'}
+    dimensions:
+      - {name: created_at, type: time, sql: created_at, timezone: unspecified}
+    joins: []
+    limitations: No primary key is verified; no customer-to-order join is declared.

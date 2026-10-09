@@ -14,6 +14,11 @@ See the [handbook](docs/README.md) for the current behavior and accepted drafts.
 
 ## Start locally
 
+The current ODCS first-test demo uses **Authentik**, including fresh membership
+checks and registered catalog teams. See the [deployment receipt](docs/plans/odcs-ai-catalog-rv.md)
+for access, verified scope and rollback. The Compose Keycloak stack below is the
+older generic-OIDC evaluation fixture, not the active catalog demo identity.
+
 Enter the declared toolchain, then choose one path:
 
 ```sh

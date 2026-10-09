@@ -1,0 +1,168 @@
+{
+  "apiVersion": "v3.2.0",
+  "kind": "DataContract",
+  "id": "aster-benchmark-tpcds-customer_address",
+  "version": "0.1.0",
+  "name": "TPCDS — customer address",
+  "status": "draft",
+  "domain": "synthetic-benchmarks",
+  "tags": [
+    "tpcds",
+    "tiny",
+    "synthetic"
+  ],
+  "description": {
+    "purpose": "Describe the native tpcds.tiny.customer_address benchmark table for notebook exploration.",
+    "usage": "Interactive SQL and catalog/contract demonstrations on the isolated Build-host demo.",
+    "limitations": "Synthetic generated benchmark data, not production records. No business ownership, freshness SLA, monetary unit, key uniqueness or measured quality guarantee is asserted. Catalog context routes queries; it does not enforce SQL target authorization."
+  },
+  "team": {
+    "name": "Aster benchmark demo",
+    "description": "Demo stewardship label only. Actual access is controlled independently by current Authentik membership and server-managed grants."
+  },
+  "schema": [
+    {
+      "name": "customer_address",
+      "physicalName": "customer_address",
+      "businessName": "Customer Address",
+      "description": "Native TPCDS tiny-scale customer address relation. Schema is observed from the generator; business constraints are not inferred.",
+      "properties": [
+        {
+          "name": "ca_address_sk",
+          "physicalName": "ca_address_sk",
+          "businessName": "ca address sk",
+          "logicalType": "integer",
+          "physicalType": "bigint",
+          "required": false,
+          "description": "Native tpcds.tiny.customer_address.ca_address_sk benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "ca_address_id",
+          "physicalName": "ca_address_id",
+          "businessName": "ca address id",
+          "logicalType": "string",
+          "physicalType": "char(16)",
+          "required": false,
+          "description": "Native tpcds.tiny.customer_address.ca_address_id benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "ca_street_number",
+          "physicalName": "ca_street_number",
+          "businessName": "ca street number",
+          "logicalType": "string",
+          "physicalType": "char(10)",
+          "required": false,
+          "description": "Native tpcds.tiny.customer_address.ca_street_number benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "ca_street_name",
+          "physicalName": "ca_street_name",
+          "businessName": "ca street name",
+          "logicalType": "string",
+          "physicalType": "varchar(60)",
+          "required": false,
+          "description": "Native tpcds.tiny.customer_address.ca_street_name benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "ca_street_type",
+          "physicalName": "ca_street_type",
+          "businessName": "ca street type",
+          "logicalType": "string",
+          "physicalType": "char(15)",
+          "required": false,
+          "description": "Native tpcds.tiny.customer_address.ca_street_type benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "ca_suite_number",
+          "physicalName": "ca_suite_number",
+          "businessName": "ca suite number",
+          "logicalType": "string",
+          "physicalType": "char(10)",
+          "required": false,
+          "description": "Native tpcds.tiny.customer_address.ca_suite_number benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "ca_city",
+          "physicalName": "ca_city",
+          "businessName": "ca city",
+          "logicalType": "string",
+          "physicalType": "varchar(60)",
+          "required": false,
+          "description": "Native tpcds.tiny.customer_address.ca_city benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "ca_county",
+          "physicalName": "ca_county",
+          "businessName": "ca county",
+          "logicalType": "string",
+          "physicalType": "varchar(30)",
+          "required": false,
+          "description": "Native tpcds.tiny.customer_address.ca_county benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "ca_state",
+          "physicalName": "ca_state",
+          "businessName": "ca state",
+          "logicalType": "string",
+          "physicalType": "char(2)",
+          "required": false,
+          "description": "Native tpcds.tiny.customer_address.ca_state benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "ca_zip",
+          "physicalName": "ca_zip",
+          "businessName": "ca zip",
+          "logicalType": "string",
+          "physicalType": "char(10)",
+          "required": false,
+          "description": "Native tpcds.tiny.customer_address.ca_zip benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "ca_country",
+          "physicalName": "ca_country",
+          "businessName": "ca country",
+          "logicalType": "string",
+          "physicalType": "varchar(20)",
+          "required": false,
+          "description": "Native tpcds.tiny.customer_address.ca_country benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "ca_gmt_offset",
+          "physicalName": "ca_gmt_offset",
+          "businessName": "ca gmt offset",
+          "logicalType": "number",
+          "physicalType": "decimal(5,2)",
+          "required": false,
+          "description": "Native tpcds.tiny.customer_address.ca_gmt_offset benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "ca_location_type",
+          "physicalName": "ca_location_type",
+          "businessName": "ca location type",
+          "logicalType": "string",
+          "physicalType": "char(20)",
+          "required": false,
+          "description": "Native tpcds.tiny.customer_address.ca_location_type benchmark column; type and nullability captured from Trino information_schema."
+        }
+      ]
+    }
+  ],
+  "customProperties": [
+    {
+      "property": "benchmarkCatalog",
+      "value": "tpcds"
+    },
+    {
+      "property": "benchmarkSchema",
+      "value": "tiny"
+    },
+    {
+      "property": "synthetic",
+      "value": true
+    },
+    {
+      "property": "qualityRulesExecuted",
+      "value": false
+    }
+  ]
+}

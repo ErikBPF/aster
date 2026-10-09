@@ -1,0 +1,96 @@
+{
+  "apiVersion": "v3.2.0",
+  "kind": "DataContract",
+  "id": "aster-benchmark-tpch-partsupp",
+  "version": "0.1.0",
+  "name": "TPCH — partsupp",
+  "status": "draft",
+  "domain": "synthetic-benchmarks",
+  "tags": [
+    "tpch",
+    "tiny",
+    "synthetic"
+  ],
+  "description": {
+    "purpose": "Describe the native tpch.tiny.partsupp benchmark table for notebook exploration.",
+    "usage": "Interactive SQL and catalog/contract demonstrations on the isolated Build-host demo.",
+    "limitations": "Synthetic generated benchmark data, not production records. No business ownership, freshness SLA, monetary unit, key uniqueness or measured quality guarantee is asserted. Catalog context routes queries; it does not enforce SQL target authorization."
+  },
+  "team": {
+    "name": "Aster benchmark demo",
+    "description": "Demo stewardship label only. Actual access is controlled independently by current Authentik membership and server-managed grants."
+  },
+  "schema": [
+    {
+      "name": "partsupp",
+      "physicalName": "partsupp",
+      "businessName": "Partsupp",
+      "description": "Native TPCH tiny-scale partsupp relation. Schema is observed from the generator; business constraints are not inferred.",
+      "properties": [
+        {
+          "name": "partkey",
+          "physicalName": "partkey",
+          "businessName": "partkey",
+          "logicalType": "integer",
+          "physicalType": "bigint",
+          "required": true,
+          "description": "Native tpch.tiny.partsupp.partkey benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "suppkey",
+          "physicalName": "suppkey",
+          "businessName": "suppkey",
+          "logicalType": "integer",
+          "physicalType": "bigint",
+          "required": true,
+          "description": "Native tpch.tiny.partsupp.suppkey benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "availqty",
+          "physicalName": "availqty",
+          "businessName": "availqty",
+          "logicalType": "integer",
+          "physicalType": "integer",
+          "required": true,
+          "description": "Native tpch.tiny.partsupp.availqty benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "supplycost",
+          "physicalName": "supplycost",
+          "businessName": "supplycost",
+          "logicalType": "number",
+          "physicalType": "double",
+          "required": true,
+          "description": "Native tpch.tiny.partsupp.supplycost benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "comment",
+          "physicalName": "comment",
+          "businessName": "comment",
+          "logicalType": "string",
+          "physicalType": "varchar(199)",
+          "required": true,
+          "description": "Native tpch.tiny.partsupp.comment benchmark column; type and nullability captured from Trino information_schema."
+        }
+      ]
+    }
+  ],
+  "customProperties": [
+    {
+      "property": "benchmarkCatalog",
+      "value": "tpch"
+    },
+    {
+      "property": "benchmarkSchema",
+      "value": "tiny"
+    },
+    {
+      "property": "synthetic",
+      "value": true
+    },
+    {
+      "property": "qualityRulesExecuted",
+      "value": false
+    }
+  ]
+}

@@ -13,8 +13,8 @@ remote := "devenv shell --"
 container_engine := env_var_or_default("CONTAINER_ENGINE", `command -v podman >/dev/null 2>&1 && echo podman || echo docker`)
 chart := "charts/aster"
 
-# Local validation stack: minikube on build-host, driven by devspace (the pattern
-# example-airflow uses). Dev-only; platform-gitops stays the authoritative
+# Local validation stack: minikube on build-host, driven by devspace.
+# Dev-only; platform-gitops stays the authoritative
 # deployment for the shared cluster.
 minikube_profile := env_var_or_default("ASTER_MINIKUBE_PROFILE", "aster")
 kube_context := env_var_or_default("ASTER_KUBE_CONTEXT", "aster")
@@ -85,6 +85,142 @@ providers-check:
 
 ci: format-check lint test features repo-check providers-check
     @echo "CI GREEN (fmt + clippy + tests + features + repo + providers)"
+
+# Explicit context prevents the benchmark demo from changing a default cluster.
+benchmark-backend-up:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [[ "${ASTER_KUBE_CONTEXT:-}" == aster-demo ]] || { echo 'isolated demo context required' >&2; exit 1; }
+    kubeconform -strict -summary k8s/benchmark/trino.yaml
+    kubectl --context "$ASTER_KUBE_CONTEXT" -n aster apply -f k8s/benchmark/trino.yaml
+    kubectl --context "$ASTER_KUBE_CONTEXT" -n aster rollout restart deployment/benchmark-trino
+    kubectl --context "$ASTER_KUBE_CONTEXT" -n aster rollout status deployment/benchmark-trino --timeout=300s
+
+benchmark-bundle-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    python3 tests/benchmark-bundle.py contracts/benchmark-catalog
+    cargo test --locked -p aster-server --test benchmark_bundle
+
+benchmark-demo-e2e:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [[ $(hostname -s) == build-host ]] || { echo 'Build-host only' >&2; exit 1; }
+    python3 tests/benchmark-demo-browser.py
+
+trino-catalog-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo test --locked -p aster-catalogs --test trino_catalog
+    echo TRINO_CATALOG_OK
+
+trino-benchmark-live:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    : "${ASTER_BENCHMARK_TRINO:?set the isolated Trino endpoint}"
+    cargo test --locked -p aster-catalogs --test trino_benchmark_live -- --ignored
+    echo TRINO_BENCHMARK_LIVE_OK
+
+benchmark-ui-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    python3 tests/benchmark-ui-browser.py
+
+benchmark-notebooks-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo test --locked -p aster-server --test notebook_ownership
+    cargo test --locked -p aster-core --lib notebook::tests
+    echo BENCHMARK_NOTEBOOKS_OK
+
+# Existing isolated Authentik release only; registration contains no published secrets.
+benchmark-deploy digest:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [[ "${ASTER_KUBE_CONTEXT:-}" == aster-demo ]] || { echo 'isolated demo context required' >&2; exit 1; }
+    : "${ASTER_DEMO_REGISTRATION:?set the existing demo registration path}"
+    [[ '{{digest}}' =~ ^sha256:[0-9a-f]{64}$ ]]
+    just benchmark-bundle-check
+    plugins=$(mktemp -d)
+    trap 'rm -rf "$plugins"' EXIT
+    mkdir -p "$plugins/aster-benchmark"
+    chmod +x k8s/benchmark/post-render.py
+    cat > "$plugins/aster-benchmark/plugin.yaml" <<EOF
+    apiVersion: v1
+    type: postrenderer/v1
+    name: aster-benchmark
+    version: 0.1.0
+    runtime: subprocess
+    runtimeConfig:
+      platformCommand:
+        - command: {{root}}/k8s/benchmark/post-render.py
+    EOF
+    export HELM_PLUGINS="$plugins"
+    helm --kube-context "$ASTER_KUBE_CONTEXT" template aster charts/aster -n aster -f k8s/benchmark/values.yaml --set image.digest='{{digest}}' --post-renderer aster-benchmark | kubeconform -strict -summary
+    helm --kube-context "$ASTER_KUBE_CONTEXT" upgrade aster charts/aster -n aster -f k8s/benchmark/values.yaml --set image.digest='{{digest}}' --post-renderer aster-benchmark --wait --timeout 10m
+    kubectl --context "$ASTER_KUBE_CONTEXT" -n aster rollout status deployment/aster-server --timeout=300s
+
+# Pinned mock fixtures and table-granular admission; no deployment/Cube execution.
+odcs-mock-fixture-validation:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [[ "$(hostname -s)" == build-host ]] || { echo 'Build-host only' >&2; exit 1; }
+    python3 tests/odcs-offline-validation.py mock_catalog_bundle mock_bundle_covers_catalog_and_preserves_pinned_sources
+    cargo test --locked -p aster-server --test odcs_intake
+    cargo test --locked -p aster-server --test catalog_inventory mock_table_grants_do_not_disclose_siblings -- --exact
+
+odcs-catalog-quality-validation:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [[ $(hostname -s) == build-host ]] || { echo 'S6 verification requires Build-host' >&2; exit 1; }
+    adapters="$(mktemp)"
+    credentials="$(mktemp)"
+    bdd="$(mktemp)"
+    trap 'rm -f "$adapters" "$credentials" "$bdd"' EXIT
+    cargo test -p aster-catalogs --test catalog_quality 2>&1 | tee "$adapters"
+    cargo test -p aster-server --test catalog_credentials 2>&1 | tee "$credentials"
+    cargo test -p aster-server --test contracts -- --tags @odcs-s6-bound 2>&1 | tee "$bdd"
+    python3 tests/odcs-s6-report.py "$adapters" "$credentials" "$bdd"
+    just polaris-generic-adapter-validation
+    just providers-check
+    just catalog-routing-validation
+    # S5 transitively verifies S1/S2/S3/S7, full CI and isolated Compose cleanup.
+    just odcs-ai-context-validation
+    just odcs-compose-smoke s6
+    printf '%s\n' 'odcs-catalog-quality-validation OK'
+
+odcs-inventory-validation:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [[ $(hostname -s) == build-host ]] || { echo 'S8 verification requires Build-host' >&2; exit 1; }
+    rust="$(mktemp)"
+    bdd="$(mktemp)"
+    trap 'rm -f "$rust" "$bdd"' EXIT
+    cargo test -p aster-server --test catalog_inventory -- --list >"$rust"
+    for name in physical_inventory_admission unselected_inventory_context_is_not_disclosed inventory_unknown_and_unauthorized_are_indistinguishable inventory_uses_one_current_identity_snapshot inventory_nested_semantic_annotations_are_detected mock_table_grants_do_not_disclose_siblings; do grep -Fx "$name: test" "$rust"; done
+    cargo test -p aster-server --test catalog_inventory 2>&1 | tee "$rust"
+    cargo test -p aster-server --test contracts -- --tags @odcs-s8-bound 2>&1 | tee "$bdd"
+    python3 tests/odcs-s8-report.py "$rust" "$bdd"
+    just odcs-catalog-quality-validation
+    just odcs-compose-smoke s8
+    printf '%s\n' 'odcs-inventory-validation OK (query-target authorization not implemented)'
+
+odcs-ai-context-validation:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [[ $(hostname -s) == build-host ]] || { echo 'S5 verification requires Build-host' >&2; exit 1; }
+    rust="$(mktemp)"
+    bdd="$(mktemp)"
+    trap 'rm -f "$rust" "$bdd"' EXIT
+    bash tests/odcs-s5-postgres.sh cargo test -p aster-server --test odcs_ai_context -- --test-threads=1 2>&1 | tee "$rust"
+    cargo test -p aster-server --test contracts -- --tags @odcs-s5-bound 2>&1 | tee "$bdd"
+    python3 tests/odcs-s5-report.py "$rust" "$bdd"
+    just ai-registration-validation
+    just conversation-postgres
+    # S7 transitively runs conversation-browser, S3/S2/S1, full CI and their Compose controls.
+    just odcs-catalog-ui-validation
+    just odcs-compose-smoke s5
+    printf '%s\n' 'odcs-ai-context-validation OK'
 
 # Run the server on this host (the Keycloak recipe in the README needs it, since
 # the issuer the browser sees must be the one discovery returns).
@@ -373,6 +509,106 @@ catalog-routing-validation:
     echo 'catalog-routing-validation OK'
 
 # Protected bindings refuse shared-engine execution and privileged metadata.
+odcs-context-boundary-validation:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [[ "$(hostname)" == build-host ]] || { echo 'S1 builds require Build-host' >&2; exit 1; }
+    report="$(mktemp)"
+    trap 'rm -f "$report"' EXIT
+    cargo test -p aster-server --test ai_context_boundary -- --list >"$report"
+    for name in denied_metadata_never_reaches_helper mixed_unbound_catalogs_are_never_retrieved workspace_index_uses_admitted_snapshot; do
+      grep -Fx "$name: test" "$report"
+    done
+    cargo test -p aster-server --test ai_context_boundary 2>&1 | tee "$report"
+    grep -Eq '^test result: ok\. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in [0-9.]+s$' "$report"
+    cargo test -p aster-server --test contracts -- --tags @odcs-s1-bound 2>&1 | tee "$report"
+    python3 tests/odcs-s1-report.py "$report"
+    just backend-identity-validation
+    just notebook-isolation-validation
+    just ci
+    just odcs-compose-smoke s1
+    printf '%s\n' 'odcs-context-boundary-validation OK'
+
+odcs-compose-smoke slice:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [[ "$(hostname)" == build-host ]] || { echo 'S1 builds require Build-host' >&2; exit 1; }
+    python3 tests/odcs-compose-smoke.py '{{slice}}'
+
+# Approved narrow S4 original-source preview. No Cube/new-document acceptance.
+odcs-original-preview-validation:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [[ "$(hostname)" == build-host ]] || exit 1
+    rust="$(mktemp)"
+    bdd="$(mktemp)"
+    trap 'rm -f "$rust" "$bdd"' EXIT
+    cargo test -p aster-server --test odcs_preview 2>&1 | tee "$rust"
+    cargo test -p aster-server --test contracts -- --tags @odcs-s4-original-preview-bound 2>&1 | tee "$bdd"
+    python3 tests/odcs-s4-original-preview-report.py "$rust" "$bdd"
+    python3 tests/odcs-offline-validation.py odcs_preview full_document_preview_preserves_all_content
+    just odcs-resolution-validation
+    printf '%s\n' 'odcs-original-preview-validation OK (whole S4 pending Q4)'
+
+odcs-resolution-validation:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [[ "$(hostname)" == build-host ]] || exit 1
+    report="$(mktemp)"
+    trap 'rm -f "$report"' EXIT
+    cargo test -p aster-server --test odcs_resolution -- --list >"$report"
+    for name in whole_contract_team_access_is_default_deny query_preparation_exposes_selected_meaning_and_binding_gaps qualified_collision_and_multiobject_resolution drift_and_provenance_do_not_replace_observation contract_reads_do_not_require_live_schema contract_reads_with_denied_observation_make_zero_catalog_calls contract_revocation_stops_next_request_disclosure; do grep -Fx "$name: test" "$report"; done
+    cargo test -p aster-server --test odcs_resolution 2>&1 | tee "$report"
+    grep -F 'test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;' "$report"
+    cargo test -p aster-server --test contracts -- --tags @odcs-s3-bound 2>&1 | tee "$report"
+    python3 tests/odcs-s3-report.py "$report"
+    just catalog-routing-validation
+    just odcs-document-validation
+    just odcs-compose-smoke s3
+    printf '%s\n' 'odcs-resolution-validation OK'
+
+odcs-catalog-ui-validation:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [[ "$(hostname)" == build-host ]] || exit 1
+    report=$(mktemp)
+    trap 'rm -f "$report"' EXIT
+    cargo test -p aster-server --test odcs_catalog_view 2>&1 | tee "$report"
+    grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out' "$report"
+    cargo test -p aster-server --test contracts -- --tags @odcs-s7-bound 2>&1 | tee "$report"
+    python3 tests/odcs-s7-report.py "$report"
+    just conversation-browser
+    just odcs-resolution-validation
+    just odcs-compose-smoke s7
+    printf '%s\n' 'odcs-catalog-ui-validation OK'
+
+odcs-document-validation:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [[ "$(hostname)" == build-host ]] || exit 1
+    report="$(mktemp)"
+    trap 'rm -f "$report"' EXIT
+    cargo test -p aster-core --test odcs_documents -- --list >"$report"
+    for name in multiobject_roundtrip_preserves_identity invalid_version_and_legacy_are_distinct; do grep -Fx "$name: test" "$report"; done
+    cargo test -p aster-core --test odcs_documents 2>&1 | tee "$report"
+    grep -F 'test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;' "$report"
+    cargo test -p aster-server --test odcs_intake -- --list >"$report"
+    for name in compiled_bundle_requires_no_author_tree compiled_bundle_selection_and_pins_are_explicit offline_schema_validation_is_distinct_from_support schema_valid_v31_is_rejected_without_conversion intake_preservation_does_not_expand_legacy_disclosure namespace_segments_survive_adapter_boundaries; do grep -Fx "$name: test" "$report"; done
+    cargo test -p aster-server --test odcs_intake 2>&1 | tee "$report"
+    grep -F 'test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;' "$report"
+    cargo test -p aster-server --test contracts -- --tags @odcs-s2-bound 2>&1 | tee "$report"
+    python3 tests/odcs-s2-report.py "$report"
+    cargo test -p aster-server --test odcs_s2_rv -- --list >"$report"
+    for name in browser_namespace_links_roundtrip semantic_segments_only_are_faithful_or_refused opaque_provider_namespaces_roundtrip oversized_manifest_is_refused_before_parsing nonregular_and_oversized_inputs_are_bounded; do grep -Fx "$name: test" "$report"; done
+    cargo test -p aster-server --test odcs_s2_rv 2>&1 | tee "$report"
+    grep -F 'test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;' "$report"
+    python3 tests/odcs-offline-contract.py
+    python3 tests/odcs-offline-validation.py
+    just odcs-context-boundary-validation
+    just polaris-generic-adapter-validation
+    just odcs-compose-smoke s2
+    printf '%s\n' 'odcs-document-validation OK'
+
 backend-identity-validation:
     #!/usr/bin/env bash
     set -euo pipefail

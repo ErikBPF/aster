@@ -14,6 +14,7 @@ pub mod health;
 pub mod identity;
 pub mod llm;
 pub mod notebook;
+pub mod odcs;
 pub mod registry;
 pub mod secrets;
 pub mod semantic;

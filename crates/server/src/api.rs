@@ -72,7 +72,16 @@ async fn notebook_context(
     team: Option<&str>,
     workspace: Option<&str>,
     notebook: &str,
-) -> Result<Option<(Principal, String)>, ConnectError> {
+) -> Result<Option<(Principal, String, aster_core::Notebook)>, ConnectError> {
+    if team.is_none() && workspace.is_none() && state.local_notebooks_enabled() {
+        let principal = caller(state, ctx).await?;
+        authorize(&principal, aster_core::Action::ReadNotebook).map_err(connect_error)?;
+        state
+            .admit_notebook(notebook, &principal.subject)
+            .await
+            .map_err(connect_error)?;
+        return Ok(None);
+    }
     if state.team_workspaces.is_none() {
         if team.is_some() || workspace.is_some() {
             return Err(ConnectError::permission_denied(
@@ -105,6 +114,9 @@ async fn notebook_workspace(
     team: Option<&str>,
     workspace: Option<&str>,
 ) -> Result<Option<(Principal, Arc<crate::GitNotebookStore>)>, ConnectError> {
+    if team.is_none() && workspace.is_none() && state.local_notebooks_enabled() {
+        return Ok(None);
+    }
     let Some(workspaces) = state.team_workspaces.as_deref() else {
         if team.is_some() || workspace.is_some() {
             return Err(ConnectError::permission_denied(
@@ -176,11 +188,93 @@ fn to_cell(cell: &api::Cell) -> aster_core::Cell {
         id: cell.id.clone(),
         sql: cell.sql.clone(),
         engine: cell.engine.clone().map(EngineId::new),
+        metadata: Default::default(),
     }
 }
 
 #[allow(refining_impl_trait)]
 impl api::Aster for AsterApi {
+    async fn list_catalog_inventory(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, api::ListTablesRequest>,
+    ) -> ServiceResult<api::ContractReadResponse> {
+        let requested = request.to_owned_message();
+        let segments = aster_core::catalog::namespace_segments(
+            &requested.namespace,
+            &requested.namespace_segments,
+        )
+        .map_err(connect_error)?;
+        let context = crate::catalog_inventory::read(
+            &self.state,
+            ctx.headers(),
+            &requested.catalog,
+            &segments,
+        )
+        .await
+        .map_err(connect_error)?;
+        Ok(api::ContractReadResponse {
+            context_json: context.to_string(),
+            ..Default::default()
+        }
+        .into())
+    }
+    async fn prepare_contract_query(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, api::ContractSelection>,
+    ) -> ServiceResult<api::ContractReadResponse> {
+        let request = request.to_owned_message();
+        let value = crate::contract_reads::prepare(
+            &self.state,
+            ctx.headers(),
+            &request.path,
+            &request.sha256,
+            &request.object,
+        )
+        .await
+        .map_err(connect_error)?;
+        Ok(api::ContractReadResponse {
+            context_json: value.to_string(),
+            ..Default::default()
+        }
+        .into())
+    }
+    async fn list_contracts(
+        &self,
+        ctx: RequestContext,
+        _: ServiceRequest<'_, api::ListContractsRequest>,
+    ) -> ServiceResult<api::ContractReadResponse> {
+        let value = crate::contract_reads::read(&self.state, ctx.headers(), None)
+            .await
+            .map_err(connect_error)?;
+        Ok(api::ContractReadResponse {
+            context_json: value.to_string(),
+            ..Default::default()
+        }
+        .into())
+    }
+
+    async fn get_contract(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, api::ContractSelection>,
+    ) -> ServiceResult<api::ContractReadResponse> {
+        let request = request.to_owned_message();
+        let value = crate::contract_reads::read(
+            &self.state,
+            ctx.headers(),
+            Some((&request.path, &request.sha256)),
+        )
+        .await
+        .map_err(connect_error)?;
+        Ok(api::ContractReadResponse {
+            context_json: value.to_string(),
+            ..Default::default()
+        }
+        .into())
+    }
+
     async fn get_conversation(
         &self,
         ctx: RequestContext,
@@ -200,7 +294,7 @@ impl api::Aster for AsterApi {
                 "cell conversations are not available in team workspaces",
             ));
         }
-        let conversation = if let Some((principal, key)) = context {
+        let conversation = if let Some((principal, key, _)) = context {
             self.state
                 .conversations
                 .get(&principal.subject, &key)
@@ -217,6 +311,17 @@ impl api::Aster for AsterApi {
             .await
             .map_err(connect_error)?
         };
+        tokio::time::timeout(
+            crate::ai_context::DEADLINE,
+            crate::ai_context::history(&self.state, ctx.headers(), &conversation),
+        )
+        .await
+        .map_err(|_| {
+            ConnectError::permission_denied(
+                "conversation context unavailable; start a fresh conversation",
+            )
+        })?
+        .map_err(connect_error)?;
         Ok(to_conversation(conversation).into())
     }
 
@@ -237,7 +342,7 @@ impl api::Aster for AsterApi {
             &request.notebook,
         )
         .await?;
-        let principal = if let Some((principal, _)) = &context {
+        let principal = if let Some((principal, _, _)) = &context {
             principal.clone()
         } else {
             caller(&self.state, &ctx).await?
@@ -247,6 +352,13 @@ impl api::Aster for AsterApi {
                 "cell conversations are not available in team workspaces",
             ));
         }
+        let contract_selection = request.contract_selection.as_option().map(|selection| {
+            aster_core::conversation::ContractSelection {
+                path: selection.path.clone(),
+                sha256: selection.sha256.clone(),
+                object: selection.object.clone(),
+            }
+        });
         let turn = crate::conversations::Turn {
             notebook: &request.notebook,
             cell: request.cell.as_deref(),
@@ -254,10 +366,18 @@ impl api::Aster for AsterApi {
             prompt: &request.prompt,
             context: &request.context,
             expected,
+            contract_selection: contract_selection.as_ref(),
         };
-        let conversation = if let Some((_, key)) = context {
-            crate::conversations::send_scoped(&self.state, ctx.headers(), &principal, turn, &key)
-                .await
+        let conversation = if let Some((_, key, document)) = context {
+            crate::conversations::send_scoped(
+                &self.state,
+                ctx.headers(),
+                &principal,
+                turn,
+                &key,
+                &document,
+            )
+            .await
         } else {
             crate::conversations::send(&self.state, ctx.headers(), &principal, turn).await
         }
@@ -304,7 +424,7 @@ impl api::Aster for AsterApi {
     ) -> ServiceResult<api::NotebookHelper> {
         let request = request.to_owned_message();
         let notebook = request.notebook;
-        let helper = if let Some((principal, key)) = notebook_context(
+        let helper = if let Some((principal, key, _)) = notebook_context(
             &self.state,
             &ctx,
             request.team.as_deref(),
@@ -342,7 +462,7 @@ impl api::Aster for AsterApi {
             &requested.notebook,
         )
         .await?;
-        if let Some((principal, key)) = context {
+        if let Some((principal, key, _)) = context {
             crate::ai::choose_helper_scoped(
                 &self.state,
                 ctx.headers(),
@@ -415,7 +535,8 @@ impl api::Aster for AsterApi {
         authorize(&principal, aster_core::Action::ReadNotebook).map_err(connect_error)?;
         let mut catalogs = Vec::new();
         for catalog in self.state.catalogs.list() {
-            if !crate::catalog_metadata_visible(&self.state, &catalog.id().0) {
+            if !crate::catalog_inventory::visible(&self.state, ctx.headers(), &catalog.id().0).await
+            {
                 continue;
             }
             catalogs.push(api::Catalog {
@@ -441,25 +562,29 @@ impl api::Aster for AsterApi {
         authorize(&caller, aster_core::Action::ReadNotebook).map_err(connect_error)?;
         let requested = request.to_owned_message();
         crate::require_catalog_metadata(&self.state, &requested.catalog).map_err(connect_error)?;
-        let catalog = self
-            .state
-            .catalogs
-            .get(&aster_core::CatalogId::new(requested.catalog))
-            .ok_or_else(|| ConnectError::not_found("unknown catalog"))?;
-        let tables = catalog
-            .list_table_descriptors(&requested.namespace)
-            .await
-            .map_err(connect_error)?
-            .into_iter()
-            .map(|descriptor| api::TableDescriptor {
-                namespace: descriptor.table.namespace,
-                name: descriptor.table.name,
-                format: descriptor.format,
-                base_location: descriptor.base_location,
-                schema_available: Some(descriptor.schema_available),
-                ..Default::default()
-            })
-            .collect();
+        let tables = crate::catalog_inventory::tables(
+            &self.state,
+            ctx.headers(),
+            &requested.catalog,
+            &aster_core::catalog::namespace_segments(
+                &requested.namespace,
+                &requested.namespace_segments,
+            )
+            .map_err(connect_error)?,
+        )
+        .await
+        .map_err(connect_error)?
+        .into_iter()
+        .map(|descriptor| api::TableDescriptor {
+            namespace: descriptor.table.namespace,
+            namespace_segments: descriptor.table.namespace_segments,
+            name: descriptor.table.name,
+            format: descriptor.format,
+            base_location: descriptor.base_location,
+            schema_available: Some(descriptor.schema_available),
+            ..Default::default()
+        })
+        .collect();
         Ok(api::ListTablesResponse {
             tables,
             ..Default::default()
@@ -489,8 +614,7 @@ impl api::Aster for AsterApi {
             let caller = caller(&self.state, &ctx).await?;
             authorize(&caller, aster_core::Action::ReadNotebook).map_err(connect_error)?;
             self.state
-                .notebooks
-                .list(&caller.subject)
+                .owned_notebooks(&caller.subject)
                 .await
                 .map_err(connect_error)?
         };
@@ -520,7 +644,7 @@ impl api::Aster for AsterApi {
             let caller = caller(&self.state, &ctx).await?;
             authorize(&caller, aster_core::Action::ReadNotebook).map_err(connect_error)?;
             self.state
-                .notebook_snapshot(&requested.id)
+                .owned_notebook_snapshot(&requested.id, &caller.subject)
                 .await
                 .map_err(connect_error)?
         };
@@ -538,7 +662,7 @@ impl api::Aster for AsterApi {
         authorize(&caller, aster_core::Action::WriteNotebook).map_err(connect_error)?;
         let requested = request.to_owned_message();
         let message = requested.notebook.clone().into_option().unwrap_or_default();
-        let notebook = aster_core::Notebook {
+        let mut notebook = aster_core::Notebook {
             id: requested.id.clone(),
             title: message.title.clone(),
             cells: message.cells.iter().map(to_cell).collect(),
@@ -560,6 +684,20 @@ impl api::Aster for AsterApi {
                 ))
             }
         };
+        // The legacy RPC Cell has no metadata field. Preserve browser context
+        // for matching cells rather than silently deleting it on an RPC edit.
+        if matches!(expected, aster_core::NotebookPrecondition::Blob(_)) {
+            let previous = self
+                .state
+                .owned_notebook_snapshot(&requested.id, &caller.subject)
+                .await
+                .map_err(connect_error)?;
+            for cell in &mut notebook.cells {
+                if let Some(old) = previous.notebook.cells.iter().find(|old| old.id == cell.id) {
+                    cell.metadata = old.metadata.clone();
+                }
+            }
+        }
         let saved = self
             .state
             .save_notebook_owned(&notebook, &caller.subject, expected)
@@ -682,10 +820,34 @@ impl api::Aster for AsterApi {
             .ok_or_else(|| {
                 ConnectError::not_found(format!("unknown catalog: {}", requested.catalog))
             })?;
+        let segments = aster_core::catalog::namespace_segments(
+            &requested.namespace,
+            &requested.namespace_segments,
+        )
+        .map_err(connect_error)?;
+        // Existing emitters understand one unambiguous component, not structured SQL names.
+        let namespace = aster_core::catalog::legacy_namespace(&segments).map_err(connect_error)?;
         let table = aster_core::TableRef {
-            namespace: requested.namespace.clone(),
+            namespace_segments: segments,
+            namespace,
             name: requested.table.clone(),
         };
+        if self.state.compiled_contracts.is_some()
+            && !crate::catalog_inventory::tables(
+                &self.state,
+                ctx.headers(),
+                &requested.catalog,
+                &table.namespace_segments,
+            )
+            .await
+            .map_err(connect_error)?
+            .iter()
+            .any(|entry| entry.table.name == table.name)
+        {
+            return Err(ConnectError::permission_denied(
+                "table metadata unavailable",
+            ));
+        }
         let schema = catalog.table_schema(&table).await.map_err(connect_error)?;
         let contract = aster_core::for_table(&self.state.contracts, &table.name);
         let format = aster_core::semantic::format(&requested.target).map_err(connect_error)?;

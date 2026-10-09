@@ -1,12 +1,66 @@
 # Catalogs, compute and data access
 
 **Implemented:** Aster registers catalogs for metadata browsing and engines
-for query execution. A catalog page lists namespaces, tables and columns;
+for query execution. `/catalog` now has a physical inventory projection and a
+separately labelled authorized artifact/query-context section. With a compiled
+bundle, `/catalog/physical` redirects there; without one it retains legacy browse.
 `RunQuery` uses the engine selected in the cell or request only when a
 configured binding connects it to the selected browse catalog. Engine choices
 are filtered by that binding and the subject's app engine grant. Catalog browse
 ID, SQL catalog alias, warehouse name and object location are separate
 identifiers.
+
+### S8 configured physical inventory candidate
+
+`ListCatalogInventory` takes `catalog` and exact `namespaceSegments` and returns
+the inventory JSON in `contextJson`. Configure the server-owned regular file
+`schema-owners.json` beside the selected bundle manifest, independently of ODCS:
+
+```json
+{"formatVersion":1,"version":"owners-1","schemas":[
+  {"catalog":"mock-local","namespaceSegments":["aster_demo"],"team":"existing-team"}
+]}
+```
+
+The team must exist in the existing server team policy; membership comes from
+fresh verified identity, never request headers, old session groups or ODCS owner
+fields. One freshly resolved principal is shared by ownership and contract-grant
+checks within an inventory operation, including multi-schema page/namespace reads;
+the next operation refreshes it again. Configuration is reread per request
+(1 MiB, at most 128 schema mappings). Missing/malformed/duplicate/unknown mappings
+fail closed. An unknown schema and a configured unauthorized schema have the same
+status and undisclosed payload; global grant failures also have identical responses
+for those probes. Neither denial performs catalog IO. Treat the containing
+directory as trusted operator configuration, just like `grants.json`; artifact
+authors must not write these authority files. This file is versioned independently,
+not part of the publisher-controlled document or a new user-editable authority.
+
+Only owners can discover objects lacking an admitted contract. Other readers
+need an exact physical binding and fresh whole-contract team grant. A fresh
+complete descriptor listing proves current registration for that metadata request
+only: 10-second listing deadline, 4096 descriptors maximum, no stale positive cache.
+Polaris and fixture Mock support this proof; Cube/OpenMetadata index declarations
+do not, and return unknown rather than accessible objects. No rows are read.
+
+Physical `present`, contract `admitted`/`not_admitted`, and semantics
+`declared`/`not_declared`/`unknown` are independent. `not_admitted` intentionally
+does not reveal whether another team's hidden contract exists. Semantic detection
+covers `semanticType`/`transformLogic` through admitted ODCS nested `properties`,
+array `items`, and map `key`/`value` nodes. Annotation-shaped custom data is ignored.
+It does not ingest `semantics.yaml` or claim semantic completeness or execution.
+Unknown physical evidence yields no inventory entries. Legacy table-list responses
+cannot encode that distinction and return an error on unavailable evidence.
+
+Compiled-mode REST/RPC browse and table detail share this boundary. Unselected AI
+omits physical metadata, old catalog-only AI history refuses replay, and legacy
+completion offers keywords only. Artifact preview/preparation remains separately
+admitted and is not an assertion of physical accessibility.
+
+**Not enforced yet:** SQL/share contract coverage and view/join target resolution.
+`queryAuthorization: not_evaluated` is deliberate. No-bundle development browse
+retains its older policy and is not an r20 enforcement mode. Do not remove the
+bundle as a policy rollback. No live activation has occurred; independent S8 RV
+and the [execution receipt](plans/odcs-ai-catalog-rv.md) govern this candidate.
 
 `ASTER_CATALOG_BINDINGS` takes comma-separated
 `browse_catalog_id;engine_id;native_sql_catalog;unprotected|protected` entries.
@@ -24,9 +78,26 @@ A verified session can run protected Trino only when that engine has a
 token-file/CA-file delegation configuration and Trino authenticates the token,
 permits bounded impersonation and enforces table policy. Without that
 configuration Trino refuses; protected Spark still refuses.
-Unbound catalogs are hidden from browsing. With no bindings, loaded data
-contracts are also hidden from contract pages and AI context because they have
-no catalog-scoped access policy.
+Unbound catalogs are hidden from guarded browsing. With no bindings, the current
+coarse guard also hides legacy loaded contracts from contract pages and unselected AI.
+This is not whole-contract team authorization. S1 applies the global metadata
+guard and per-catalog admission to conversation grounding, with zero unbound reads;
+AI omits unadmitted contract summaries. The
+[S1 receipt](plans/odcs-ai-catalog-rv.md#s1-build-host-execution-receipt) records verified
+controls without relaxing the conservative protected-metadata policy.
+
+**Compiled contract path:** Physical inventory is the data-discovery surface;
+authorized artifacts and semantics provide declared query-building context,
+explicit bindings and drift comparisons. Existing teams
+receive whole-contract grants, default-deny. Observation access and execution
+retain independent checks, so an authorized artifact remains useful with inaccessible
+catalogs without becoming accessible physical inventory. Missing/ambiguous bindings
+stay visible rather than becoming guessed SQL.
+S3 read/preparation and S7 manual review are verified. S5's bounded selected AI
+candidate reuses their admission and binding rules; it labels optional observations
+unavailable when an adapter cannot guarantee bounded source reads. The
+[current plan and receipt](plans/odcs-ai-catalog-rv.md) distinguish verified scope
+from optional Cube/export scope and the separately blocked live-provider handoff.
 
 For the local stack, `k8s/stack/aster.yaml` registers Aster catalog ID
 `polaris`, Polaris warehouse `quickstart_catalog`, and engines `trino-gw` and
@@ -70,6 +141,59 @@ Git. `ASTER_DEFAULT_ENGINE` and `ASTER_DEFAULT_CATALOG` choose default IDs.
 The bare mock quickstart, Compose, Helm and local stack each declare a
 binding; an empty binding set refuses queries. Aster validates malformed,
 duplicate or unknown references at startup.
+
+### S6 catalog reliability candidate
+
+Polaris selects `metadata.schemas` by `current-schema-id`, not array order.
+Metadata versions 1–3 are supported for this schema projection. The explicit v1
+legacy path reads `metadata.schema` only when both modern fields are absent;
+missing, duplicate or unknown current IDs fail rather than returning stale fields.
+Ordinary namespace/table lists follow Iceberg `next-page-token` using `pageToken`.
+OpenMetadata follows `paging.after` using `after`, keeps `limit=200`, and URL-encodes
+database/schema filters. Missing OM namespace FQNs refuse rather than falling back
+to ambiguous short names. Opaque OpenMetadata names and structured Polaris namespace
+arrays remain distinct from their display labels. Generic browsing remains off.
+
+Each browse operation has a **4 MiB aggregate response-body budget, 64 HTTP reads
+and a 10-second deadline**, including Polaris OAuth and nested Generic Table loads.
+Limits and malformed/repeated/empty cursors fail the entire result. Responses are
+streamed within the byte budget, redirects are refused, HTTP failures remain errors,
+and diagnostics contain neither response bodies nor request URLs/tokens.
+
+The existing token/credential fields accept `secret://KEY` references. Server
+registration resolves only explicit references through the selected
+`ASTER_SECRET_STORE` (`env` by default); a missing reference refuses startup and
+never falls back to another provider. The controller uses its existing environment
+source through `EnvSecrets`. Resolved values enter only their configured adapter;
+the stored configuration retains the reference. Inline values remain compatible.
+Polaris supports an issued bearer token or OAuth `client_id:client_secret` (a
+ready token takes precedence). In the default Polaris environment configuration,
+`POLARIS_CLIENT_ID` and `POLARIS_CLIENT_SECRET` must both be absent or both be
+nonempty UTF-8 values; a partial pair refuses startup before catalog IO. Explicit
+`ASTER_CATALOGS` pool selection retains precedence over these defaults.
+Polaris health shares OAuth's remaining deadline and reads status only, without
+requiring a JSON health body. Cube and OpenMetadata use already-issued API/bot
+tokens, not signing secrets. No new credential store or token issuer is added.
+
+S5's caller-specific `table_schema_bounded` port remains explicitly unavailable for
+these three adapters: the browse ceiling is not an implementation of an arbitrary
+AI caller's smaller byte/read allowance. Both selected observation and legacy AI
+discovery omit them safely, with zero provider IO. The canonical S6 behavior does
+not require a new AI provider capability; authorized contract meaning still works.
+
+`just odcs-catalog-quality-validation` owns seven named fixture tests, one bound
+scenario/step, provider/routing/Generic regressions, S5's full transitive gate and
+isolated S6 Compose credential/startup controls. See the [RV receipt](plans/odcs-ai-catalog-rv.md)
+for the actual verification result. **Q6 live activation remains blocked** pending
+an explicitly authorized installation and target-specific machine credential;
+fixture GREEN does not prove live authorization, deployment or provider readiness.
+
+Protocol grounding: [Iceberg metadata and version rules](https://iceberg.apache.org/spec/),
+[Iceberg REST parameters](https://raw.githubusercontent.com/apache/iceberg/main/open-api/rest-catalog-open-api.yaml),
+[OpenMetadata table resource](https://raw.githubusercontent.com/open-metadata/OpenMetadata/main/openmetadata-service/src/main/java/org/openmetadata/service/resources/databases/TableResource.java),
+[Cube REST authentication](https://docs.cube.dev/reference/core-data-apis/rest-api)
+and its [authorization-header parser](https://raw.githubusercontent.com/cube-js/cube/master/packages/cubejs-api-gateway/src/gateway.ts).
+These were inspected on 2026-10-02; the fixture contract covers only the fields Aster reads.
 
 **Verified:** `just catalog-routing-validation` runs 11 bound in-process
 scenarios for REST/RPC admission, filtering, alias translation and refusal

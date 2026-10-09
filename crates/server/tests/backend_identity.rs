@@ -66,12 +66,14 @@ impl Catalog for CountingCatalog {
     async fn list_namespaces(&self) -> Result<Vec<Namespace>> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         Ok(vec![Namespace {
+            segments: Vec::new(),
             name: "secret_schema".into(),
         }])
     }
     async fn list_tables(&self, _: &str) -> Result<Vec<TableRef>> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         Ok(vec![TableRef {
+            namespace_segments: Vec::new(),
             namespace: "secret_schema".into(),
             name: "secret_table".into(),
         }])
@@ -174,6 +176,7 @@ fn fixture_with_sessions(
         shared_model_use_enabled: false,
         conversations: Arc::new(InMemoryConversations::default()),
         exchanges: Arc::new(InMemoryExchanges::default()),
+        compiled_contracts: None,
         contracts: Arc::new(if policy == "none" {
             vec![DataContract::parse(
                 "private",

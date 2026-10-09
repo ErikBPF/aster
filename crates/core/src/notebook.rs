@@ -12,6 +12,9 @@ pub struct Cell {
     pub sql: String,
     /// Engine chosen for this cell; `None` means the default engine.
     pub engine: Option<EngineId>,
+    /// Persisted client context, including catalog/schema selection.
+    #[serde(default)]
+    pub metadata: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -199,6 +202,10 @@ impl Notebook {
                 out.push_str(" engine=");
                 out.push_str(&engine.0);
             }
+            if !cell.metadata.is_empty() {
+                out.push_str(" metadata=");
+                out.push_str(&serde_json::Value::Object(cell.metadata.clone()).to_string());
+            }
             out.push('\n');
             for (index, line) in cell.sql.split('\n').enumerate() {
                 if index > 0 {
@@ -235,6 +242,14 @@ impl Notebook {
                 if let Some(cell) = current.take() {
                     cells.push(cell);
                 }
+                let (rest, metadata) = match rest.split_once(" metadata=") {
+                    Some((rest, metadata)) => (
+                        rest,
+                        serde_json::from_str(metadata)
+                            .map_err(|_| CoreError::Invalid("invalid cell metadata".into()))?,
+                    ),
+                    None => (rest, serde_json::Map::new()),
+                };
                 let mut parts = rest.split_whitespace();
                 let id = parts
                     .next()
@@ -247,6 +262,7 @@ impl Notebook {
                     id,
                     sql: String::new(),
                     engine,
+                    metadata,
                 });
                 saw_sql_line = false;
             } else if current.is_none() && line.starts_with(TITLE_PREFIX) {
@@ -288,14 +304,37 @@ mod tests {
                     id: "c1".into(),
                     sql: "SELECT 1".into(),
                     engine: Some(EngineId::new("trino-local")),
+                    metadata: Default::default(),
                 },
                 Cell {
                     id: "c2".into(),
                     sql: "SELECT\n  2".into(),
                     engine: None,
+                    metadata: Default::default(),
                 },
             ],
         }
+    }
+
+    #[test]
+    fn cell_metadata_survives_git_text_roundtrip() {
+        let document = serde_json::json!({"id":"bench", "title":"Benchmarks", "cells":[
+            {"id":"c1", "sql":"SELECT count(*) FROM nation", "engine":null,
+             "metadata":{"catalog_context":"tpch", "schema":"tiny", "other":{"false":false,"zero":0,"text":"a b\n☃"}}}
+        ]});
+        let notebook: Notebook = serde_json::from_value(document.clone()).unwrap();
+        let parsed = Notebook::from_text(&notebook.to_text()).unwrap();
+        assert_eq!(
+            serde_json::to_value(&parsed.cells[0]).unwrap()["metadata"],
+            document["cells"][0]["metadata"]
+        );
+        let legacy =
+            Notebook::from_text("# aster notebook v2\n# title: Old\n-- cell c1\nSELECT 1\n")
+                .unwrap();
+        assert_eq!(
+            serde_json::to_value(&legacy.cells[0]).unwrap()["metadata"],
+            serde_json::json!({})
+        );
     }
 
     #[test]

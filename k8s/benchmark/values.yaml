@@ -1,0 +1,23 @@
+# Image digest is supplied by benchmark-deploy after a checked build/import.
+image:
+  repository: aster-server
+  tag: local
+  pullPolicy: Never
+engines:
+  - {id: trino-local, kind: trino, endpoint: "http://benchmark-trino:8080", routingGroup: ""}
+catalogs:
+  - {id: tpch, kind: trino, endpoint: "http://benchmark-trino:8080", catalog: tpch}
+  - {id: tpcds, kind: trino, endpoint: "http://benchmark-trino:8080", catalog: tpcds}
+server:
+  catalogBindings: "tpch;trino-local;tpch;unprotected,tpcds;trino-local;tpcds;unprotected"
+  grants: "alice:trino-local"
+  identity:
+    kind: oidc
+    issuer: http://localhost:8081/application/o/aster/
+    clientId: aster
+    scopes: openid,profile,email,aster_identity
+    groupsClaim: groups
+    userUuidClaim: aster_user_uuid
+    redirectUri: http://localhost:8080/callback
+    adminGroup: aster-admins
+    editorGroup: aster-editors

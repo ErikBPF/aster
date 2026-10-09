@@ -1,0 +1,132 @@
+{
+  "apiVersion": "v3.2.0",
+  "kind": "DataContract",
+  "id": "aster-benchmark-tpcds-catalog_page",
+  "version": "0.1.0",
+  "name": "TPCDS — catalog page",
+  "status": "draft",
+  "domain": "synthetic-benchmarks",
+  "tags": [
+    "tpcds",
+    "tiny",
+    "synthetic"
+  ],
+  "description": {
+    "purpose": "Describe the native tpcds.tiny.catalog_page benchmark table for notebook exploration.",
+    "usage": "Interactive SQL and catalog/contract demonstrations on the isolated Build-host demo.",
+    "limitations": "Synthetic generated benchmark data, not production records. No business ownership, freshness SLA, monetary unit, key uniqueness or measured quality guarantee is asserted. Catalog context routes queries; it does not enforce SQL target authorization."
+  },
+  "team": {
+    "name": "Aster benchmark demo",
+    "description": "Demo stewardship label only. Actual access is controlled independently by current Authentik membership and server-managed grants."
+  },
+  "schema": [
+    {
+      "name": "catalog_page",
+      "physicalName": "catalog_page",
+      "businessName": "Catalog Page",
+      "description": "Native TPCDS tiny-scale catalog page relation. Schema is observed from the generator; business constraints are not inferred.",
+      "properties": [
+        {
+          "name": "cp_catalog_page_sk",
+          "physicalName": "cp_catalog_page_sk",
+          "businessName": "cp catalog page sk",
+          "logicalType": "integer",
+          "physicalType": "bigint",
+          "required": false,
+          "description": "Native tpcds.tiny.catalog_page.cp_catalog_page_sk benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cp_catalog_page_id",
+          "physicalName": "cp_catalog_page_id",
+          "businessName": "cp catalog page id",
+          "logicalType": "string",
+          "physicalType": "char(16)",
+          "required": false,
+          "description": "Native tpcds.tiny.catalog_page.cp_catalog_page_id benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cp_start_date_sk",
+          "physicalName": "cp_start_date_sk",
+          "businessName": "cp start date sk",
+          "logicalType": "integer",
+          "physicalType": "integer",
+          "required": false,
+          "description": "Native tpcds.tiny.catalog_page.cp_start_date_sk benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cp_end_date_sk",
+          "physicalName": "cp_end_date_sk",
+          "businessName": "cp end date sk",
+          "logicalType": "integer",
+          "physicalType": "integer",
+          "required": false,
+          "description": "Native tpcds.tiny.catalog_page.cp_end_date_sk benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cp_department",
+          "physicalName": "cp_department",
+          "businessName": "cp department",
+          "logicalType": "string",
+          "physicalType": "varchar(50)",
+          "required": false,
+          "description": "Native tpcds.tiny.catalog_page.cp_department benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cp_catalog_number",
+          "physicalName": "cp_catalog_number",
+          "businessName": "cp catalog number",
+          "logicalType": "integer",
+          "physicalType": "integer",
+          "required": false,
+          "description": "Native tpcds.tiny.catalog_page.cp_catalog_number benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cp_catalog_page_number",
+          "physicalName": "cp_catalog_page_number",
+          "businessName": "cp catalog page number",
+          "logicalType": "integer",
+          "physicalType": "integer",
+          "required": false,
+          "description": "Native tpcds.tiny.catalog_page.cp_catalog_page_number benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cp_description",
+          "physicalName": "cp_description",
+          "businessName": "cp description",
+          "logicalType": "string",
+          "physicalType": "varchar(100)",
+          "required": false,
+          "description": "Native tpcds.tiny.catalog_page.cp_description benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cp_type",
+          "physicalName": "cp_type",
+          "businessName": "cp type",
+          "logicalType": "string",
+          "physicalType": "varchar(100)",
+          "required": false,
+          "description": "Native tpcds.tiny.catalog_page.cp_type benchmark column; type and nullability captured from Trino information_schema."
+        }
+      ]
+    }
+  ],
+  "customProperties": [
+    {
+      "property": "benchmarkCatalog",
+      "value": "tpcds"
+    },
+    {
+      "property": "benchmarkSchema",
+      "value": "tiny"
+    },
+    {
+      "property": "synthetic",
+      "value": true
+    },
+    {
+      "property": "qualityRulesExecuted",
+      "value": false
+    }
+  ]
+}

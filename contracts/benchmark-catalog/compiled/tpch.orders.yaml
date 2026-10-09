@@ -1,0 +1,132 @@
+{
+  "apiVersion": "v3.2.0",
+  "kind": "DataContract",
+  "id": "aster-benchmark-tpch-orders",
+  "version": "0.1.0",
+  "name": "TPCH — orders",
+  "status": "draft",
+  "domain": "synthetic-benchmarks",
+  "tags": [
+    "tpch",
+    "tiny",
+    "synthetic"
+  ],
+  "description": {
+    "purpose": "Describe the native tpch.tiny.orders benchmark table for notebook exploration.",
+    "usage": "Interactive SQL and catalog/contract demonstrations on the isolated Build-host demo.",
+    "limitations": "Synthetic generated benchmark data, not production records. No business ownership, freshness SLA, monetary unit, key uniqueness or measured quality guarantee is asserted. Catalog context routes queries; it does not enforce SQL target authorization."
+  },
+  "team": {
+    "name": "Aster benchmark demo",
+    "description": "Demo stewardship label only. Actual access is controlled independently by current Authentik membership and server-managed grants."
+  },
+  "schema": [
+    {
+      "name": "orders",
+      "physicalName": "orders",
+      "businessName": "Orders",
+      "description": "Native TPCH tiny-scale orders relation. Schema is observed from the generator; business constraints are not inferred.",
+      "properties": [
+        {
+          "name": "orderkey",
+          "physicalName": "orderkey",
+          "businessName": "orderkey",
+          "logicalType": "integer",
+          "physicalType": "bigint",
+          "required": true,
+          "description": "Native tpch.tiny.orders.orderkey benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "custkey",
+          "physicalName": "custkey",
+          "businessName": "custkey",
+          "logicalType": "integer",
+          "physicalType": "bigint",
+          "required": true,
+          "description": "Native tpch.tiny.orders.custkey benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "orderstatus",
+          "physicalName": "orderstatus",
+          "businessName": "orderstatus",
+          "logicalType": "string",
+          "physicalType": "varchar(1)",
+          "required": true,
+          "description": "Native tpch.tiny.orders.orderstatus benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "totalprice",
+          "physicalName": "totalprice",
+          "businessName": "totalprice",
+          "logicalType": "number",
+          "physicalType": "double",
+          "required": true,
+          "description": "Native tpch.tiny.orders.totalprice benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "orderdate",
+          "physicalName": "orderdate",
+          "businessName": "orderdate",
+          "logicalType": "date",
+          "physicalType": "date",
+          "required": true,
+          "description": "Native tpch.tiny.orders.orderdate benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "orderpriority",
+          "physicalName": "orderpriority",
+          "businessName": "orderpriority",
+          "logicalType": "string",
+          "physicalType": "varchar(15)",
+          "required": true,
+          "description": "Native tpch.tiny.orders.orderpriority benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "clerk",
+          "physicalName": "clerk",
+          "businessName": "clerk",
+          "logicalType": "string",
+          "physicalType": "varchar(15)",
+          "required": true,
+          "description": "Native tpch.tiny.orders.clerk benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "shippriority",
+          "physicalName": "shippriority",
+          "businessName": "shippriority",
+          "logicalType": "integer",
+          "physicalType": "integer",
+          "required": true,
+          "description": "Native tpch.tiny.orders.shippriority benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "comment",
+          "physicalName": "comment",
+          "businessName": "comment",
+          "logicalType": "string",
+          "physicalType": "varchar(79)",
+          "required": true,
+          "description": "Native tpch.tiny.orders.comment benchmark column; type and nullability captured from Trino information_schema."
+        }
+      ]
+    }
+  ],
+  "customProperties": [
+    {
+      "property": "benchmarkCatalog",
+      "value": "tpch"
+    },
+    {
+      "property": "benchmarkSchema",
+      "value": "tiny"
+    },
+    {
+      "property": "synthetic",
+      "value": true
+    },
+    {
+      "property": "qualityRulesExecuted",
+      "value": false
+    }
+  ]
+}

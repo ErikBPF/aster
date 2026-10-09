@@ -1,0 +1,330 @@
+{
+  "apiVersion": "v3.2.0",
+  "kind": "DataContract",
+  "id": "aster-benchmark-tpcds-call_center",
+  "version": "0.1.0",
+  "name": "TPCDS — call center",
+  "status": "draft",
+  "domain": "synthetic-benchmarks",
+  "tags": [
+    "tpcds",
+    "tiny",
+    "synthetic"
+  ],
+  "description": {
+    "purpose": "Describe the native tpcds.tiny.call_center benchmark table for notebook exploration.",
+    "usage": "Interactive SQL and catalog/contract demonstrations on the isolated Build-host demo.",
+    "limitations": "Synthetic generated benchmark data, not production records. No business ownership, freshness SLA, monetary unit, key uniqueness or measured quality guarantee is asserted. Catalog context routes queries; it does not enforce SQL target authorization."
+  },
+  "team": {
+    "name": "Aster benchmark demo",
+    "description": "Demo stewardship label only. Actual access is controlled independently by current Authentik membership and server-managed grants."
+  },
+  "schema": [
+    {
+      "name": "call_center",
+      "physicalName": "call_center",
+      "businessName": "Call Center",
+      "description": "Native TPCDS tiny-scale call center relation. Schema is observed from the generator; business constraints are not inferred.",
+      "properties": [
+        {
+          "name": "cc_call_center_sk",
+          "physicalName": "cc_call_center_sk",
+          "businessName": "cc call center sk",
+          "logicalType": "integer",
+          "physicalType": "bigint",
+          "required": false,
+          "description": "Native tpcds.tiny.call_center.cc_call_center_sk benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cc_call_center_id",
+          "physicalName": "cc_call_center_id",
+          "businessName": "cc call center id",
+          "logicalType": "string",
+          "physicalType": "char(16)",
+          "required": false,
+          "description": "Native tpcds.tiny.call_center.cc_call_center_id benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cc_rec_start_date",
+          "physicalName": "cc_rec_start_date",
+          "businessName": "cc rec start date",
+          "logicalType": "date",
+          "physicalType": "date",
+          "required": false,
+          "description": "Native tpcds.tiny.call_center.cc_rec_start_date benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cc_rec_end_date",
+          "physicalName": "cc_rec_end_date",
+          "businessName": "cc rec end date",
+          "logicalType": "date",
+          "physicalType": "date",
+          "required": false,
+          "description": "Native tpcds.tiny.call_center.cc_rec_end_date benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cc_closed_date_sk",
+          "physicalName": "cc_closed_date_sk",
+          "businessName": "cc closed date sk",
+          "logicalType": "integer",
+          "physicalType": "integer",
+          "required": false,
+          "description": "Native tpcds.tiny.call_center.cc_closed_date_sk benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cc_open_date_sk",
+          "physicalName": "cc_open_date_sk",
+          "businessName": "cc open date sk",
+          "logicalType": "integer",
+          "physicalType": "integer",
+          "required": false,
+          "description": "Native tpcds.tiny.call_center.cc_open_date_sk benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cc_name",
+          "physicalName": "cc_name",
+          "businessName": "cc name",
+          "logicalType": "string",
+          "physicalType": "varchar(50)",
+          "required": false,
+          "description": "Native tpcds.tiny.call_center.cc_name benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cc_class",
+          "physicalName": "cc_class",
+          "businessName": "cc class",
+          "logicalType": "string",
+          "physicalType": "varchar(50)",
+          "required": false,
+          "description": "Native tpcds.tiny.call_center.cc_class benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cc_employees",
+          "physicalName": "cc_employees",
+          "businessName": "cc employees",
+          "logicalType": "integer",
+          "physicalType": "integer",
+          "required": false,
+          "description": "Native tpcds.tiny.call_center.cc_employees benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cc_sq_ft",
+          "physicalName": "cc_sq_ft",
+          "businessName": "cc sq ft",
+          "logicalType": "integer",
+          "physicalType": "integer",
+          "required": false,
+          "description": "Native tpcds.tiny.call_center.cc_sq_ft benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cc_hours",
+          "physicalName": "cc_hours",
+          "businessName": "cc hours",
+          "logicalType": "string",
+          "physicalType": "char(20)",
+          "required": false,
+          "description": "Native tpcds.tiny.call_center.cc_hours benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cc_manager",
+          "physicalName": "cc_manager",
+          "businessName": "cc manager",
+          "logicalType": "string",
+          "physicalType": "varchar(40)",
+          "required": false,
+          "description": "Native tpcds.tiny.call_center.cc_manager benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cc_mkt_id",
+          "physicalName": "cc_mkt_id",
+          "businessName": "cc mkt id",
+          "logicalType": "integer",
+          "physicalType": "integer",
+          "required": false,
+          "description": "Native tpcds.tiny.call_center.cc_mkt_id benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cc_mkt_class",
+          "physicalName": "cc_mkt_class",
+          "businessName": "cc mkt class",
+          "logicalType": "string",
+          "physicalType": "char(50)",
+          "required": false,
+          "description": "Native tpcds.tiny.call_center.cc_mkt_class benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cc_mkt_desc",
+          "physicalName": "cc_mkt_desc",
+          "businessName": "cc mkt desc",
+          "logicalType": "string",
+          "physicalType": "varchar(100)",
+          "required": false,
+          "description": "Native tpcds.tiny.call_center.cc_mkt_desc benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cc_market_manager",
+          "physicalName": "cc_market_manager",
+          "businessName": "cc market manager",
+          "logicalType": "string",
+          "physicalType": "varchar(40)",
+          "required": false,
+          "description": "Native tpcds.tiny.call_center.cc_market_manager benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cc_division",
+          "physicalName": "cc_division",
+          "businessName": "cc division",
+          "logicalType": "integer",
+          "physicalType": "integer",
+          "required": false,
+          "description": "Native tpcds.tiny.call_center.cc_division benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cc_division_name",
+          "physicalName": "cc_division_name",
+          "businessName": "cc division name",
+          "logicalType": "string",
+          "physicalType": "varchar(50)",
+          "required": false,
+          "description": "Native tpcds.tiny.call_center.cc_division_name benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cc_company",
+          "physicalName": "cc_company",
+          "businessName": "cc company",
+          "logicalType": "integer",
+          "physicalType": "integer",
+          "required": false,
+          "description": "Native tpcds.tiny.call_center.cc_company benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cc_company_name",
+          "physicalName": "cc_company_name",
+          "businessName": "cc company name",
+          "logicalType": "string",
+          "physicalType": "char(50)",
+          "required": false,
+          "description": "Native tpcds.tiny.call_center.cc_company_name benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cc_street_number",
+          "physicalName": "cc_street_number",
+          "businessName": "cc street number",
+          "logicalType": "string",
+          "physicalType": "char(10)",
+          "required": false,
+          "description": "Native tpcds.tiny.call_center.cc_street_number benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cc_street_name",
+          "physicalName": "cc_street_name",
+          "businessName": "cc street name",
+          "logicalType": "string",
+          "physicalType": "varchar(60)",
+          "required": false,
+          "description": "Native tpcds.tiny.call_center.cc_street_name benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cc_street_type",
+          "physicalName": "cc_street_type",
+          "businessName": "cc street type",
+          "logicalType": "string",
+          "physicalType": "char(15)",
+          "required": false,
+          "description": "Native tpcds.tiny.call_center.cc_street_type benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cc_suite_number",
+          "physicalName": "cc_suite_number",
+          "businessName": "cc suite number",
+          "logicalType": "string",
+          "physicalType": "char(10)",
+          "required": false,
+          "description": "Native tpcds.tiny.call_center.cc_suite_number benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cc_city",
+          "physicalName": "cc_city",
+          "businessName": "cc city",
+          "logicalType": "string",
+          "physicalType": "varchar(60)",
+          "required": false,
+          "description": "Native tpcds.tiny.call_center.cc_city benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cc_county",
+          "physicalName": "cc_county",
+          "businessName": "cc county",
+          "logicalType": "string",
+          "physicalType": "varchar(30)",
+          "required": false,
+          "description": "Native tpcds.tiny.call_center.cc_county benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cc_state",
+          "physicalName": "cc_state",
+          "businessName": "cc state",
+          "logicalType": "string",
+          "physicalType": "char(2)",
+          "required": false,
+          "description": "Native tpcds.tiny.call_center.cc_state benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cc_zip",
+          "physicalName": "cc_zip",
+          "businessName": "cc zip",
+          "logicalType": "string",
+          "physicalType": "char(10)",
+          "required": false,
+          "description": "Native tpcds.tiny.call_center.cc_zip benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cc_country",
+          "physicalName": "cc_country",
+          "businessName": "cc country",
+          "logicalType": "string",
+          "physicalType": "varchar(20)",
+          "required": false,
+          "description": "Native tpcds.tiny.call_center.cc_country benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cc_gmt_offset",
+          "physicalName": "cc_gmt_offset",
+          "businessName": "cc gmt offset",
+          "logicalType": "number",
+          "physicalType": "decimal(5,2)",
+          "required": false,
+          "description": "Native tpcds.tiny.call_center.cc_gmt_offset benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cc_tax_percentage",
+          "physicalName": "cc_tax_percentage",
+          "businessName": "cc tax percentage",
+          "logicalType": "number",
+          "physicalType": "decimal(5,2)",
+          "required": false,
+          "description": "Native tpcds.tiny.call_center.cc_tax_percentage benchmark column; type and nullability captured from Trino information_schema."
+        }
+      ]
+    }
+  ],
+  "customProperties": [
+    {
+      "property": "benchmarkCatalog",
+      "value": "tpcds"
+    },
+    {
+      "property": "benchmarkSchema",
+      "value": "tiny"
+    },
+    {
+      "property": "synthetic",
+      "value": true
+    },
+    {
+      "property": "qualityRulesExecuted",
+      "value": false
+    }
+  ]
+}

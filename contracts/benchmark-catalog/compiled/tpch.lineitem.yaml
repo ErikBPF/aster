@@ -1,0 +1,195 @@
+{
+  "apiVersion": "v3.2.0",
+  "kind": "DataContract",
+  "id": "aster-benchmark-tpch-lineitem",
+  "version": "0.1.0",
+  "name": "TPCH — lineitem",
+  "status": "draft",
+  "domain": "synthetic-benchmarks",
+  "tags": [
+    "tpch",
+    "tiny",
+    "synthetic"
+  ],
+  "description": {
+    "purpose": "Describe the native tpch.tiny.lineitem benchmark table for notebook exploration.",
+    "usage": "Interactive SQL and catalog/contract demonstrations on the isolated Build-host demo.",
+    "limitations": "Synthetic generated benchmark data, not production records. No business ownership, freshness SLA, monetary unit, key uniqueness or measured quality guarantee is asserted. Catalog context routes queries; it does not enforce SQL target authorization."
+  },
+  "team": {
+    "name": "Aster benchmark demo",
+    "description": "Demo stewardship label only. Actual access is controlled independently by current Authentik membership and server-managed grants."
+  },
+  "schema": [
+    {
+      "name": "lineitem",
+      "physicalName": "lineitem",
+      "businessName": "Lineitem",
+      "description": "Native TPCH tiny-scale lineitem relation. Schema is observed from the generator; business constraints are not inferred.",
+      "properties": [
+        {
+          "name": "orderkey",
+          "physicalName": "orderkey",
+          "businessName": "orderkey",
+          "logicalType": "integer",
+          "physicalType": "bigint",
+          "required": true,
+          "description": "Native tpch.tiny.lineitem.orderkey benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "partkey",
+          "physicalName": "partkey",
+          "businessName": "partkey",
+          "logicalType": "integer",
+          "physicalType": "bigint",
+          "required": true,
+          "description": "Native tpch.tiny.lineitem.partkey benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "suppkey",
+          "physicalName": "suppkey",
+          "businessName": "suppkey",
+          "logicalType": "integer",
+          "physicalType": "bigint",
+          "required": true,
+          "description": "Native tpch.tiny.lineitem.suppkey benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "linenumber",
+          "physicalName": "linenumber",
+          "businessName": "linenumber",
+          "logicalType": "integer",
+          "physicalType": "integer",
+          "required": true,
+          "description": "Native tpch.tiny.lineitem.linenumber benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "quantity",
+          "physicalName": "quantity",
+          "businessName": "quantity",
+          "logicalType": "number",
+          "physicalType": "double",
+          "required": true,
+          "description": "Native tpch.tiny.lineitem.quantity benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "extendedprice",
+          "physicalName": "extendedprice",
+          "businessName": "extendedprice",
+          "logicalType": "number",
+          "physicalType": "double",
+          "required": true,
+          "description": "Native tpch.tiny.lineitem.extendedprice benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "discount",
+          "physicalName": "discount",
+          "businessName": "discount",
+          "logicalType": "number",
+          "physicalType": "double",
+          "required": true,
+          "description": "Native tpch.tiny.lineitem.discount benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "tax",
+          "physicalName": "tax",
+          "businessName": "tax",
+          "logicalType": "number",
+          "physicalType": "double",
+          "required": true,
+          "description": "Native tpch.tiny.lineitem.tax benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "returnflag",
+          "physicalName": "returnflag",
+          "businessName": "returnflag",
+          "logicalType": "string",
+          "physicalType": "varchar(1)",
+          "required": true,
+          "description": "Native tpch.tiny.lineitem.returnflag benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "linestatus",
+          "physicalName": "linestatus",
+          "businessName": "linestatus",
+          "logicalType": "string",
+          "physicalType": "varchar(1)",
+          "required": true,
+          "description": "Native tpch.tiny.lineitem.linestatus benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "shipdate",
+          "physicalName": "shipdate",
+          "businessName": "shipdate",
+          "logicalType": "date",
+          "physicalType": "date",
+          "required": true,
+          "description": "Native tpch.tiny.lineitem.shipdate benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "commitdate",
+          "physicalName": "commitdate",
+          "businessName": "commitdate",
+          "logicalType": "date",
+          "physicalType": "date",
+          "required": true,
+          "description": "Native tpch.tiny.lineitem.commitdate benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "receiptdate",
+          "physicalName": "receiptdate",
+          "businessName": "receiptdate",
+          "logicalType": "date",
+          "physicalType": "date",
+          "required": true,
+          "description": "Native tpch.tiny.lineitem.receiptdate benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "shipinstruct",
+          "physicalName": "shipinstruct",
+          "businessName": "shipinstruct",
+          "logicalType": "string",
+          "physicalType": "varchar(25)",
+          "required": true,
+          "description": "Native tpch.tiny.lineitem.shipinstruct benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "shipmode",
+          "physicalName": "shipmode",
+          "businessName": "shipmode",
+          "logicalType": "string",
+          "physicalType": "varchar(10)",
+          "required": true,
+          "description": "Native tpch.tiny.lineitem.shipmode benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "comment",
+          "physicalName": "comment",
+          "businessName": "comment",
+          "logicalType": "string",
+          "physicalType": "varchar(44)",
+          "required": true,
+          "description": "Native tpch.tiny.lineitem.comment benchmark column; type and nullability captured from Trino information_schema."
+        }
+      ]
+    }
+  ],
+  "customProperties": [
+    {
+      "property": "benchmarkCatalog",
+      "value": "tpch"
+    },
+    {
+      "property": "benchmarkSchema",
+      "value": "tiny"
+    },
+    {
+      "property": "synthetic",
+      "value": true
+    },
+    {
+      "property": "qualityRulesExecuted",
+      "value": false
+    }
+  ]
+}

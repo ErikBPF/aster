@@ -385,3 +385,14 @@ table.res td.num { text-align: right; }
   max-height: 18rem;
   overflow-y: auto;
 }
+#contract-context pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+#contract-context select, #contract-draft { display: block; width: 100%; max-width: 100%; box-sizing: border-box; }
+#contract-context label { display: block; margin-top: 1rem; }
+#contract-details { white-space: normal; overflow-wrap: anywhere; }
+#contract-details dl { margin: .5rem 0; }
+#contract-details dt { font-weight: 600; color: var(--muted); }
+#contract-details dd { margin: .2rem 0 .75rem 1rem; }
+#contract-details ol { margin: .25rem 0; padding-left: 1.25rem; }
+#contract-details li { padding: .5rem 0; border-bottom: 1px solid var(--border); }
+.cell-head .select-wrap { min-width: 0; max-width: 100%; }
+.cell-head select { max-width: 100%; }

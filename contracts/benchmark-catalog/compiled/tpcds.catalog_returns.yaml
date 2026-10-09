@@ -1,0 +1,294 @@
+{
+  "apiVersion": "v3.2.0",
+  "kind": "DataContract",
+  "id": "aster-benchmark-tpcds-catalog_returns",
+  "version": "0.1.0",
+  "name": "TPCDS — catalog returns",
+  "status": "draft",
+  "domain": "synthetic-benchmarks",
+  "tags": [
+    "tpcds",
+    "tiny",
+    "synthetic"
+  ],
+  "description": {
+    "purpose": "Describe the native tpcds.tiny.catalog_returns benchmark table for notebook exploration.",
+    "usage": "Interactive SQL and catalog/contract demonstrations on the isolated Build-host demo.",
+    "limitations": "Synthetic generated benchmark data, not production records. No business ownership, freshness SLA, monetary unit, key uniqueness or measured quality guarantee is asserted. Catalog context routes queries; it does not enforce SQL target authorization."
+  },
+  "team": {
+    "name": "Aster benchmark demo",
+    "description": "Demo stewardship label only. Actual access is controlled independently by current Authentik membership and server-managed grants."
+  },
+  "schema": [
+    {
+      "name": "catalog_returns",
+      "physicalName": "catalog_returns",
+      "businessName": "Catalog Returns",
+      "description": "Native TPCDS tiny-scale catalog returns relation. Schema is observed from the generator; business constraints are not inferred.",
+      "properties": [
+        {
+          "name": "cr_returned_date_sk",
+          "physicalName": "cr_returned_date_sk",
+          "businessName": "cr returned date sk",
+          "logicalType": "integer",
+          "physicalType": "bigint",
+          "required": false,
+          "description": "Native tpcds.tiny.catalog_returns.cr_returned_date_sk benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cr_returned_time_sk",
+          "physicalName": "cr_returned_time_sk",
+          "businessName": "cr returned time sk",
+          "logicalType": "integer",
+          "physicalType": "bigint",
+          "required": false,
+          "description": "Native tpcds.tiny.catalog_returns.cr_returned_time_sk benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cr_item_sk",
+          "physicalName": "cr_item_sk",
+          "businessName": "cr item sk",
+          "logicalType": "integer",
+          "physicalType": "bigint",
+          "required": false,
+          "description": "Native tpcds.tiny.catalog_returns.cr_item_sk benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cr_refunded_customer_sk",
+          "physicalName": "cr_refunded_customer_sk",
+          "businessName": "cr refunded customer sk",
+          "logicalType": "integer",
+          "physicalType": "bigint",
+          "required": false,
+          "description": "Native tpcds.tiny.catalog_returns.cr_refunded_customer_sk benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cr_refunded_cdemo_sk",
+          "physicalName": "cr_refunded_cdemo_sk",
+          "businessName": "cr refunded cdemo sk",
+          "logicalType": "integer",
+          "physicalType": "bigint",
+          "required": false,
+          "description": "Native tpcds.tiny.catalog_returns.cr_refunded_cdemo_sk benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cr_refunded_hdemo_sk",
+          "physicalName": "cr_refunded_hdemo_sk",
+          "businessName": "cr refunded hdemo sk",
+          "logicalType": "integer",
+          "physicalType": "bigint",
+          "required": false,
+          "description": "Native tpcds.tiny.catalog_returns.cr_refunded_hdemo_sk benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cr_refunded_addr_sk",
+          "physicalName": "cr_refunded_addr_sk",
+          "businessName": "cr refunded addr sk",
+          "logicalType": "integer",
+          "physicalType": "bigint",
+          "required": false,
+          "description": "Native tpcds.tiny.catalog_returns.cr_refunded_addr_sk benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cr_returning_customer_sk",
+          "physicalName": "cr_returning_customer_sk",
+          "businessName": "cr returning customer sk",
+          "logicalType": "integer",
+          "physicalType": "bigint",
+          "required": false,
+          "description": "Native tpcds.tiny.catalog_returns.cr_returning_customer_sk benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cr_returning_cdemo_sk",
+          "physicalName": "cr_returning_cdemo_sk",
+          "businessName": "cr returning cdemo sk",
+          "logicalType": "integer",
+          "physicalType": "bigint",
+          "required": false,
+          "description": "Native tpcds.tiny.catalog_returns.cr_returning_cdemo_sk benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cr_returning_hdemo_sk",
+          "physicalName": "cr_returning_hdemo_sk",
+          "businessName": "cr returning hdemo sk",
+          "logicalType": "integer",
+          "physicalType": "bigint",
+          "required": false,
+          "description": "Native tpcds.tiny.catalog_returns.cr_returning_hdemo_sk benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cr_returning_addr_sk",
+          "physicalName": "cr_returning_addr_sk",
+          "businessName": "cr returning addr sk",
+          "logicalType": "integer",
+          "physicalType": "bigint",
+          "required": false,
+          "description": "Native tpcds.tiny.catalog_returns.cr_returning_addr_sk benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cr_call_center_sk",
+          "physicalName": "cr_call_center_sk",
+          "businessName": "cr call center sk",
+          "logicalType": "integer",
+          "physicalType": "bigint",
+          "required": false,
+          "description": "Native tpcds.tiny.catalog_returns.cr_call_center_sk benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cr_catalog_page_sk",
+          "physicalName": "cr_catalog_page_sk",
+          "businessName": "cr catalog page sk",
+          "logicalType": "integer",
+          "physicalType": "bigint",
+          "required": false,
+          "description": "Native tpcds.tiny.catalog_returns.cr_catalog_page_sk benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cr_ship_mode_sk",
+          "physicalName": "cr_ship_mode_sk",
+          "businessName": "cr ship mode sk",
+          "logicalType": "integer",
+          "physicalType": "bigint",
+          "required": false,
+          "description": "Native tpcds.tiny.catalog_returns.cr_ship_mode_sk benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cr_warehouse_sk",
+          "physicalName": "cr_warehouse_sk",
+          "businessName": "cr warehouse sk",
+          "logicalType": "integer",
+          "physicalType": "bigint",
+          "required": false,
+          "description": "Native tpcds.tiny.catalog_returns.cr_warehouse_sk benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cr_reason_sk",
+          "physicalName": "cr_reason_sk",
+          "businessName": "cr reason sk",
+          "logicalType": "integer",
+          "physicalType": "bigint",
+          "required": false,
+          "description": "Native tpcds.tiny.catalog_returns.cr_reason_sk benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cr_order_number",
+          "physicalName": "cr_order_number",
+          "businessName": "cr order number",
+          "logicalType": "integer",
+          "physicalType": "bigint",
+          "required": false,
+          "description": "Native tpcds.tiny.catalog_returns.cr_order_number benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cr_return_quantity",
+          "physicalName": "cr_return_quantity",
+          "businessName": "cr return quantity",
+          "logicalType": "integer",
+          "physicalType": "integer",
+          "required": false,
+          "description": "Native tpcds.tiny.catalog_returns.cr_return_quantity benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cr_return_amount",
+          "physicalName": "cr_return_amount",
+          "businessName": "cr return amount",
+          "logicalType": "number",
+          "physicalType": "decimal(7,2)",
+          "required": false,
+          "description": "Native tpcds.tiny.catalog_returns.cr_return_amount benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cr_return_tax",
+          "physicalName": "cr_return_tax",
+          "businessName": "cr return tax",
+          "logicalType": "number",
+          "physicalType": "decimal(7,2)",
+          "required": false,
+          "description": "Native tpcds.tiny.catalog_returns.cr_return_tax benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cr_return_amt_inc_tax",
+          "physicalName": "cr_return_amt_inc_tax",
+          "businessName": "cr return amt inc tax",
+          "logicalType": "number",
+          "physicalType": "decimal(7,2)",
+          "required": false,
+          "description": "Native tpcds.tiny.catalog_returns.cr_return_amt_inc_tax benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cr_fee",
+          "physicalName": "cr_fee",
+          "businessName": "cr fee",
+          "logicalType": "number",
+          "physicalType": "decimal(7,2)",
+          "required": false,
+          "description": "Native tpcds.tiny.catalog_returns.cr_fee benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cr_return_ship_cost",
+          "physicalName": "cr_return_ship_cost",
+          "businessName": "cr return ship cost",
+          "logicalType": "number",
+          "physicalType": "decimal(7,2)",
+          "required": false,
+          "description": "Native tpcds.tiny.catalog_returns.cr_return_ship_cost benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cr_refunded_cash",
+          "physicalName": "cr_refunded_cash",
+          "businessName": "cr refunded cash",
+          "logicalType": "number",
+          "physicalType": "decimal(7,2)",
+          "required": false,
+          "description": "Native tpcds.tiny.catalog_returns.cr_refunded_cash benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cr_reversed_charge",
+          "physicalName": "cr_reversed_charge",
+          "businessName": "cr reversed charge",
+          "logicalType": "number",
+          "physicalType": "decimal(7,2)",
+          "required": false,
+          "description": "Native tpcds.tiny.catalog_returns.cr_reversed_charge benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cr_store_credit",
+          "physicalName": "cr_store_credit",
+          "businessName": "cr store credit",
+          "logicalType": "number",
+          "physicalType": "decimal(7,2)",
+          "required": false,
+          "description": "Native tpcds.tiny.catalog_returns.cr_store_credit benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "cr_net_loss",
+          "physicalName": "cr_net_loss",
+          "businessName": "cr net loss",
+          "logicalType": "number",
+          "physicalType": "decimal(7,2)",
+          "required": false,
+          "description": "Native tpcds.tiny.catalog_returns.cr_net_loss benchmark column; type and nullability captured from Trino information_schema."
+        }
+      ]
+    }
+  ],
+  "customProperties": [
+    {
+      "property": "benchmarkCatalog",
+      "value": "tpcds"
+    },
+    {
+      "property": "benchmarkSchema",
+      "value": "tiny"
+    },
+    {
+      "property": "synthetic",
+      "value": true
+    },
+    {
+      "property": "qualityRulesExecuted",
+      "value": false
+    }
+  ]
+}

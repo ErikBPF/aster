@@ -1,0 +1,258 @@
+{
+  "apiVersion": "v3.2.0",
+  "kind": "DataContract",
+  "id": "aster-benchmark-tpcds-store_sales",
+  "version": "0.1.0",
+  "name": "TPCDS — store sales",
+  "status": "draft",
+  "domain": "synthetic-benchmarks",
+  "tags": [
+    "tpcds",
+    "tiny",
+    "synthetic"
+  ],
+  "description": {
+    "purpose": "Describe the native tpcds.tiny.store_sales benchmark table for notebook exploration.",
+    "usage": "Interactive SQL and catalog/contract demonstrations on the isolated Build-host demo.",
+    "limitations": "Synthetic generated benchmark data, not production records. No business ownership, freshness SLA, monetary unit, key uniqueness or measured quality guarantee is asserted. Catalog context routes queries; it does not enforce SQL target authorization."
+  },
+  "team": {
+    "name": "Aster benchmark demo",
+    "description": "Demo stewardship label only. Actual access is controlled independently by current Authentik membership and server-managed grants."
+  },
+  "schema": [
+    {
+      "name": "store_sales",
+      "physicalName": "store_sales",
+      "businessName": "Store Sales",
+      "description": "Native TPCDS tiny-scale store sales relation. Schema is observed from the generator; business constraints are not inferred.",
+      "properties": [
+        {
+          "name": "ss_sold_date_sk",
+          "physicalName": "ss_sold_date_sk",
+          "businessName": "ss sold date sk",
+          "logicalType": "integer",
+          "physicalType": "bigint",
+          "required": false,
+          "description": "Native tpcds.tiny.store_sales.ss_sold_date_sk benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "ss_sold_time_sk",
+          "physicalName": "ss_sold_time_sk",
+          "businessName": "ss sold time sk",
+          "logicalType": "integer",
+          "physicalType": "bigint",
+          "required": false,
+          "description": "Native tpcds.tiny.store_sales.ss_sold_time_sk benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "ss_item_sk",
+          "physicalName": "ss_item_sk",
+          "businessName": "ss item sk",
+          "logicalType": "integer",
+          "physicalType": "bigint",
+          "required": false,
+          "description": "Native tpcds.tiny.store_sales.ss_item_sk benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "ss_customer_sk",
+          "physicalName": "ss_customer_sk",
+          "businessName": "ss customer sk",
+          "logicalType": "integer",
+          "physicalType": "bigint",
+          "required": false,
+          "description": "Native tpcds.tiny.store_sales.ss_customer_sk benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "ss_cdemo_sk",
+          "physicalName": "ss_cdemo_sk",
+          "businessName": "ss cdemo sk",
+          "logicalType": "integer",
+          "physicalType": "bigint",
+          "required": false,
+          "description": "Native tpcds.tiny.store_sales.ss_cdemo_sk benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "ss_hdemo_sk",
+          "physicalName": "ss_hdemo_sk",
+          "businessName": "ss hdemo sk",
+          "logicalType": "integer",
+          "physicalType": "bigint",
+          "required": false,
+          "description": "Native tpcds.tiny.store_sales.ss_hdemo_sk benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "ss_addr_sk",
+          "physicalName": "ss_addr_sk",
+          "businessName": "ss addr sk",
+          "logicalType": "integer",
+          "physicalType": "bigint",
+          "required": false,
+          "description": "Native tpcds.tiny.store_sales.ss_addr_sk benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "ss_store_sk",
+          "physicalName": "ss_store_sk",
+          "businessName": "ss store sk",
+          "logicalType": "integer",
+          "physicalType": "bigint",
+          "required": false,
+          "description": "Native tpcds.tiny.store_sales.ss_store_sk benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "ss_promo_sk",
+          "physicalName": "ss_promo_sk",
+          "businessName": "ss promo sk",
+          "logicalType": "integer",
+          "physicalType": "bigint",
+          "required": false,
+          "description": "Native tpcds.tiny.store_sales.ss_promo_sk benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "ss_ticket_number",
+          "physicalName": "ss_ticket_number",
+          "businessName": "ss ticket number",
+          "logicalType": "integer",
+          "physicalType": "bigint",
+          "required": false,
+          "description": "Native tpcds.tiny.store_sales.ss_ticket_number benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "ss_quantity",
+          "physicalName": "ss_quantity",
+          "businessName": "ss quantity",
+          "logicalType": "integer",
+          "physicalType": "integer",
+          "required": false,
+          "description": "Native tpcds.tiny.store_sales.ss_quantity benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "ss_wholesale_cost",
+          "physicalName": "ss_wholesale_cost",
+          "businessName": "ss wholesale cost",
+          "logicalType": "number",
+          "physicalType": "decimal(7,2)",
+          "required": false,
+          "description": "Native tpcds.tiny.store_sales.ss_wholesale_cost benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "ss_list_price",
+          "physicalName": "ss_list_price",
+          "businessName": "ss list price",
+          "logicalType": "number",
+          "physicalType": "decimal(7,2)",
+          "required": false,
+          "description": "Native tpcds.tiny.store_sales.ss_list_price benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "ss_sales_price",
+          "physicalName": "ss_sales_price",
+          "businessName": "ss sales price",
+          "logicalType": "number",
+          "physicalType": "decimal(7,2)",
+          "required": false,
+          "description": "Native tpcds.tiny.store_sales.ss_sales_price benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "ss_ext_discount_amt",
+          "physicalName": "ss_ext_discount_amt",
+          "businessName": "ss ext discount amt",
+          "logicalType": "number",
+          "physicalType": "decimal(7,2)",
+          "required": false,
+          "description": "Native tpcds.tiny.store_sales.ss_ext_discount_amt benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "ss_ext_sales_price",
+          "physicalName": "ss_ext_sales_price",
+          "businessName": "ss ext sales price",
+          "logicalType": "number",
+          "physicalType": "decimal(7,2)",
+          "required": false,
+          "description": "Native tpcds.tiny.store_sales.ss_ext_sales_price benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "ss_ext_wholesale_cost",
+          "physicalName": "ss_ext_wholesale_cost",
+          "businessName": "ss ext wholesale cost",
+          "logicalType": "number",
+          "physicalType": "decimal(7,2)",
+          "required": false,
+          "description": "Native tpcds.tiny.store_sales.ss_ext_wholesale_cost benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "ss_ext_list_price",
+          "physicalName": "ss_ext_list_price",
+          "businessName": "ss ext list price",
+          "logicalType": "number",
+          "physicalType": "decimal(7,2)",
+          "required": false,
+          "description": "Native tpcds.tiny.store_sales.ss_ext_list_price benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "ss_ext_tax",
+          "physicalName": "ss_ext_tax",
+          "businessName": "ss ext tax",
+          "logicalType": "number",
+          "physicalType": "decimal(7,2)",
+          "required": false,
+          "description": "Native tpcds.tiny.store_sales.ss_ext_tax benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "ss_coupon_amt",
+          "physicalName": "ss_coupon_amt",
+          "businessName": "ss coupon amt",
+          "logicalType": "number",
+          "physicalType": "decimal(7,2)",
+          "required": false,
+          "description": "Native tpcds.tiny.store_sales.ss_coupon_amt benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "ss_net_paid",
+          "physicalName": "ss_net_paid",
+          "businessName": "ss net paid",
+          "logicalType": "number",
+          "physicalType": "decimal(7,2)",
+          "required": false,
+          "description": "Native tpcds.tiny.store_sales.ss_net_paid benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "ss_net_paid_inc_tax",
+          "physicalName": "ss_net_paid_inc_tax",
+          "businessName": "ss net paid inc tax",
+          "logicalType": "number",
+          "physicalType": "decimal(7,2)",
+          "required": false,
+          "description": "Native tpcds.tiny.store_sales.ss_net_paid_inc_tax benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "ss_net_profit",
+          "physicalName": "ss_net_profit",
+          "businessName": "ss net profit",
+          "logicalType": "number",
+          "physicalType": "decimal(7,2)",
+          "required": false,
+          "description": "Native tpcds.tiny.store_sales.ss_net_profit benchmark column; type and nullability captured from Trino information_schema."
+        }
+      ]
+    }
+  ],
+  "customProperties": [
+    {
+      "property": "benchmarkCatalog",
+      "value": "tpcds"
+    },
+    {
+      "property": "benchmarkSchema",
+      "value": "tiny"
+    },
+    {
+      "property": "synthetic",
+      "value": true
+    },
+    {
+      "property": "qualityRulesExecuted",
+      "value": false
+    }
+  ]
+}

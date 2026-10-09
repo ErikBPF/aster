@@ -16,7 +16,8 @@ use crate::{Result, Role};
 pub struct IdentityHandshake {
     /// Where to send the browser.
     pub url: String,
-    /// Anti-CSRF state parameter; also the handshake store key.
+    /// Unpredictable, per-attempt anti-CSRF state; also the handshake store key.
+    /// The callback must bind it to the initiating browser before redemption.
     pub state: String,
     /// OIDC nonce, echoed inside the ID token.
     pub nonce: String,
@@ -62,6 +63,12 @@ pub trait CurrentIdentityProvider: Send + Sync {
 pub trait IdentityProvider: Send + Sync {
     /// Provider kind, for logs and the provider matrix.
     fn kind(&self) -> &'static str;
+
+    /// Trusted relying-party callback configuration, never a request header.
+    /// Unknown locations require secure browser cookies.
+    fn callback_uri(&self) -> Option<&str> {
+        None
+    }
 
     /// Start an authorization-code flow with PKCE.
     async fn begin(&self) -> Result<IdentityHandshake>;

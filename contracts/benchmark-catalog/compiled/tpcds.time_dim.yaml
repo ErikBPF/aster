@@ -1,0 +1,141 @@
+{
+  "apiVersion": "v3.2.0",
+  "kind": "DataContract",
+  "id": "aster-benchmark-tpcds-time_dim",
+  "version": "0.1.0",
+  "name": "TPCDS — time dim",
+  "status": "draft",
+  "domain": "synthetic-benchmarks",
+  "tags": [
+    "tpcds",
+    "tiny",
+    "synthetic"
+  ],
+  "description": {
+    "purpose": "Describe the native tpcds.tiny.time_dim benchmark table for notebook exploration.",
+    "usage": "Interactive SQL and catalog/contract demonstrations on the isolated Build-host demo.",
+    "limitations": "Synthetic generated benchmark data, not production records. No business ownership, freshness SLA, monetary unit, key uniqueness or measured quality guarantee is asserted. Catalog context routes queries; it does not enforce SQL target authorization."
+  },
+  "team": {
+    "name": "Aster benchmark demo",
+    "description": "Demo stewardship label only. Actual access is controlled independently by current Authentik membership and server-managed grants."
+  },
+  "schema": [
+    {
+      "name": "time_dim",
+      "physicalName": "time_dim",
+      "businessName": "Time Dim",
+      "description": "Native TPCDS tiny-scale time dim relation. Schema is observed from the generator; business constraints are not inferred.",
+      "properties": [
+        {
+          "name": "t_time_sk",
+          "physicalName": "t_time_sk",
+          "businessName": "t time sk",
+          "logicalType": "integer",
+          "physicalType": "bigint",
+          "required": false,
+          "description": "Native tpcds.tiny.time_dim.t_time_sk benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "t_time_id",
+          "physicalName": "t_time_id",
+          "businessName": "t time id",
+          "logicalType": "string",
+          "physicalType": "char(16)",
+          "required": false,
+          "description": "Native tpcds.tiny.time_dim.t_time_id benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "t_time",
+          "physicalName": "t_time",
+          "businessName": "t time",
+          "logicalType": "integer",
+          "physicalType": "integer",
+          "required": false,
+          "description": "Native tpcds.tiny.time_dim.t_time benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "t_hour",
+          "physicalName": "t_hour",
+          "businessName": "t hour",
+          "logicalType": "integer",
+          "physicalType": "integer",
+          "required": false,
+          "description": "Native tpcds.tiny.time_dim.t_hour benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "t_minute",
+          "physicalName": "t_minute",
+          "businessName": "t minute",
+          "logicalType": "integer",
+          "physicalType": "integer",
+          "required": false,
+          "description": "Native tpcds.tiny.time_dim.t_minute benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "t_second",
+          "physicalName": "t_second",
+          "businessName": "t second",
+          "logicalType": "integer",
+          "physicalType": "integer",
+          "required": false,
+          "description": "Native tpcds.tiny.time_dim.t_second benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "t_am_pm",
+          "physicalName": "t_am_pm",
+          "businessName": "t am pm",
+          "logicalType": "string",
+          "physicalType": "char(2)",
+          "required": false,
+          "description": "Native tpcds.tiny.time_dim.t_am_pm benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "t_shift",
+          "physicalName": "t_shift",
+          "businessName": "t shift",
+          "logicalType": "string",
+          "physicalType": "char(20)",
+          "required": false,
+          "description": "Native tpcds.tiny.time_dim.t_shift benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "t_sub_shift",
+          "physicalName": "t_sub_shift",
+          "businessName": "t sub shift",
+          "logicalType": "string",
+          "physicalType": "char(20)",
+          "required": false,
+          "description": "Native tpcds.tiny.time_dim.t_sub_shift benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "t_meal_time",
+          "physicalName": "t_meal_time",
+          "businessName": "t meal time",
+          "logicalType": "string",
+          "physicalType": "char(20)",
+          "required": false,
+          "description": "Native tpcds.tiny.time_dim.t_meal_time benchmark column; type and nullability captured from Trino information_schema."
+        }
+      ]
+    }
+  ],
+  "customProperties": [
+    {
+      "property": "benchmarkCatalog",
+      "value": "tpcds"
+    },
+    {
+      "property": "benchmarkSchema",
+      "value": "tiny"
+    },
+    {
+      "property": "synthetic",
+      "value": true
+    },
+    {
+      "property": "qualityRulesExecuted",
+      "value": false
+    }
+  ]
+}

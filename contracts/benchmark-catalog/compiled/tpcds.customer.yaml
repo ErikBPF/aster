@@ -1,0 +1,213 @@
+{
+  "apiVersion": "v3.2.0",
+  "kind": "DataContract",
+  "id": "aster-benchmark-tpcds-customer",
+  "version": "0.1.0",
+  "name": "TPCDS — customer",
+  "status": "draft",
+  "domain": "synthetic-benchmarks",
+  "tags": [
+    "tpcds",
+    "tiny",
+    "synthetic"
+  ],
+  "description": {
+    "purpose": "Describe the native tpcds.tiny.customer benchmark table for notebook exploration.",
+    "usage": "Interactive SQL and catalog/contract demonstrations on the isolated Build-host demo.",
+    "limitations": "Synthetic generated benchmark data, not production records. No business ownership, freshness SLA, monetary unit, key uniqueness or measured quality guarantee is asserted. Catalog context routes queries; it does not enforce SQL target authorization."
+  },
+  "team": {
+    "name": "Aster benchmark demo",
+    "description": "Demo stewardship label only. Actual access is controlled independently by current Authentik membership and server-managed grants."
+  },
+  "schema": [
+    {
+      "name": "customer",
+      "physicalName": "customer",
+      "businessName": "Customer",
+      "description": "Native TPCDS tiny-scale customer relation. Schema is observed from the generator; business constraints are not inferred.",
+      "properties": [
+        {
+          "name": "c_customer_sk",
+          "physicalName": "c_customer_sk",
+          "businessName": "c customer sk",
+          "logicalType": "integer",
+          "physicalType": "bigint",
+          "required": false,
+          "description": "Native tpcds.tiny.customer.c_customer_sk benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "c_customer_id",
+          "physicalName": "c_customer_id",
+          "businessName": "c customer id",
+          "logicalType": "string",
+          "physicalType": "char(16)",
+          "required": false,
+          "description": "Native tpcds.tiny.customer.c_customer_id benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "c_current_cdemo_sk",
+          "physicalName": "c_current_cdemo_sk",
+          "businessName": "c current cdemo sk",
+          "logicalType": "integer",
+          "physicalType": "bigint",
+          "required": false,
+          "description": "Native tpcds.tiny.customer.c_current_cdemo_sk benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "c_current_hdemo_sk",
+          "physicalName": "c_current_hdemo_sk",
+          "businessName": "c current hdemo sk",
+          "logicalType": "integer",
+          "physicalType": "bigint",
+          "required": false,
+          "description": "Native tpcds.tiny.customer.c_current_hdemo_sk benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "c_current_addr_sk",
+          "physicalName": "c_current_addr_sk",
+          "businessName": "c current addr sk",
+          "logicalType": "integer",
+          "physicalType": "bigint",
+          "required": false,
+          "description": "Native tpcds.tiny.customer.c_current_addr_sk benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "c_first_shipto_date_sk",
+          "physicalName": "c_first_shipto_date_sk",
+          "businessName": "c first shipto date sk",
+          "logicalType": "integer",
+          "physicalType": "bigint",
+          "required": false,
+          "description": "Native tpcds.tiny.customer.c_first_shipto_date_sk benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "c_first_sales_date_sk",
+          "physicalName": "c_first_sales_date_sk",
+          "businessName": "c first sales date sk",
+          "logicalType": "integer",
+          "physicalType": "bigint",
+          "required": false,
+          "description": "Native tpcds.tiny.customer.c_first_sales_date_sk benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "c_salutation",
+          "physicalName": "c_salutation",
+          "businessName": "c salutation",
+          "logicalType": "string",
+          "physicalType": "char(10)",
+          "required": false,
+          "description": "Native tpcds.tiny.customer.c_salutation benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "c_first_name",
+          "physicalName": "c_first_name",
+          "businessName": "c first name",
+          "logicalType": "string",
+          "physicalType": "char(20)",
+          "required": false,
+          "description": "Native tpcds.tiny.customer.c_first_name benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "c_last_name",
+          "physicalName": "c_last_name",
+          "businessName": "c last name",
+          "logicalType": "string",
+          "physicalType": "char(30)",
+          "required": false,
+          "description": "Native tpcds.tiny.customer.c_last_name benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "c_preferred_cust_flag",
+          "physicalName": "c_preferred_cust_flag",
+          "businessName": "c preferred cust flag",
+          "logicalType": "string",
+          "physicalType": "char(1)",
+          "required": false,
+          "description": "Native tpcds.tiny.customer.c_preferred_cust_flag benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "c_birth_day",
+          "physicalName": "c_birth_day",
+          "businessName": "c birth day",
+          "logicalType": "integer",
+          "physicalType": "integer",
+          "required": false,
+          "description": "Native tpcds.tiny.customer.c_birth_day benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "c_birth_month",
+          "physicalName": "c_birth_month",
+          "businessName": "c birth month",
+          "logicalType": "integer",
+          "physicalType": "integer",
+          "required": false,
+          "description": "Native tpcds.tiny.customer.c_birth_month benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "c_birth_year",
+          "physicalName": "c_birth_year",
+          "businessName": "c birth year",
+          "logicalType": "integer",
+          "physicalType": "integer",
+          "required": false,
+          "description": "Native tpcds.tiny.customer.c_birth_year benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "c_birth_country",
+          "physicalName": "c_birth_country",
+          "businessName": "c birth country",
+          "logicalType": "string",
+          "physicalType": "varchar(20)",
+          "required": false,
+          "description": "Native tpcds.tiny.customer.c_birth_country benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "c_login",
+          "physicalName": "c_login",
+          "businessName": "c login",
+          "logicalType": "string",
+          "physicalType": "char(13)",
+          "required": false,
+          "description": "Native tpcds.tiny.customer.c_login benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "c_email_address",
+          "physicalName": "c_email_address",
+          "businessName": "c email address",
+          "logicalType": "string",
+          "physicalType": "char(50)",
+          "required": false,
+          "description": "Native tpcds.tiny.customer.c_email_address benchmark column; type and nullability captured from Trino information_schema."
+        },
+        {
+          "name": "c_last_review_date_sk",
+          "physicalName": "c_last_review_date_sk",
+          "businessName": "c last review date sk",
+          "logicalType": "integer",
+          "physicalType": "bigint",
+          "required": false,
+          "description": "Native tpcds.tiny.customer.c_last_review_date_sk benchmark column; type and nullability captured from Trino information_schema."
+        }
+      ]
+    }
+  ],
+  "customProperties": [
+    {
+      "property": "benchmarkCatalog",
+      "value": "tpcds"
+    },
+    {
+      "property": "benchmarkSchema",
+      "value": "tiny"
+    },
+    {
+      "property": "synthetic",
+      "value": true
+    },
+    {
+      "property": "qualityRulesExecuted",
+      "value": false
+    }
+  ]
+}

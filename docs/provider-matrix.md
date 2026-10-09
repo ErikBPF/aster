@@ -13,13 +13,13 @@ must exist, and every selection site must refuse unknown names.
 | Domain | Trait | Providers | Selected by | Contract |
 |---|---|---|---|---|
 | Query engine | `QueryEngine` (`crates/core/src/engine.rs`) | `trino`, `spark` (Spark Connect), `starrocks` (stub) | `engine_from_config` on the `kind` field of `ASTER_ENGINES`; protected Trino additionally needs token-file/CA-file paths and a protected catalog binding | `crates/engines/features/engine-pool.feature`; live `tests/trino-data-policy.py` gate |
-| Catalog | `Catalog` (`crates/core/src/catalog.rs`) | `polaris`, `cube` (semantic layer, read-only), `openmetadata` (metadata source, read-only), `nessie` (stub), `unity` (stub), `mock` (demo) | `catalog_from_config` on the `kind` field of `ASTER_CATALOGS`; `catalog` carries the warehouse/prefix, the Cube base path, or the OpenMetadata database filter | `crates/catalogs/features/polaris-catalog.feature`, `crates/catalogs/features/cube-catalog.feature`, `crates/catalogs/features/openmetadata-catalog.feature` |
+| Catalog | `Catalog` (`crates/core/src/catalog.rs`) | `polaris`, `trino` (native metadata), `cube` (semantic layer, read-only), `openmetadata` (metadata source, read-only), `nessie` (stub), `unity` (stub), `mock` (demo) | `catalog_from_config` on the `kind` field of `ASTER_CATALOGS`; `catalog` carries the warehouse/prefix, exact Trino catalog alias (required), Cube base path, or OpenMetadata database filter | `crates/catalogs/features/polaris-catalog.feature`, `crates/catalogs/features/trino-catalog.feature`, `crates/catalogs/features/cube-catalog.feature`, `crates/catalogs/features/openmetadata-catalog.feature` |
 | Notebook store | `NotebookStore` (`crates/core/src/notebook.rs`) | `git` | `providers::notebooks` on `ASTER_NOTEBOOK_STORE` | `crates/server/features/notebooks.feature` |
 | Notebook ownership | `NotebookOwners` (`crates/core/src/notebook.rs`) | `postgres`, `memory` | `providers::metadata` on `ASTER_METADATA_STORE` | `crates/server/features/notebook-ownership.feature` |
 | Team Git verifier | `TeamGitVerifier` (`crates/server/src/team_git.rs`) | GitHub App, disposable fake | `ASTER_TEAM_GIT_ENABLED=1` selects the App-backed team target route with PostgreSQL and a server-owned team policy; workspace activation remains off | `crates/server/features/notebook-isolation.feature` |
 | Secret store | `SecretStore` (`crates/core/src/secrets.rs`) | `env`, `memory` | `providers::secret_store` on `ASTER_SECRET_STORE` | `crates/core/features/secrets.feature` |
 | Identity provider | `IdentityProvider` (`crates/core/src/identity.rs`) | `oidc` (Authentik and Keycloak differ only in configuration), `none` | `providers::identity` on `ASTER_IDP_KIND` | `crates/server/features/sso.feature` (draft; the group/claim mapping is covered by the unit tests in `crates/server/src/identity.rs` and the Keycloak eval in the README) |
-| Current identity | `CurrentIdentityProvider` (`crates/core/src/identity.rs`) | Authentik API adapter, mutable fake in tests | `ASTER_SHARED_MODEL_AUTHORITY_ENABLED=1` or `ASTER_TEAM_GIT_ENABLED=1` opts into per-request UUID/group reads; default off. Requires an OIDC signed UUID claim, HTTPS API origin and a dedicated Aster read token. Shared-model authority additionally needs stable admin/editor group UUIDs. Live removal/read-after-write proof remains a deployment prerequisite. | `crates/server/src/current_identity.rs` fake API tests; `crates/server/features/shared-ai-models.feature` remains partly unbound |
+| Current identity | `CurrentIdentityProvider` (`crates/core/src/identity.rs`) | Authentik API adapter, mutable fake in tests | `ASTER_SHARED_MODEL_AUTHORITY_ENABLED=1`, `ASTER_TEAM_GIT_ENABLED=1`, or `ASTER_TEAM_POLICY_FILE` opts into per-request UUID/group reads; default off. Requires an OIDC signed UUID claim, HTTPS API origin and a dedicated Aster read token. Shared-model authority additionally needs stable admin/editor group UUIDs. Team-policy registration needs no GitHub credentials. Live removal/read-after-write proof is deployment-specific. | `crates/server/src/current_identity.rs` fake API tests; `crates/server/features/authentik-catalog-team.feature` startup test; [isolated real Authentik revocation proof](plans/odcs-ai-catalog-rv.md); `crates/server/features/shared-ai-models.feature` remains partly unbound |
 | Engine grants | `Grants` (`crates/core/src/grants.rs`) | `postgres`, `memory` | `providers::metadata` on `ASTER_METADATA_STORE` | `crates/core/features/authorization.feature` |
 | Audit sink | `AuditSink` (`crates/core/src/audit.rs`) | `postgres`, `memory` | `providers::metadata` on `ASTER_METADATA_STORE` | `crates/server/features/audit-persistence.feature` |
 | LLM endpoint store | `LlmStore` (`crates/core/src/llm.rs`) | `postgres`, `memory` | `providers::metadata` on `ASTER_METADATA_STORE` | `crates/server/features/ai-assist.feature` |
@@ -32,6 +32,22 @@ must exist, and every selection site must refuse unknown names.
 Store, engine and catalog providers need an implementation plus one arm in
 their selection function (`crates/engines/src/lib.rs`,
 `crates/catalogs/src/lib.rs`, or `crates/server/src/providers.rs`).
+
+Catalog `secret://KEY` references pass through `catalog_from_config_with_secrets`
+before the same central kind registry. The server supplies its selected
+`SecretStore`; the controller supplies `EnvSecrets` for its environment-based
+configuration. The bound S6 fixture is `crates/server/features/odcs-s6-bound.feature`.
+There is no additional secret provider or live-target activation.
+
+Native Trino uses `information_schema` through `/v1/statement`, with `X-Trino-User:
+aster` and optional resolved bearer `token`; OAuth `credential` is unsupported.
+Each metadata operation shares a 10-second deadline, 4 MiB response budget and
+64-request ceiling, plus 10,000 metadata rows. Exceeding a ceiling or receiving
+incomplete/error metadata fails the entire observation. Continuations must retain
+the configured origin; redirects are disabled. Native table descriptors prove
+registration, not row-read authorization. Caller-budgeted AI schema observation
+remains unavailable. Separate IDs `tpch` and `tpcds` can select their respective
+native aliases at the same Trino endpoint; no benchmark table list is hard-coded.
 
 ## Deliberately not abstracted
 

@@ -101,6 +101,17 @@ fn cyclic_group_graph(edges: &HashMap<String, Vec<String>>) -> bool {
 }
 
 impl AuthentikCurrentIdentity {
+    pub(crate) fn with_ca(mut self, pem: &[u8]) -> Result<Self> {
+        let certificate = reqwest::Certificate::from_pem(pem).map_err(|_| unavailable())?;
+        self.http = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(Duration::from_secs(5))
+            .add_root_certificate(certificate)
+            .build()
+            .map_err(|_| unavailable())?;
+        Ok(self)
+    }
+
     /// Team Git needs current group UUIDs without the shared-model role map.
     pub(crate) fn new_for_team_git(origin: &str, token: String) -> Result<Self> {
         Self::build(origin, token, None)
