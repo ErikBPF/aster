@@ -73,5 +73,5 @@ independent documentation RV, with RV after every step; it does not turn these
 target behaviors into shipped capabilities. Q1 remaining intake policy and Q2
 binding decisions block S2, not S1's existing-policy safety work.
 
-[orders]: https://github.com/ErikBPF/aster/blob/eb397d865cf2dc156fda172d50b13c98eda9d9f7/contracts/orders.yaml
-[transform]: https://github.com/ErikBPF/aster/blob/eb397d865cf2dc156fda172d50b13c98eda9d9f7/crates/core/src/semantic.rs#L344
+[orders]: https://github.com/ErikBPF/aster/blob/6a98b0c4292f9656b2463ab30b5ef0001b0f2ae6/contracts/orders.yaml
+[transform]: https://github.com/ErikBPF/aster/blob/6a98b0c4292f9656b2463ab30b5ef0001b0f2ae6/crates/core/src/semantic.rs#L344

@@ -1,11 +1,14 @@
 # Aster handbook
 
-> **Sanitized-history notice:** this is a local history-sanitization candidate.
+> **Sanitized-history notice:** this repository contains rewritten source history.
 > Deployment and validation receipts below are historical evidence for the original
 > source and environment, not proof that sanitized source or placeholder targets
 > have been deployed or validated. Hostnames, paths, domains, identity identifiers
 > and demo contexts were anonymized. Reconfigure examples before use; record
 > candidate checks separately from historical receipts.
+
+Sanitized runtime source passed `just ci` and the 33-table benchmark bundle check.
+This is source-validation evidence, not a deployment of the placeholder targets.
 
 Start with the [repository README](../README.md) to run Aster. These guides
 explain the current product and its development workflow.
