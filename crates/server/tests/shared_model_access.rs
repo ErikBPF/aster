@@ -91,13 +91,20 @@ impl NotebookStore for NoNotebooks {
     async fn list(&self, _: &str) -> Result<Vec<String>> {
         Ok(vec![])
     }
+
+    async fn snapshot(&self, id: &str) -> Result<NotebookSnapshot> {
+        Ok(NotebookSnapshot {
+            notebook: self.get(id).await?,
+            content_revision: "1".repeat(40),
+        })
+    }
 }
 
-fn fixture() -> (Router, Arc<InMemorySessions>) {
-    fixture_with_authority(None)
+async fn fixture() -> (Router, Arc<InMemorySessions>) {
+    fixture_with_authority(None).await
 }
 
-fn fixture_with_authority(
+async fn fixture_with_authority(
     authority: Option<Arc<dyn CurrentIdentityProvider>>,
 ) -> (Router, Arc<InMemorySessions>) {
     fixture_with_endpoint(
@@ -105,9 +112,10 @@ fn fixture_with_authority(
         "https://approved.example.invalid",
         reqwest::Client::new(),
     )
+    .await
 }
 
-fn fixture_with_endpoint(
+async fn fixture_with_endpoint(
     authority: Option<Arc<dyn CurrentIdentityProvider>>,
     approved_origin: &str,
     http: reqwest::Client,
@@ -118,9 +126,10 @@ fn fixture_with_endpoint(
         http,
         Arc::new(InMemoryConversations::default()),
     )
+    .await
 }
 
-fn fixture_with_conversations(
+async fn fixture_with_conversations(
     authority: Option<Arc<dyn CurrentIdentityProvider>>,
     approved_origin: &str,
     http: reqwest::Client,
@@ -134,6 +143,20 @@ fn fixture_with_conversations(
         DestinationPolicy::parse(approved_origin).unwrap(),
         Keyring::parse("v1", &keyset.to_string()).unwrap(),
     );
+    let notebooks = Arc::new(NoNotebooks);
+    let notebook_owners = Arc::new(InMemoryNotebookOwners::default());
+    notebook_owners
+        .change(NotebookOwnerChange {
+            source: notebooks.source_key(),
+            id: "report".into(),
+            expected_owner: None,
+            owner: "alice".into(),
+            source_blob: notebooks.snapshot("report").await.unwrap().content_revision,
+            actor: "alice".into(),
+            reason: Some("shared-model fixture notebook".into()),
+        })
+        .await
+        .unwrap();
     let state = AppState {
         config: AppConfig {
             bind: String::new(),
@@ -147,8 +170,8 @@ fn fixture_with_conversations(
         catalogs: CatalogRegistry::new(),
         grants: Arc::new(InMemoryGrants::new()),
         audit: Arc::new(InMemoryAudit::new()),
-        notebooks: Arc::new(NoNotebooks),
-        notebook_owners: Arc::new(InMemoryNotebookOwners::default()),
+        notebooks,
+        notebook_owners,
         notebook_write: Arc::new(tokio::sync::Mutex::new(())),
         llm: Arc::new(InMemoryLlm::new()),
         shared_models: Some(Arc::new(shared_models)),
@@ -158,6 +181,7 @@ fn fixture_with_conversations(
         team_git_targets: None,
         conversations,
         exchanges: Arc::new(InMemoryExchanges::default()),
+        compiled_contracts: None,
         contracts: Arc::new(vec![]),
         http,
         sessions: sessions.clone(),
@@ -372,7 +396,7 @@ async fn grant_and_scoped_list_keep_shared_qwen_distinct_from_personal_qwen() {
             groups: vec!["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".into()],
         })),
     });
-    let (app, sessions) = fixture_with_authority(Some(authority.clone()));
+    let (app, sessions) = fixture_with_authority(Some(authority.clone())).await;
     let (status, _) = request(
         &app,
         "PUT",
@@ -548,7 +572,7 @@ async fn grant_and_scoped_list_keep_shared_qwen_distinct_from_personal_qwen() {
 
 #[tokio::test]
 async fn grant_replacement_conflicts_on_stale_revision_and_keeps_audit_history() {
-    let (app, sessions) = fixture();
+    let (app, sessions) = fixture().await;
     let (status, _) = request(
         &app,
         "PUT",
@@ -710,7 +734,7 @@ async fn grant_replacement_rejects_group_absent_from_current_provider() {
             groups: vec!["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".into()],
         })),
     });
-    let (app, _) = fixture_with_authority(Some(authority));
+    let (app, _) = fixture_with_authority(Some(authority)).await;
     let (status, _) = request(
         &app,
         "PUT",
@@ -763,7 +787,7 @@ async fn approved_https_routes_exact_scoped_credential_and_never_follows_redirec
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .unwrap();
-    let (app, sessions) = fixture_with_endpoint(Some(authority.clone()), &origin, http);
+    let (app, sessions) = fixture_with_endpoint(Some(authority.clone()), &origin, http).await;
     for (id, path) in [("qwen", "/v1"), ("bounce", "/bounce")] {
         assert_eq!(
             request(
@@ -937,7 +961,7 @@ async fn revoked_first_send_does_not_create_conversation_or_call_upstream() {
         .build()
         .unwrap();
     let (app, sessions) =
-        fixture_with_conversations(Some(authority), &origin, http, conversations.clone());
+        fixture_with_conversations(Some(authority), &origin, http, conversations.clone()).await;
     assert_eq!(
         request(
             &app,
@@ -1007,7 +1031,7 @@ async fn revoked_first_send_does_not_create_conversation_or_call_upstream() {
 
 #[tokio::test]
 async fn cached_admin_session_without_current_authority_cannot_manage_grants() {
-    let (app, sessions) = fixture();
+    let (app, sessions) = fixture().await;
     let (status, _) = request(
         &app,
         "PUT",

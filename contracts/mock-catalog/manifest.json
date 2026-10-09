@@ -1,0 +1,13 @@
+{
+  "manifestVersion": 1,
+  "bundle": "aster-mock-catalog",
+  "version": "mock-catalog-r23",
+  "bindingsSha256": "5121e4d310981bfe501e7ac6dd25220a29646c06943997a1e3fb31033314f086",
+  "documents": [
+    {"path":"compiled/aster_demo.orders.yaml","sha256":"e930d91da5dbf4aa9c5c454b7d0899d6225eabccb05ba95309aa30ffaeb8a0b2","id":"aster-mock-demo-orders","version":"0.1.0","target":"mock-local"},
+    {"path":"compiled/aster_demo.customers.yaml","sha256":"fafafa0997f1c45ee312dcea7c86afb9ea2679ecf4fbc8c67f85398b38bde885","id":"aster-mock-demo-customers","version":"0.1.0","target":"mock-local"},
+    {"path":"compiled/aster_demo.sales.daily_revenue.yaml","sha256":"898c070f9f84d63c4c2ad3eb0639d5873025358cf30ba73fb840b761b52c26ef","id":"aster-mock-demo-sales-daily-revenue","version":"0.1.0","target":"mock-local"},
+    {"path":"compiled/aster_raw.events.yaml","sha256":"838e7713321674daf5a8381915feb0bd7aa3e4b49a9cc1a103433e3fa95839d4","id":"aster-mock-raw-events","version":"0.1.0","target":"mock-local"},
+    {"path":"compiled/aster_raw.clickstream.yaml","sha256":"cfede178d8e38b8b1fbe229e6357cee367c4d03cded71e12214b33e81f9cd925","id":"aster-mock-raw-clickstream","version":"0.1.0","target":"mock-local"}
+  ]
+}

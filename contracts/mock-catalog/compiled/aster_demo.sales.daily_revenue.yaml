@@ -1,0 +1,21 @@
+# MOCK ONLY: this is one literal namespace, not two namespace segments.
+apiVersion: v3.2.0
+kind: DataContract
+id: aster-mock-demo-sales-daily-revenue
+version: 0.1.0
+name: MOCK Aster daily revenue
+status: draft
+description:
+  purpose: Describe the canned pre-aggregated daily_revenue shape for UI review.
+  limitations: No currency, timezone, freshness, deduplication or reconciliation with orders is promised.
+team:
+  name: aster-editors
+  description: Mock owner team mapped in the fixture proposal to /aster-editors.
+schema:
+  - name: daily_revenue
+    physicalName: daily_revenue
+    description: MOCK daily region aggregate. Illustrative grain is day plus region, not a verified unique key. Sum only for disjoint day/region rows; never count rows as orders or average these totals as average order value.
+    properties:
+      - {name: day, physicalName: day, logicalType: date, physicalType: date, semanticType: dimension, description: Pre-aggregated calendar day; timezone unspecified.}
+      - {name: region, physicalName: region, logicalType: string, physicalType: varchar, semanticType: dimension, description: Synthetic region label.}
+      - {name: revenue, physicalName: revenue, logicalType: number, physicalType: 'decimal(18,2)', semanticType: measure, transformLogic: 'SUM(revenue)', description: Illustrative sum of stored non-null daily totals over disjoint rows; not a production revenue definition.}

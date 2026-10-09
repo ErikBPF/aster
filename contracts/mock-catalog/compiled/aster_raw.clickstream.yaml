@@ -1,0 +1,21 @@
+# MOCK ONLY: raw-shaped data can also have a materialization-level contract.
+apiVersion: v3.2.0
+kind: DataContract
+id: aster-mock-raw-clickstream
+version: 0.1.0
+name: MOCK Aster clickstream
+status: draft
+description:
+  purpose: Describe the canned raw clickstream materialization for UI review.
+  limitations: No delivery, deduplication, identity, retention or sessionization guarantees. Counts are rows, not unique people or sessions.
+team:
+  name: aster-editors
+  description: Mock owner team mapped in the fixture proposal to /aster-editors; raw is not a contract exemption.
+schema:
+  - name: clickstream
+    physicalName: clickstream
+    description: MOCK click-shaped row grain; session_id may repeat. No event key or timestamp exists in this shape, so daily click rates and session duration are undeclared.
+    properties:
+      - {name: session_id, physicalName: session_id, logicalType: string, physicalType: varchar, semanticType: dimension, description: Synthetic session label; not a unique row or person.}
+      - {name: path, physicalName: path, logicalType: string, physicalType: varchar, semanticType: dimension, description: Synthetic page path.}
+      - {name: country, physicalName: country, logicalType: string, physicalType: varchar, semanticType: dimension, description: Synthetic country label; no geolocation guarantee.}

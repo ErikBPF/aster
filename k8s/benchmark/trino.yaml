@@ -1,0 +1,90 @@
+# Synthetic-only backend for the isolated notebook demo; no external storage.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: benchmark-trino
+data:
+  config.properties: |
+    coordinator=true
+    node-scheduler.include-coordinator=true
+    http-server.http.port=8080
+    discovery.uri=http://localhost:8080
+    query.max-memory=1GB
+    query.max-memory-per-node=512MB
+  node.properties: |
+    node.environment=aster_demo
+    node.id=benchmark-trino
+    node.data-dir=/data/trino
+  jvm.config: |
+    -server
+    -Xmx2G
+    -XX:+UseG1GC
+    -XX:+ExplicitGCInvokesConcurrent
+    -XX:+ExitOnOutOfMemoryError
+    -Djdk.attach.allowAttachSelf=true
+  tpch.properties: |
+    connector.name=tpch
+  tpcds.properties: |
+    connector.name=tpcds
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: benchmark-trino
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: benchmark-trino}
+  template:
+    metadata:
+      labels: {app: benchmark-trino}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: trino
+          image: docker.io/trinodb/trino:483@sha256:db58cc93e593a2706553745f276bb119c9810e69918be56ecde088ba7ccb0534
+          ports: [{name: http, containerPort: 8080}]
+          volumeMounts:
+            - {name: config, mountPath: /etc/trino, readOnly: true}
+            - {name: data, mountPath: /data/trino}
+          startupProbe:
+            httpGet: {path: /v1/info, port: http}
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet: {path: /v1/info, port: http}
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: {path: /v1/info, port: http}
+            periodSeconds: 20
+          resources:
+            requests: {cpu: 500m, memory: 2Gi}
+            limits: {cpu: "2", memory: 3Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+      volumes:
+        - name: config
+          configMap:
+            name: benchmark-trino
+            items:
+              - {key: config.properties, path: config.properties}
+              - {key: node.properties, path: node.properties}
+              - {key: jvm.config, path: jvm.config}
+              - {key: tpch.properties, path: catalog/tpch.properties}
+              - {key: tpcds.properties, path: catalog/tpcds.properties}
+        - name: data
+          emptyDir: {sizeLimit: 2Gi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: benchmark-trino
+spec:
+  selector: {app: benchmark-trino}
+  ports: [{name: http, port: 8080, targetPort: http}]

@@ -1,0 +1,11 @@
+{
+  "formatVersion": 1,
+  "version": "mock-catalog-r23",
+  "bindings": [
+    {"path":"compiled/aster_demo.orders.yaml","object":"/schema/0","catalog":"mock-local","namespaceSegments":["aster_demo"],"physicalName":"orders"},
+    {"path":"compiled/aster_demo.customers.yaml","object":"/schema/0","catalog":"mock-local","namespaceSegments":["aster_demo"],"physicalName":"customers"},
+    {"path":"compiled/aster_demo.sales.daily_revenue.yaml","object":"/schema/0","catalog":"mock-local","namespaceSegments":["aster_demo.sales"],"physicalName":"daily_revenue"},
+    {"path":"compiled/aster_raw.events.yaml","object":"/schema/0","catalog":"mock-local","namespaceSegments":["aster_raw"],"physicalName":"events"},
+    {"path":"compiled/aster_raw.clickstream.yaml","object":"/schema/0","catalog":"mock-local","namespaceSegments":["aster_raw"],"physicalName":"clickstream"}
+  ]
+}

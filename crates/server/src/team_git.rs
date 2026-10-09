@@ -109,6 +109,10 @@ fn validate_policy(policy: &HashMap<String, TeamGitPolicy>) -> Result<()> {
 }
 
 impl TeamGitTargets {
+    pub(crate) fn contains_team(&self, team: &str) -> bool {
+        self.policy.contains_key(team)
+    }
+
     pub async fn connect(
         database_url: &str,
         policy: HashMap<String, TeamGitPolicy>,

@@ -14,6 +14,9 @@ sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "macro
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.10"
+libc = "0.2"
+# Official draft-2019-09 validation; network/file reference features are disabled.
+jsonschema = { version = "=0.58.2", default-features = false }
 anyhow.workspace = true
 tokio.workspace = true
 axum.workspace = true
@@ -40,6 +43,7 @@ prometheus-client-derive-encode.workspace = true
 connectrpc-build = "0.9"
 
 [dev-dependencies]
+serde_norway.workspace = true
 cucumber = "0.23"
 async-trait.workspace = true
 tower = "0.5"

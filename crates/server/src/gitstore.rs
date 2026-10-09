@@ -1085,6 +1085,7 @@ mod tests {
                 id: "c1".into(),
                 sql: "SELECT 1".into(),
                 engine: None,
+                metadata: Default::default(),
             }],
         }
     }

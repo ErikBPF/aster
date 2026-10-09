@@ -1,0 +1,25 @@
+# Description artifact inspired by Cube; NOT executable Cube configuration.
+formatVersion: 2
+mock: true
+catalog: mock-local
+namespaceSegments: [aster_demo.sales]
+ownerTeam: aster-editors
+ownerGroup: /aster-editors
+tables:
+  - contract: {path: compiled/aster_demo.sales.daily_revenue.yaml, id: aster-mock-demo-sales-daily-revenue, version: 0.1.0, sha256: 898c070f9f84d63c4c2ad3eb0639d5873025358cf30ba73fb840b761b52c26ef}
+    object: /schema/0
+    physicalName: daily_revenue
+    grain: {description: Pre-aggregated day plus region, uniquenessVerified: false}
+    measures:
+      - name: revenue_total
+        type: sum
+        sql: revenue
+        unit: unspecified
+        additiveOver: [day, region]
+        condition: Disjoint day/region rows only; uniqueness and currency are not verified.
+        nulls: Ignore null inputs; empty-group behavior is backend-dependent.
+    dimensions:
+      - {name: day, type: time, sql: day, sourceGranularity: day, timezone: unspecified}
+      - {name: region, type: string, sql: region}
+    joins: []
+    limitations: No finer-than-day data, order count, average order value or reconciliation to orders is defined.

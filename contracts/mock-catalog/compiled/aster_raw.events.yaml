@@ -1,0 +1,22 @@
+# MOCK ONLY: raw-shaped data can also have a contract.
+apiVersion: v3.2.0
+kind: DataContract
+id: aster-mock-raw-events
+version: 0.1.0
+name: MOCK Aster events
+status: draft
+description:
+  purpose: Describe the canned raw events materialization for UI review.
+  limitations: No delivery, deduplication, payload schema, identity or retention guarantees. Counts are rows, not unique events or people.
+team:
+  name: aster-editors
+  description: Mock owner team mapped in the fixture proposal to /aster-editors; raw is not a contract exemption.
+schema:
+  - name: events
+    physicalName: events
+    description: MOCK received event-shaped row grain; repeated event_id values are not ruled out.
+    properties:
+      - {name: event_id, physicalName: event_id, logicalType: string, physicalType: varchar, description: Synthetic event identifier; uniqueness unverified.}
+      - {name: kind, physicalName: kind, logicalType: string, physicalType: varchar, semanticType: dimension, description: Synthetic event category.}
+      - {name: payload, physicalName: payload, logicalType: object, physicalType: json, description: Illustrative object payload; no nested keys are contracted. Physical JSON does not establish object-only values.}
+      - {name: seen_at, physicalName: seen_at, logicalType: timestamp, physicalType: timestamp, semanticType: dimension, description: Illustrative receipt time rather than business occurrence time; timezone unspecified.}

@@ -165,6 +165,7 @@ async fn polaris_generic_paginates_loads_and_marks_schema_unavailable() {
 
     let refusal = catalog
         .table_schema(&TableRef {
+            namespace_segments: Vec::new(),
             namespace: "sales".into(),
             name: "delta_orders".into(),
         })

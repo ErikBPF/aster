@@ -1,5 +1,10 @@
 # aster — first testable draft (implementation one-pager)
 
+> Historical record, not the current roadmap. This page mixes checkpoints and
+> contains contradictory deployment/completion claims. Preserve its receipts as
+> dated evidence; use the [current delivery snapshot](README.md#planning-candidates)
+> and linked owning guides for present status and remaining gates.
+
 **Stage / revision:** PL+IP+RV combined / r2 (closing record for S0–S14)
 **Status:** the thin vertical and every queued slice are implemented, tested and container-validated; a standalone minikube stack is deployed and has been exercised live against Trino, Polaris, RustFS, Spark and an Authentik issuer, and a private GitHub repository is wired as a remote sync target
 **Owner / date:** Erik / 2026-09-16

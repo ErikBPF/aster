@@ -111,6 +111,7 @@ async fn fixture_with_services(
         shared_model_use_enabled: false,
         conversations: Arc::new(InMemoryConversations::default()),
         exchanges: Arc::new(InMemoryExchanges::default()),
+        compiled_contracts: None,
         contracts: Arc::new(vec![]),
         http: reqwest::Client::new(),
         sessions: sessions.clone(),

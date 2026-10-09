@@ -25,11 +25,20 @@ fn notebook(id: &str, sql: &str) -> Notebook {
             id: "c1".into(),
             sql: sql.into(),
             engine: None,
+            metadata: Default::default(),
         }],
     }
 }
 
 async fn fixture() -> Fixture {
+    fixture_with_teams(false).await
+}
+
+async fn fixture_with_teams(teams: bool) -> Fixture {
+    fixture_configured(teams, |_| {}).await
+}
+
+async fn fixture_configured(teams: bool, configure: impl FnOnce(&mut AppState)) -> Fixture {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let dir = std::env::temp_dir().join(format!(
         "aster-ownership-{}-{}",
@@ -37,7 +46,7 @@ async fn fixture() -> Fixture {
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
     let store = GitNotebookStore::open(&dir, "session/alice").unwrap();
-    let state = AppState {
+    let mut state = AppState {
         config: AppConfig {
             bind: String::new(),
             engines: vec![],
@@ -53,7 +62,15 @@ async fn fixture() -> Fixture {
         notebooks: Arc::new(store.clone()),
         notebook_owners: Arc::new(InMemoryNotebookOwners::default()),
         notebook_write: Arc::new(tokio::sync::Mutex::new(())),
-        team_workspaces: None,
+        team_workspaces: teams.then(|| {
+            Arc::new(
+                aster_server::TeamWorkspaces::new(
+                    dir.join("teams"),
+                    std::collections::HashMap::new(),
+                )
+                .unwrap(),
+            )
+        }),
         team_git_targets: None,
         llm: Arc::new(InMemoryLlm::new()),
         shared_models: None,
@@ -61,6 +78,7 @@ async fn fixture() -> Fixture {
         shared_model_use_enabled: false,
         conversations: Arc::new(InMemoryConversations::default()),
         exchanges: Arc::new(InMemoryExchanges::default()),
+        compiled_contracts: None,
         contracts: Arc::new(vec![]),
         http: reqwest::Client::new(),
         sessions: Arc::new(InMemorySessions::new(3600)),
@@ -72,11 +90,166 @@ async fn fixture() -> Fixture {
         dev_login: true,
         metrics: Arc::new(Metrics::new()),
     };
+    configure(&mut state);
     Fixture {
         app: app(Arc::new(state)),
         dir,
         _store: store,
     }
+}
+
+tokio::task_local! {
+    static EXCHANGE_READ: ();
+}
+
+/// Pause only an exchange request's second read until a real administrator
+/// transfer and the new owner's save have completed. Other requests use Git
+/// normally, including the administrator's locked snapshot read.
+struct TransferReadStore {
+    inner: Arc<dyn NotebookStore>,
+    reads: AtomicU64,
+    admitted: Arc<tokio::sync::Notify>,
+    transferred: Arc<tokio::sync::Notify>,
+}
+
+#[async_trait::async_trait]
+impl NotebookStore for TransferReadStore {
+    async fn snapshot(&self, id: &str) -> aster_core::Result<NotebookSnapshot> {
+        let read = EXCHANGE_READ
+            .try_with(|_| self.reads.fetch_add(1, Ordering::SeqCst))
+            .ok();
+        if read.is_some_and(|read| read > 0) {
+            self.transferred.notified().await;
+        }
+        let snapshot = self.inner.snapshot(id).await?;
+        if read == Some(0) {
+            self.admitted.notify_one();
+        }
+        Ok(snapshot)
+    }
+    async fn get(&self, id: &str) -> aster_core::Result<Notebook> {
+        Ok(self.snapshot(id).await?.notebook)
+    }
+    async fn list(&self, actor: &str) -> aster_core::Result<Vec<String>> {
+        self.inner.list(actor).await
+    }
+    async fn save(&self, notebook: &Notebook, actor: &str) -> aster_core::Result<String> {
+        self.inner.save(notebook, actor).await
+    }
+    async fn save_if(
+        &self,
+        notebook: &Notebook,
+        actor: &str,
+        expected: NotebookPrecondition,
+    ) -> aster_core::Result<NotebookSave> {
+        self.inner.save_if(notebook, actor, expected).await
+    }
+    fn source_key(&self) -> String {
+        self.inner.source_key()
+    }
+}
+
+async fn transfer_between_exchange_reads(method: &str) {
+    let admitted = Arc::new(tokio::sync::Notify::new());
+    let transferred = Arc::new(tokio::sync::Notify::new());
+    let fixture = fixture_configured(false, |state| {
+        state.notebooks = Arc::new(TransferReadStore {
+            inner: state.notebooks.clone(),
+            reads: AtomicU64::new(0),
+            admitted: admitted.clone(),
+            transferred: transferred.clone(),
+        });
+    })
+    .await;
+    let created = call(
+        &fixture.app,
+        "PUT",
+        "/api/notebooks/sales",
+        "alice",
+        "editor",
+        Some(("if-none-match", "*".into())),
+        json!(notebook("sales", "SELECT 'alice-original'")),
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(created.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    let created: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let oid = created["content_revision"].as_str().unwrap().to_string();
+    let original_oid = oid.clone();
+    let writer_app = fixture.app.clone();
+    let writer = tokio::spawn(async move {
+        admitted.notified().await;
+        let assigned = call(&writer_app, "PUT", "/api/admin/notebooks/sales/owner", "admin", "admin", None,
+            json!({"owner":"bob", "expected_owner":"alice", "expected_content_revision":oid, "reason":"transfer race test"})).await;
+        assert_eq!(assigned.status(), StatusCode::OK);
+        let saved = call(
+            &writer_app,
+            "PUT",
+            "/api/notebooks/sales",
+            "bob",
+            "editor",
+            Some(("if-match", format!("\"{oid}\""))),
+            json!(notebook("sales", "SELECT 'bob-private'")),
+        )
+        .await;
+        assert_eq!(saved.status(), StatusCode::OK);
+        transferred.notify_one();
+    });
+    let response = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let response = EXCHANGE_READ
+            .scope(
+                (),
+                call(
+                    &fixture.app,
+                    "POST",
+                    &format!("/aster.v1.Aster/{method}"),
+                    "alice",
+                    "editor",
+                    None,
+                    json!({"notebook":"sales","cell":"c1"}),
+                ),
+            )
+            .await;
+        writer.await.unwrap();
+        response
+    })
+    .await
+    .expect("ownership transfer and exchange read must complete");
+    assert_eq!(response.status(), StatusCode::OK);
+    // Prove Bob really saved, even when the fixed handler never performs a
+    // second read and therefore finishes before the concurrent writer.
+    assert_eq!(
+        fixture._store.get("sales").await.unwrap().cells[0].sql,
+        "SELECT 'bob-private'"
+    );
+    let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    let response: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let sql = if method == "FetchQuery" {
+        &response["sql"]
+    } else {
+        &response["cells"][0]["sql"]
+    };
+    assert_eq!(
+        sql, "SELECT 'alice-original'",
+        "never disclose SQL saved after ownership transfer"
+    );
+    if method == "FetchQuery" {
+        assert_eq!(response["contentRevision"], original_oid);
+    }
+}
+
+#[tokio::test]
+async fn benchmark_fetch_query_keeps_snapshot_admitted_before_transfer() {
+    transfer_between_exchange_reads("FetchQuery").await;
+}
+
+#[tokio::test]
+async fn benchmark_fetch_summary_keeps_snapshot_admitted_before_transfer() {
+    transfer_between_exchange_reads("FetchSummary").await;
 }
 
 fn git(dir: &Path, args: &[&str]) -> String {
@@ -92,6 +265,179 @@ fn git(dir: &Path, args: &[&str]) -> String {
         String::from_utf8_lossy(&output.stderr)
     );
     String::from_utf8(output.stdout).unwrap().trim().to_string()
+}
+
+#[tokio::test]
+async fn benchmark_local_notebooks_are_owner_isolated_across_surfaces() {
+    let fixture = fixture().await;
+    let created = call(
+        &fixture.app,
+        "PUT",
+        "/api/notebooks/private",
+        "alice",
+        "editor",
+        Some(("if-none-match", "*".into())),
+        json!(notebook("private", "SELECT 17")),
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::OK);
+    for path in [
+        "/api/notebooks/private",
+        "/notebooks/private",
+        "/api/notebooks/private/helper",
+    ] {
+        let response = call(&fixture.app, "GET", path, "bob", "editor", None, json!({})).await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "{path}");
+    }
+    for (method, body) in [
+        ("GetNotebook", json!({"id":"private"})),
+        ("GetNotebookHelper", json!({"notebook":"private"})),
+        ("GetConversation", json!({"notebook":"private"})),
+        (
+            "RunQuery",
+            json!({"notebook":"private","cell":"c1","sql":"SELECT 1"}),
+        ),
+        ("FetchQuery", json!({"notebook":"private","cell":"c1"})),
+        ("FetchResult", json!({"notebook":"private","cell":"c1"})),
+        ("FetchSummary", json!({"notebook":"private"})),
+    ] {
+        let response = call(
+            &fixture.app,
+            "POST",
+            &format!("/aster.v1.Aster/{method}"),
+            "bob",
+            "editor",
+            None,
+            body,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "{method}");
+    }
+    for (verb, path, body) in [
+        ("GET", "/api/notebooks", json!({})),
+        ("POST", "/aster.v1.Aster/ListNotebooks", json!({})),
+        ("GET", "/", json!({})),
+    ] {
+        let response = call(&fixture.app, verb, path, "bob", "editor", None, body).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        assert!(
+            !String::from_utf8_lossy(&bytes).contains("private"),
+            "{path}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn benchmark_rpc_edits_preserve_rest_cell_metadata() {
+    let fixture = fixture().await;
+    let mut document = json!(notebook("benchmark", "SELECT 1"));
+    document["cells"][0]["metadata"] =
+        json!({"catalog_context":"tpch","schema":"tiny","other":false});
+    let created = call(
+        &fixture.app,
+        "PUT",
+        "/api/notebooks/benchmark",
+        "alice",
+        "editor",
+        Some(("if-none-match", "*".into())),
+        document.clone(),
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(created.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    let saved: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let edited = call(
+        &fixture.app,
+        "POST",
+        "/aster.v1.Aster/SaveNotebook",
+        "alice",
+        "editor",
+        None,
+        json!({"id":"benchmark", "expectedContentRevision":saved["content_revision"],
+        "notebook":{"title":"Edited", "cells":[{"id":"c1", "sql":"SELECT 2"}]}}),
+    )
+    .await;
+    assert_eq!(edited.status(), StatusCode::OK);
+    let reloaded = call(
+        &fixture.app,
+        "GET",
+        "/api/notebooks/benchmark",
+        "alice",
+        "editor",
+        None,
+        json!({}),
+    )
+    .await;
+    let bytes = axum::body::to_bytes(reloaded.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    let reloaded: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        reloaded["cells"][0]["metadata"],
+        document["cells"][0]["metadata"]
+    );
+    assert_eq!(reloaded["cells"][0]["sql"], "SELECT 2");
+}
+
+#[tokio::test]
+async fn benchmark_explicit_local_mode_preserves_team_policy() {
+    if std::env::var_os("ASTER_LOCAL_NOTEBOOK_CHILD").is_none() {
+        for mode in ["local", "default"] {
+            let mut command = Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--exact",
+                    "benchmark_explicit_local_mode_preserves_team_policy",
+                    "--nocapture",
+                ])
+                .env("ASTER_LOCAL_NOTEBOOK_CHILD", mode)
+                .env_remove("ASTER_NOTEBOOK_MODE");
+            if mode == "local" {
+                command.env("ASTER_NOTEBOOK_MODE", "local");
+            }
+            let output = command.output().unwrap();
+            assert!(
+                output.status.success(),
+                "{mode}: {} {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        return;
+    }
+    let fixture = fixture_with_teams(true).await;
+    let expected = if std::env::var("ASTER_LOCAL_NOTEBOOK_CHILD").unwrap() == "local" {
+        StatusCode::OK
+    } else {
+        StatusCode::FORBIDDEN
+    };
+    for (method, path, body, precondition) in [
+        ("GET", "/", json!({}), None),
+        (
+            "PUT",
+            "/api/notebooks/local",
+            json!(notebook("local", "SELECT 1")),
+            Some(("if-none-match", "*".into())),
+        ),
+        ("POST", "/aster.v1.Aster/ListNotebooks", json!({}), None),
+    ] {
+        let response = call(
+            &fixture.app,
+            method,
+            path,
+            "alice",
+            "editor",
+            precondition,
+            body,
+        )
+        .await;
+        assert_eq!(response.status(), expected, "{path}");
+    }
 }
 
 async fn call(
@@ -167,11 +513,17 @@ async fn create_requires_an_explicit_absence_precondition() {
 #[tokio::test]
 async fn legacy_get_exposes_the_committed_blob_oid() {
     let fixture = fixture().await;
-    fixture
-        ._store
-        .save(&notebook("sales", "SELECT 1"), "seed")
-        .await
-        .unwrap();
+    let created = call(
+        &fixture.app,
+        "PUT",
+        "/api/notebooks/sales",
+        "alice",
+        "editor",
+        Some(("if-none-match", "*".into())),
+        json!(notebook("sales", "SELECT 1")),
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::OK);
     let blob = git(&fixture.dir, &["rev-parse", "HEAD:sales.aster"]);
     let response = call(
         &fixture.app,

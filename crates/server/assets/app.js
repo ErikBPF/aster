@@ -9,11 +9,180 @@ const workspace = nbNode?.dataset.workspace || 'session';
 let contentRevision = nbNode?.dataset.contentRevision || null;
 const statusLine = document.getElementById('status');
 const cellsRoot = document.getElementById('cells');
+let selectedContract = null;
+function contractForTurn() {
+  const selected = document.getElementById('contract-selection');
+  if (selected?.value && !selectedContract) throw new Error('Select and load an exact contract object before asking the helper.');
+  return selectedContract ? {contractSelection: {...selectedContract}} : {};
+}
+
+function syncContractDraft(editor) {
+  const draft = document.getElementById('contract-draft');
+  if (!draft) return;
+  draft.value = editor.value;
+  document.getElementById('contract-review').replaceChildren();
+}
+
+/* Contract context is request-scoped; never persist admitted meaning in browser storage. */
+if (document.getElementById('contract-context')) {
+  const selection = document.getElementById('contract-selection');
+  const object = document.getElementById('contract-object');
+  const documentView = document.getElementById('contract-document');
+  const details = document.createElement('section');
+  details.id = 'contract-details';
+  details.setAttribute('aria-label', 'Declared contract details');
+  documentView.closest('details').before(details);
+  const preparation = document.getElementById('contract-preparation');
+  const draft = document.getElementById('contract-draft');
+  const review = document.getElementById('contract-review');
+  const reviewButton = document.getElementById('contract-review-button');
+  const message = document.getElementById('contract-status');
+  let generation = 0;
+  let contracts = [];
+  function clear() {
+    selectedContract = null;
+    documentView.textContent = '';
+    details.replaceChildren();
+    preparation.replaceChildren();
+    review.replaceChildren();
+    reviewButton.disabled = true;
+  }
+  async function rpc(method, body) {
+    const response = await fetch('/aster.v1.Aster/' + method, {
+      method: 'POST', cache: 'no-store',
+      headers: {'content-type': 'application/json', 'connect-protocol-version': '1'},
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) throw new Error('Contract unavailable or access denied. Invalid or unsupported bundles are refused at startup.');
+    return JSON.parse((await response.json()).contextJson);
+  }
+  function show(parent, title, value) {
+    const heading = document.createElement('h2');
+    heading.textContent = title;
+    const content = document.createElement('pre');
+    content.textContent = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+    parent.append(heading, content);
+  }
+  // Walk the whole declared tree, including extension fields. Presence, not
+  // truthiness, determines what is displayed: false and zero are declarations.
+  function fields(value) {
+    if (value === null || typeof value !== 'object') {
+      const text = document.createElement('span');
+      text.textContent = String(value);
+      return text;
+    }
+    if (Array.isArray(value)) {
+      const list = document.createElement('ol');
+      for (const item of value) {
+        const entry = document.createElement('li');
+        entry.append(fields(item));
+        list.append(entry);
+      }
+      return list;
+    }
+    const list = document.createElement('dl');
+    for (const [key, item] of Object.entries(value)) {
+      const label = document.createElement('dt');
+      label.textContent = {schema: 'Tables / schema', properties: 'Columns / properties',
+        quality: 'Declared quality rules'}[key] || key;
+      const content = document.createElement('dd');
+      content.append(fields(item));
+      list.append(label, content);
+    }
+    return list;
+  }
+  function declared(value) {
+    const heading = document.createElement('h2');
+    heading.textContent = 'Declared contract';
+    const note = document.createElement('p');
+    note.textContent = 'Declared meaning and rules, not observed facts. Quality results: not measured.';
+    details.replaceChildren(heading, note, fields(value));
+  }
+  function context(parent, value) {
+    show(parent, 'Declared meaning and semantics', {contractMeaning: value.contractMeaning, declared: value.declared});
+    show(parent, 'Provenance and selected object', {provenance: value.provenance, object: value.object});
+    show(parent, 'Explicit physical binding', value.binding);
+    show(parent, 'Observed metadata (separate admission)', value.observation);
+    show(parent, 'Drift comparison (separate facts)', value.comparison);
+  }
+  async function refresh() {
+    const current = ++generation;
+    clear();
+    contracts = [];
+    selection.replaceChildren(new Option('Select a contract', ''));
+    object.replaceChildren(new Option('Select an object', ''));
+    object.disabled = true;
+    message.textContent = 'Loading authorized contracts...';
+    try {
+      const value = await rpc('ListContracts', {});
+      if (current !== generation) return;
+      contracts = value.contracts;
+      contracts.forEach((entry, index) => selection.add(new Option(`${entry.id} / ${entry.version} / ${entry.target}`, String(index))));
+      message.textContent = contracts.length ? 'Choose a declared contract before physical observation.' : 'No authorized contracts available.';
+    } catch (error) {
+      if (current === generation) message.textContent = error.message;
+    }
+  }
+  async function load(withReview = false) {
+    const current = ++generation;
+    clear();
+    const entry = selection.value === '' ? null : contracts[Number(selection.value)];
+    const pointer = object.value;
+    object.disabled = true;
+    if (!entry) return;
+    message.textContent = 'Checking current contract access...';
+    try {
+      const value = await rpc('GetContract', {path: entry.path, sha256: entry.sha256});
+      if (current !== generation) return;
+      const prepared = pointer ? await rpc('PrepareContractQuery', {path: entry.path, sha256: entry.sha256, object: pointer}) : null;
+      if (current !== generation) return;
+      documentView.textContent = JSON.stringify(value, null, 2);
+      declared(value.declared);
+      object.replaceChildren(new Option('Select an object', ''));
+      (value.declared.schema || []).forEach((item, index) => object.add(new Option(item.businessName || item.name, `/schema/${index}`)));
+      object.value = pointer;
+      object.disabled = false;
+      if (prepared) {
+        selectedContract = {path: entry.path, sha256: entry.sha256, object: pointer};
+        context(preparation, prepared);
+        reviewButton.disabled = false;
+        if (withReview) {
+          show(review, 'Query draft for manual review', draft.value);
+          context(review, prepared);
+        }
+      }
+      message.textContent = 'Declared meaning remains usable without observation. Nothing has executed.';
+    } catch (error) {
+      if (current !== generation) return;
+      clear();
+      contracts = [];
+      selection.replaceChildren(new Option('Select a contract', ''));
+      object.replaceChildren(new Option('Select an object', ''));
+      message.textContent = error.message;
+    }
+  }
+  selection.addEventListener('change', () => { object.value = ''; load(); });
+  object.addEventListener('change', () => load());
+  draft.addEventListener('input', () => review.replaceChildren());
+  document.addEventListener('input', (event) => {
+    if (!event.target.matches('.cell .editor')) return;
+    syncContractDraft(event.target);
+  });
+  document.addEventListener('focusin', (event) => {
+    if (!event.target.matches('.cell .editor')) return;
+    syncContractDraft(event.target);
+  });
+  reviewButton.addEventListener('click', () => load(true));
+  document.getElementById('contract-refresh').addEventListener('click', refresh);
+  window.addEventListener('pageshow', (event) => { if (event.persisted) refresh(); });
+  refresh();
+}
 
 
 let dirty = false;
 let editGeneration = 0;
-let engineInfo = new Map();
+let catalogsPromise;
+const contextGeneration = new WeakMap();
 
 function status(text) {
   if (statusLine) statusLine.textContent = text;
@@ -31,17 +200,10 @@ function setDirty(value) {
 /* ---- engines -------------------------------------------------------- */
 
 async function loadEngines() {
-  const res = await fetch('/api/engines');
-  if (!res.ok) return;
-  const list = await res.json();
-  engineInfo = new Map(list.map((engine) => [engine.id, engine]));
-  for (const select of document.querySelectorAll('select.engine')) {
-    const current = select.dataset.current || select.value || '';
-    fillEngines(select, current);
-  }
+  await Promise.all([...document.querySelectorAll('.cell')].map(initCellContext));
 }
 
-function fillEngines(select, current) {
+function fillEngines(select, current, engineInfo = new Map()) {
   select.replaceChildren();
   const fallback = document.createElement('option');
   fallback.value = '';
@@ -60,6 +222,102 @@ function fillEngines(select, current) {
   select.value = current;
 }
 
+function contextSelect(cell, name, className) {
+  const label = document.createElement('label');
+  label.className = 'select-wrap';
+  const title = document.createElement('span');
+  title.textContent = name;
+  const select = document.createElement('select');
+  select.className = className;
+  select.setAttribute('aria-label', name);
+  label.append(title, select);
+  cell.querySelector('.cell-head').append(label);
+  return select;
+}
+
+async function initCellContext(cell) {
+  const saved = nb?.cells.find((entry) => entry.id === cell.dataset.id);
+  cell.metadata = {...saved?.metadata};
+  const catalog = contextSelect(cell, 'Catalog', 'catalog-context');
+  const schema = contextSelect(cell, 'Schema', 'query-schema');
+  catalog.add(new Option('Select a catalog', ''));
+  schema.add(new Option('Select a schema', ''));
+  // Keep saved context serializable while discovery is pending or unavailable.
+  if (cell.metadata.catalog_context) catalog.add(new Option(cell.metadata.catalog_context, cell.metadata.catalog_context, false, true));
+  if (cell.metadata.schema) schema.add(new Option(cell.metadata.schema, cell.metadata.schema, false, true));
+  catalog.disabled = schema.disabled = true;
+  const engine = cell.querySelector('.engine');
+  fillEngines(engine, saved?.engine || engine.dataset.current || '');
+  engine.setAttribute('aria-label', 'Engine');
+  engine.disabled = true;
+  engine.addEventListener('change', () => setDirty(true));
+  schema.addEventListener('change', () => setDirty(true));
+  catalog.addEventListener('change', () => {
+    setDirty(true);
+    loadCellContext(cell, '', '');
+  });
+  try {
+    catalogsPromise ||= fetch('/api/catalogs', {cache: 'no-store'}).then(async (response) => {
+      if (!response.ok) throw new Error('Catalog choices unavailable');
+      return response.json();
+    });
+    const catalogs = await catalogsPromise;
+    catalog.replaceChildren(new Option('Select a catalog', ''));
+    for (const entry of catalogs) catalog.add(new Option(entry.id, entry.id));
+    const current = cell.metadata.catalog_context || (catalogs.length === 1 ? catalogs[0].id : '');
+    if (current && !catalogs.some((entry) => entry.id === current)) {
+      const missing = new Option(current + ' (unavailable)', current);
+      missing.disabled = true;
+      catalog.add(missing);
+    }
+    catalog.value = current;
+    catalog.disabled = false;
+    await loadCellContext(cell, saved?.engine || engine.dataset.current || '', cell.metadata.schema || '');
+  } catch (error) {
+    status(error.message);
+  }
+}
+
+async function loadCellContext(cell, currentEngine, currentSchema) {
+  const generation = (contextGeneration.get(cell) || 0) + 1;
+  contextGeneration.set(cell, generation);
+  const catalog = cell.querySelector('.catalog-context').value;
+  const engine = cell.querySelector('.engine');
+  const schema = cell.querySelector('.query-schema');
+  engine.disabled = schema.disabled = true;
+  fillEngines(engine, currentEngine);
+  schema.replaceChildren(new Option('Select a schema', ''));
+  if (currentSchema) schema.add(new Option(currentSchema, currentSchema));
+  schema.value = currentSchema;
+  if (!catalog) return;
+  try {
+    const [engines, namespaces] = await Promise.all([
+      fetch('/api/engines?catalog_context=' + encodeURIComponent(catalog), {cache: 'no-store'}),
+      fetch('/api/catalogs/' + encodeURIComponent(catalog) + '/namespaces', {cache: 'no-store'}),
+    ]);
+    if (!engines.ok || !namespaces.ok) throw new Error('Catalog context unavailable; select an authorized catalog.');
+    const [choices, schemas] = await Promise.all([engines.json(), namespaces.json()]);
+    if (contextGeneration.get(cell) !== generation) return;
+    fillEngines(engine, currentEngine, new Map(choices.map((entry) => [entry.id, entry])));
+    // A saved, now unavailable engine is visible but cannot be executed.
+    for (const option of engine.options) {
+      if (option.value && !choices.some((entry) => entry.id === option.value)) option.disabled = true;
+    }
+    schema.replaceChildren(new Option('Select a schema', ''));
+    for (const entry of schemas) schema.add(new Option(entry.name, entry.name));
+    if (currentSchema && !schemas.some((entry) => entry.name === currentSchema)) {
+      const missing = new Option(currentSchema + ' (unavailable)', currentSchema);
+      missing.disabled = true;
+      schema.add(missing);
+    }
+    schema.value = currentSchema || (schemas.some((entry) => entry.name === 'tiny') ? 'tiny' : '');
+    engine.disabled = choices.length === 0;
+    schema.disabled = false;
+  } catch (error) {
+    if (contextGeneration.get(cell) === generation) status(error.message);
+  }
+}
+
 /* ---- cells ---------------------------------------------------------- */
 
 function resize(area) {
@@ -76,6 +334,9 @@ function cellsFromDom() {
     id: cell.dataset.id,
     sql: cell.querySelector('.editor').value,
     engine: cell.querySelector('.engine').value || null,
+    metadata: {...cell.metadata,
+      catalog_context: cell.querySelector('.catalog-context').value || null,
+      schema: cell.querySelector('.query-schema').value || null},
   }));
 }
 
@@ -175,6 +436,7 @@ function cellTemplate(id, sql, engine) {
   body.append(head, split);
   section.append(gutter, body);
   fillEngines(select, engine || '');
+  initCellContext(section);
   return section;
 }
 
@@ -403,6 +665,15 @@ async function run(btn) {
   const area = cell.querySelector('.editor');
   const out = cell.querySelector('.out');
   const engine = cell.querySelector('.engine').value || null;
+  const catalog = cell.querySelector('.catalog-context');
+  const schema = cell.querySelector('.query-schema');
+  const engineSelect = cell.querySelector('.engine');
+  if (!catalog.value || catalog.disabled || schema.disabled || engineSelect.disabled ||
+      catalog.selectedOptions[0]?.disabled || schema.selectedOptions[0]?.disabled ||
+      engineSelect.selectedOptions[0]?.disabled) {
+    renderError(out, 'Select an available catalog, schema and engine context before running.');
+    return;
+  }
 
   cell.classList.add('running');
   btn.disabled = true;
@@ -415,7 +686,8 @@ async function run(btn) {
     response = await fetch('/api/query', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ sql: area.value, engine, notebook: nb.id, cell: cell.dataset.id }),
+      body: JSON.stringify({ sql: area.value, engine, notebook: nb.id, cell: cell.dataset.id,
+        catalog_context: catalog.value, schema: schema.value || null }),
     });
   } catch (error) {
     cell.classList.remove('running');
@@ -786,6 +1058,7 @@ function acceptComplete(index) {
   const text = items[index].insert || items[index].label;
   const caret = area.selectionStart;
   area.value = area.value.slice(0, start) + text + area.value.slice(caret);
+  syncContractDraft(area);
   const position = start + text.length;
   area.setSelectionRange(position, position);
   resize(area);
@@ -832,6 +1105,7 @@ if (createForm) createForm.addEventListener('submit', createNotebook);
 /* Saved conversation state is server-owned; browser state holds only the draft. */
 const chatPanel = document.getElementById('chat-panel');
 let conversation = null;
+let conversationRead = 0;
 let chatBusy = false;
 
 async function chatRpc(method, body) {
@@ -874,6 +1148,7 @@ function renderConversation() {
         insert.addEventListener('click', () => {
           const cell = addCell(document.querySelector('.cell:last-child'));
           cell.querySelector('.editor').value = suggested;
+          syncContractDraft(cell.querySelector('.editor'));
           resize(cell.querySelector('.editor'));
           setDirty(true);
         });
@@ -886,11 +1161,22 @@ function renderConversation() {
 }
 
 async function loadConversation() {
-  const loaded = await chatRpc('GetConversation', { notebook: nb.id });
+  const current = ++conversationRead;
+  let loaded;
+  try {
+    loaded = await chatRpc('GetConversation', { notebook: nb.id });
+  } catch (error) {
+    if (current !== conversationRead) return false;
+    conversation = null;
+    document.getElementById('chat-history').replaceChildren();
+    throw error;
+  }
+  if (current !== conversationRead) return false;
   if (!conversation || BigInt(loaded.revision || '0') >= BigInt(conversation.revision || '0')) {
     conversation = loaded;
     renderConversation();
   }
+  return true;
 }
 
 async function openChat() {
@@ -901,8 +1187,7 @@ async function openChat() {
   if (!chatBusy) {
     document.getElementById('chat-send').disabled = true;
     try {
-      await loadConversation();
-      document.getElementById('chat-status').textContent = '';
+      if (await loadConversation()) document.getElementById('chat-status').textContent = '';
     } catch (error) {
       conversation = null;
       document.getElementById('chat-status').textContent = error.message;
@@ -944,11 +1229,15 @@ if (chatPanel) {
     status.textContent = 'Waiting for the helper…';
     try {
       if (!conversation) await loadConversation();
-      conversation = await chatRpc('SendMessage', {
+      if (!conversation) throw new Error('Reload authorized history before sending.');
+      const current = conversationRead;
+      const sent = await chatRpc('SendMessage', {
+        ...contractForTurn(),
         notebook: nb.id, helper: chosen, prompt: prompt.value,
         context: context.value, expectedRevision: conversation.revision || '0',
       });
-      renderConversation();
+      if (current !== conversationRead) await loadConversation();
+      else { conversation = sent; renderConversation(); }
       prompt.value = '';
       context.value = '';
       status.textContent = 'Saved. Replies do not execute queries.';
@@ -981,7 +1270,7 @@ function cellChatParts(cell) {
 }
 
 function cellChatState(id) {
-  if (!cellChats.has(id)) cellChats.set(id, { revision: '0', messages: [], busy: false, loaded: false });
+  if (!cellChats.has(id)) cellChats.set(id, { revision: '0', messages: [], busy: false, loaded: false, read: 0 });
   return cellChats.get(id);
 }
 
@@ -1021,6 +1310,7 @@ function renderCellChat(cell) {
         apply.addEventListener('click', () => {
           const editor = cell.querySelector('.editor');
           editor.value = suggested;
+          syncContractDraft(editor);
           resize(editor);
           setDirty(true);
         });
@@ -1032,15 +1322,34 @@ function renderCellChat(cell) {
   history.scrollTop = history.scrollHeight;
 }
 
+function invalidateCellChat(cell) {
+  const state = cellChatState(cell.dataset.id);
+  state.read += 1;
+  state.messages = [];
+  state.loaded = false;
+  state.revision = '0';
+  renderCellChat(cell);
+}
+
 async function loadCellChat(cell) {
   const state = cellChatState(cell.dataset.id);
-  const loaded = await chatRpc('GetConversation', { notebook: nb.id, cell: cell.dataset.id });
+  const current = ++state.read;
+  let loaded;
+  try {
+    loaded = await chatRpc('GetConversation', { notebook: nb.id, cell: cell.dataset.id });
+  } catch (error) {
+    if (current !== state.read) return false;
+    invalidateCellChat(cell);
+    throw error;
+  }
+  if (current !== state.read) return false;
   if (!state.loaded || BigInt(loaded.revision || '0') >= BigInt(state.revision || '0')) {
     state.revision = loaded.revision || '0';
     state.messages = loaded.messages || [];
     state.loaded = true;
     renderCellChat(cell);
   }
+  return true;
 }
 
 async function openCellChat(cell) {
@@ -1048,8 +1357,7 @@ async function openCellChat(cell) {
   parts.panel.hidden = false;
   parts.prompt.focus();
   try {
-    await loadCellChat(cell);
-    parts.status.textContent = '';
+    if (await loadCellChat(cell)) parts.status.textContent = '';
   } catch (error) {
     parts.status.textContent = error.message;
   }
@@ -1077,18 +1385,25 @@ async function sendCellChat(cell) {
   parts.status.textContent = 'Waiting for the helper…';
   try {
     if (!state.loaded) await loadCellChat(cell);
+    if (!state.loaded) throw new Error('Reload authorized history before sending.');
+    const current = state.read;
     const sent = await chatRpc('SendMessage', {
+      ...contractForTurn(),
       notebook: nb.id, cell: cell.dataset.id, helper: chosen,
       prompt: parts.prompt.value, context: cellChatContext(cell),
       expectedRevision: state.revision || '0',
     });
-    state.revision = sent.revision || state.revision;
-    state.messages = sent.messages || [];
-    state.loaded = true;
-    renderCellChat(cell);
+    if (current !== state.read) await loadCellChat(cell);
+    else {
+      state.revision = sent.revision || state.revision;
+      state.messages = sent.messages || [];
+      state.loaded = true;
+      renderCellChat(cell);
+    }
     parts.prompt.value = '';
     parts.status.textContent = 'Saved. Replies do not execute queries.';
   } catch (error) {
+    invalidateCellChat(cell);
     parts.status.textContent = error.message + ' Your draft is unchanged; reopen to reload history.';
   } finally {
     state.busy = false;

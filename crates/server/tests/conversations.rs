@@ -29,6 +29,12 @@ impl NotebookStore for Notebooks {
     async fn save(&self, _: &Notebook, _: &str) -> Result<String> {
         unreachable!()
     }
+    async fn snapshot(&self, id: &str) -> Result<NotebookSnapshot> {
+        Ok(NotebookSnapshot {
+            notebook: self.get(id).await?,
+            content_revision: "fixture".into(),
+        })
+    }
 }
 
 async fn setup() -> (Router, Arc<Mutex<Vec<Value>>>, tokio::task::JoinHandle<()>) {
@@ -96,6 +102,21 @@ async fn setup_with(
     })
     .await
     .unwrap();
+    let owners = Arc::new(InMemoryNotebookOwners::default());
+    for id in ["sales", "other"] {
+        owners
+            .change(NotebookOwnerChange {
+                source: "unconfigured".into(),
+                id: id.into(),
+                expected_owner: None,
+                owner: "alice".into(),
+                source_blob: "fixture".into(),
+                actor: "alice".into(),
+                reason: None,
+            })
+            .await
+            .unwrap();
+    }
     let state = Arc::new(AppState {
         conversations: store,
         exchanges: Arc::new(InMemoryExchanges::default()),
@@ -103,7 +124,12 @@ async fn setup_with(
             bind: "".into(),
             engines: vec![],
             catalogs: vec![],
-            catalog_bindings: vec![],
+            catalog_bindings: vec![CatalogBindingConfig {
+                catalog: "polaris".into(),
+                engine: "fixture".into(),
+                native_catalog: "polaris".into(),
+                policy: BindingPolicy::Unprotected,
+            }],
             default_engine: None,
             default_catalog: None,
         },
@@ -112,7 +138,7 @@ async fn setup_with(
         grants: Arc::new(InMemoryGrants::new()),
         audit: Arc::new(InMemoryAudit::new()),
         notebooks: Arc::new(Notebooks),
-        notebook_owners: Arc::new(InMemoryNotebookOwners::default()),
+        notebook_owners: owners,
         notebook_write: Arc::new(tokio::sync::Mutex::new(())),
         team_workspaces: None,
         team_git_targets: None,
@@ -120,6 +146,7 @@ async fn setup_with(
         shared_models: None,
         current_identity: None,
         shared_model_use_enabled: false,
+        compiled_contracts: None,
         contracts: Arc::new(contracts),
         http: reqwest::Client::new(),
         sessions: Arc::new(InMemorySessions::new(3600)),
@@ -191,8 +218,13 @@ async fn conversations_replay_private_history_and_reject_failed_or_stale_turns()
     {
         let seen = seen.lock().unwrap();
         assert_eq!(seen.len(), 2);
-        assert_eq!(seen[0]["_session"], first["id"]);
-        assert_eq!(seen[1]["_session"], first["id"]);
+        assert_ne!(seen[0]["_session"], seen[1]["_session"]);
+        assert_ne!(seen[0]["_session"], "forged-browser-session");
+        assert_ne!(seen[1]["_session"], "forged-browser-session");
+        assert_eq!(
+            next["id"], first["id"],
+            "local conversation identity stays stable"
+        );
         let messages = seen[1]["messages"].as_array().unwrap();
         assert!(messages.iter().any(|m| m["content"] == "Remember revenue"));
         assert!(messages
@@ -208,7 +240,7 @@ async fn conversations_replay_private_history_and_reject_failed_or_stale_turns()
             json!({"notebook":notebook}),
         )
         .await;
-        assert_eq!(status, 200);
+        assert_eq!(status, if who == "bob" { 403 } else { 200 });
         assert!(other
             .get("messages")
             .is_none_or(|m| m.as_array().unwrap().is_empty()));
@@ -333,6 +365,9 @@ struct OrdersCatalog {
 
 #[async_trait::async_trait]
 impl Catalog for OrdersCatalog {
+    fn metadata_read_bytes(&self) -> Option<usize> {
+        Some(0)
+    }
     fn id(&self) -> &CatalogId {
         &self.id
     }
@@ -344,11 +379,13 @@ impl Catalog for OrdersCatalog {
     }
     async fn list_namespaces(&self) -> Result<Vec<Namespace>> {
         Ok(vec![Namespace {
+            segments: Vec::new(),
             name: "sales".into(),
         }])
     }
     async fn list_tables(&self, _namespace: &str) -> Result<Vec<TableRef>> {
         Ok(vec![TableRef {
+            namespace_segments: Vec::new(),
             namespace: "sales".into(),
             name: "orders".into(),
         }])
@@ -373,10 +410,10 @@ impl Catalog for OrdersCatalog {
 }
 
 /// The reference material the question earns is retrieval-scoped: it names the
-/// table, carries its contract's semantics and the catalog's live schema, and
+/// table, carries only the admitted catalog's live schema, and
 /// stays out of an unrelated turn.
 #[tokio::test]
-async fn chat_grounding_carries_contracts_catalog_and_semantic_model() {
+async fn chat_grounding_carries_admitted_schema_without_unadmitted_contracts() {
     let mut catalogs = CatalogRegistry::new();
     catalogs.register(Arc::new(OrdersCatalog {
         id: CatalogId::new("polaris"),
@@ -416,10 +453,11 @@ schema:
     {
         let seen = seen.lock().unwrap();
         let system = seen[0]["messages"][0]["content"].as_str().unwrap();
-        assert!(system.contains("total decimal(12,2) (measure)"), "{system}");
+        assert!(system.contains("total decimal(12,2)"), "{system}");
         assert!(system.contains("catalog table sales.orders"), "{system}");
-        assert!(system.contains("cubes:"), "{system}");
-        assert!(system.contains("measures:"), "{system}");
+        assert!(!system.contains("one row per order"), "{system}");
+        assert!(!system.contains("cubes:"), "{system}");
+        assert!(!system.contains("measures:"), "{system}");
     }
     let (status, turn) = rpc(
         &app,

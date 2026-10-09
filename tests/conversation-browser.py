@@ -68,7 +68,39 @@ with tempfile.TemporaryDirectory(prefix="aster-chat-browser-") as work:
                 assert page.request.put(base+"/api/llm/test", data={
                     "base_url":f"http://127.0.0.1:{mock.server_port}/v1","model":"test","api_key":"fake"
                 }).ok
+                # This UI regression supplies contract responses; S7's router browser
+                # separately exercises real team admission and revocation.
+                def contract_context(route):
+                    method = route.request.url.rsplit("/", 1)[-1]
+                    values = {
+                        "ListContracts": {"contracts": [{"id": "fixture", "version": "1", "target": "mock", "path": "fixture.json", "sha256": "fixture"}]},
+                        "GetContract": {"declared": {"schema": [{"name": "orders"}]}, "provenance": {"path": "fixture.json"}},
+                        "PrepareContractQuery": {"declared": {"name": "orders"}, "binding": {"status": "missing"}, "observation": {"status": "unavailable"}},
+                    }
+                    route.fulfill(json={"contextJson": json.dumps(values[method])})
+                for method in ("ListContracts", "GetContract", "PrepareContractQuery"):
+                    page.route("**/aster.v1.Aster/" + method, contract_context)
                 page.goto(base+"/notebooks/chat-check")
+                expect(page.locator("#contract-context")).to_be_attached()
+                page.get_by_text("Contract context for manual query review", exact=True).click()
+                page.get_by_label("Declared contract", exact=True).select_option(index=1)
+                page.get_by_label("Declared object", exact=True).select_option("/schema/0")
+                editor = page.locator(".editor")
+                editor.fill("SEL")
+                page.keyboard.press("Control+Space")
+                expect(page.locator(".complete-item").first).to_be_visible()
+                page.keyboard.press("Enter")
+                expect(editor).to_be_focused()
+                expect(editor).to_have_value("SELECT")
+                # No refocus: completion must synchronize before review is clicked.
+                expect(page.get_by_label("Query draft", exact=True)).to_have_value("SELECT")
+                page.get_by_role("button", name="Review draft with context", exact=True).click()
+                expect(page.locator("#contract-review")).to_contain_text("SELECT")
+                assert received == [], "manual completion/review must not call the helper"
+                page.locator(".editor").fill("SELECT 7 AS manual_draft")
+                expect(page.locator("#contract-review")).to_be_empty()
+                expect(page.get_by_label("Query draft", exact=True)).to_have_value("SELECT 7 AS manual_draft")
+                page.locator(".editor").fill("select 1")
                 expect(page.locator("#helper")).to_have_value("")
                 assert page.request.get(base+"/api/notebooks/chat-check/helper").json()=={"helper":None}
                 page.locator("#helper").select_option("personal/test")
@@ -78,11 +110,20 @@ with tempfile.TemporaryDirectory(prefix="aster-chat-browser-") as work:
                 expect(page.locator("#chat-panel")).to_be_visible()
                 page.locator("#chat-expand").click()
                 expect(page.locator("#chat-expand")).to_have_attribute("aria-pressed","true")
+                selections = []
+                def selected_turn(route):
+                    body = route.request.post_data_json
+                    selections.append(body.pop("contractSelection", None))
+                    # The contract panel above is a UI fixture. Real admitted
+                    # selected requests are captured by odcs_ai_context on HTTPS.
+                    route.continue_(post_data=json.dumps(body))
+                page.route("**/aster.v1.Aster/SendMessage", selected_turn)
                 for prompt in ("Remember revenue", "Explain the earlier answer"):
                     page.locator("#chat-prompt").fill(prompt)
                     page.locator("#chat-send").click()
                     expect(page.locator("#chat-status")).to_have_text("Saved. Replies do not execute queries.")
                 assert len(received)==2
+                assert selections == [{"path":"fixture.json", "sha256":"fixture", "object":"/schema/0"}] * 2, selections
                 assert any(m["content"]=="Remember revenue" for m in received[1]["messages"])
                 assert any(m["role"]=="assistant" for m in received[1]["messages"])
                 expect(page.locator(".editor")).to_have_value("select 1")
@@ -140,14 +181,97 @@ with tempfile.TemporaryDirectory(prefix="aster-chat-browser-") as work:
                 first.locator('[data-action="ai"]').click()
                 expect(first.locator(".cell-chat")).to_be_visible()
                 expect(first.locator(".cell-chat-history")).to_be_visible()
+                page.get_by_text("Contract context for manual query review", exact=True).click()
+                page.get_by_label("Declared contract", exact=True).select_option(index=1)
+                page.get_by_label("Declared object", exact=True).select_option("/schema/0")
+                expect(page.locator("#contract-preparation")).to_contain_text("orders")
+                first.locator(".cell-chat-prompt").fill("Explain this cell")
+                first.locator(".cell-chat-send").click()
+                expect(first.locator(".cell-chat-status")).to_have_text("Saved. Replies do not execute queries.")
+                expect(first.locator(".cell-chat-history .chat-message")).to_have_count(2)
+                assert selections[-1] == {"path":"fixture.json", "sha256":"fixture", "object":"/schema/0"}, selections
+                first.locator(".cell-chat-prompt").fill("unsent cell draft")
                 ratio = page.evaluate("""() => {
                     const cell = document.querySelector('.cell');
                     const chat = cell.querySelector('.cell-chat');
                     return chat.getBoundingClientRect().width / cell.getBoundingClientRect().width;
                 }""")
                 assert ratio <= 0.30, ratio
+                # RV P2: revoke send admission while the cell remains open and
+                # loaded. An earlier allowed read must not restore its cache.
+                cell_body = {"notebook":"chat-check", "cell":"c1"}
+                cell_stored = page.request.post(base+"/aster.v1.Aster/GetConversation",
+                    headers={"Connect-Protocol-Version":"1"}, data=cell_body).json()
+                expect(first.get_by_role("button", name="Replace this cell", exact=True)).to_have_count(1)
+                pending_cell_read = []
+                def hold_cell_read(route):
+                    if route.request.post_data_json.get("cell") == "c1" and not pending_cell_read:
+                        pending_cell_read.append((route, route.fetch()))
+                    else:
+                        route.continue_()
+                page.route("**/aster.v1.Aster/GetConversation", hold_cell_read)
+                page.evaluate("() => { void loadCellChat(document.querySelector('.cell')); }")
+                for _ in range(50):
+                    if pending_cell_read: break
+                    page.wait_for_timeout(20)
+                assert pending_cell_read
+                assert page.evaluate("cellChatState('c1').loaded")
+                helper_before = len(received)
+                editor_before = first.locator(".editor").input_value()
+                page.context.add_cookies([{"name":"aster_roles", "value":"viewer", "url":base}])
+                with page.expect_response(lambda response: response.url.endswith("/aster.v1.Aster/SendMessage")) as denied_send:
+                    first.locator(".cell-chat-send").click()
+                assert denied_send.value.status == 403
+                expect(first.locator(".cell-chat-status")).to_contain_text("Your draft is unchanged")
+                expect(first.locator(".cell-chat-history")).to_be_empty()
+                expect(first.get_by_role("button", name="Replace this cell", exact=True)).to_have_count(0)
+                assert page.evaluate("!cellChatState('c1').loaded && cellChatState('c1').messages.length === 0")
+                expect(first.locator(".cell-chat-prompt")).to_have_value("unsent cell draft")
+                pending_cell_read[0][0].fulfill(response=pending_cell_read[0][1])
+                page.wait_for_timeout(150)
+                expect(first.locator(".cell-chat-history")).to_be_empty()
+                assert page.evaluate("!cellChatState('c1').loaded && cellChatState('c1').messages.length === 0")
+                expect(first.locator(".cell-chat-prompt")).to_have_value("unsent cell draft")
+                expect(first.locator(".editor")).to_have_value(editor_before)
+                assert len(received) == helper_before, "revoked send must not call helper"
+                assert page.request.post(base+"/aster.v1.Aster/GetConversation",
+                    headers={"Connect-Protocol-Version":"1"}, data=cell_body).json() == cell_stored
+                page.unroute("**/aster.v1.Aster/GetConversation", hold_cell_read)
+                page.context.add_cookies([{"name":"aster_roles", "value":"editor", "url":base}])
+                page.evaluate("loadCellChat(document.querySelector('.cell'))")
+                expect(first.locator(".cell-chat-history .chat-message")).to_have_count(2)
                 first.locator(".cell-chat-close").click()
                 expect(first.locator(".cell-chat")).to_be_hidden()
+                # Failed fresh admission must clear displayed cached replies,
+                # retaining both composers and the server's stored history.
+                before_denial = []
+                def deny_history(route):
+                    if not before_denial:
+                        before_denial.append((route, route.fetch()))
+                    else:
+                        route.fulfill(status=403, json={"code":"permission_denied", "message":"Context revoked; start a fresh conversation"})
+                page.route("**/aster.v1.Aster/GetConversation", deny_history)
+                page.locator("#chat-close").click()
+                page.locator("#chat-toggle").click()
+                for _ in range(50):
+                    if before_denial: break
+                    page.wait_for_timeout(20)
+                assert before_denial
+                page.locator("#chat-close").click()
+                page.locator("#chat-toggle").click()
+                expect(page.locator("#chat-status")).to_contain_text("fresh conversation")
+                expect(page.locator("#chat-history")).to_be_empty()
+                before_denial[0][0].fulfill(response=before_denial[0][1])
+                page.wait_for_timeout(150)
+                expect(page.locator("#chat-history")).to_be_empty()
+                expect(page.locator("#chat-status")).to_contain_text("fresh conversation")
+                expect(page.locator("#chat-prompt")).to_have_value("unsent draft")
+                first.locator('[data-action="ai"]').click()
+                expect(first.locator(".cell-chat-status")).to_contain_text("fresh conversation")
+                expect(first.locator(".cell-chat-history")).to_be_empty()
+                expect(first.locator(".cell-chat-prompt")).to_have_value("unsent cell draft")
+                stored = page.request.post(base+"/aster.v1.Aster/GetConversation", headers={"Connect-Protocol-Version":"1"}, data={"notebook":"chat-check"}).json()
+                assert len(stored["messages"]) == 6, stored
                 page.set_viewport_size({"width":390,"height":844})
                 expect(page.locator("#chat-send")).to_be_visible()
                 page.screenshot(path="/tmp/aster-conversation-sidebar.png",full_page=True)

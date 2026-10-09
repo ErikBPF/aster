@@ -26,6 +26,120 @@ use cucumber::{given, then, when, World};
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
+#[path = "support/catalog_credentials.rs"]
+mod catalog_credentials;
+
+#[then("S6 catalog observations are current complete bounded and target authenticated")]
+async fn s6_quality(_: &mut Contract) {
+    catalog_credentials::quality::polaris_health_shares_oauth_deadline().await;
+    catalog_credentials::quality::polaris_pages_share_bytes_and_elapsed_budget().await;
+    catalog_credentials::partial_polaris_environment_refuses_startup().await;
+    catalog_credentials::quality::iceberg_current_schema_and_pages().await;
+    catalog_credentials::quality::provider_http_errors_are_not_empty_success().await;
+    catalog_credentials::quality::openmetadata_pages_and_registered_auth().await;
+    catalog_credentials::secret_selection_reaches_only_the_configured_catalog().await;
+}
+
+#[path = "support/odcs_resolution.rs"]
+mod odcs_resolution;
+
+#[then("S8 physical inventory scopes entries and refuses unknown evidence")]
+async fn s8_inventory(_: &mut Contract) {
+    odcs_resolution::physical_inventory_admission().await;
+}
+
+#[then("mock table contracts keep sibling artifacts and inventory independently admitted")]
+async fn mock_table_admission(_: &mut Contract) {
+    odcs_resolution::mock_table_grants_do_not_disclose_siblings().await;
+}
+
+#[then("S8 unknown and unauthorized schemas have indistinguishable responses")]
+async fn s8_inventory_existence(_: &mut Contract) {
+    odcs_resolution::inventory_unknown_and_unauthorized_are_indistinguishable().await;
+}
+
+#[then("S8 ownership and contract admission use one current identity")]
+async fn s8_inventory_identity(_: &mut Contract) {
+    odcs_resolution::inventory_uses_one_current_identity_snapshot().await;
+}
+
+#[then("S8 nested properties items and maps retain declared semantic annotations")]
+async fn s8_inventory_semantics(_: &mut Contract) {
+    odcs_resolution::inventory_nested_semantic_annotations_are_detected().await;
+}
+
+#[then("S8 unselected assistance discloses no physical metadata")]
+async fn s8_ai(_: &mut Contract) {
+    odcs_ai_context::selected_flow("inventory-unselected").await;
+    odcs_ai_context::selected_flow("inventory-history").await;
+}
+
+#[then("S4 original preview preserves source bytes and schema-valid content under whole-document admission")]
+async fn s4_original_preview(_: &mut Contract) {
+    odcs_resolution::full_document_preview_preserves_all_content().await;
+}
+
+#[allow(dead_code)]
+#[path = "support/odcs_ai_context.rs"]
+mod odcs_ai_context;
+
+#[then("S5 selected reference is bounded and revoked history cannot replay")]
+async fn s5_reference(_: &mut Contract) {
+    odcs_ai_context::selected_flow("selection-limit").await;
+    odcs_ai_context::selected_flow("failed-cache").await;
+    odcs_ai_context::selected_flow("observation-revoke").await;
+    odcs_ai_context::selected_flow("legacy-observation-revoke").await;
+    odcs_ai_context::selected_flow("revoke").await;
+    odcs_ai_context::selected_flow("legacy-history").await;
+    odcs_ai_context::selected_flow("history-budget").await;
+    odcs_ai_context::selected_flow("field-budget").await;
+}
+#[then("S5 authorized meaning survives denied and unavailable observations")]
+async fn s5_observation(_: &mut Contract) {
+    odcs_ai_context::selected_flow("denied").await;
+    odcs_ai_context::selected_flow("timeout").await;
+}
+#[then("S5 actual helper requests and returned drafts follow exact selected semantics")]
+async fn s5_drafts(_: &mut Contract) {
+    odcs_ai_context::selected_flow("drafts").await;
+    odcs_ai_context::selected_flow("cell").await;
+}
+
+#[then("S7 browser preserves admitted meaning and clears revoked context")]
+#[then("S7 browser reviews edited drafts with selected meaning and binding gaps")]
+async fn s7_browser(_: &mut Contract) {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let status = tokio::process::Command::new("python3")
+        .arg("tests/odcs-catalog-browser.py")
+        .current_dir(root)
+        .status()
+        .await
+        .unwrap();
+    assert!(status.success(), "S7 real browser assertions failed");
+}
+
+#[then("S3 exact object selection preserves its explicit binding")]
+async fn s3_binding(_: &mut Contract) {
+    odcs_resolution::bound_checks().await;
+}
+#[then("S3 observed columns do not replace declared meaning")]
+async fn s3_observation(_: &mut Contract) {
+    odcs_resolution::observation_checks().await;
+    odcs_resolution::unavailable_checks().await;
+}
+#[then("S3 whole document admission checks fresh team membership")]
+async fn s3_admission(_: &mut Contract) {
+    odcs_resolution::whole_contract_team_access_is_default_deny().await;
+}
+#[then("S3 revoked and missing authority cannot read contracts")]
+async fn s3_denial(_: &mut Contract) {
+    odcs_resolution::whole_contract_team_access_is_default_deny().await;
+}
+#[then("S3 preparation preserves meaning with missing bindings")]
+async fn s3_preparation(_: &mut Contract) {
+    odcs_resolution::checks(true).await;
+}
+
 /// Counts executions so "the request is forwarded to the engine" is observable,
 /// and can be told to refuse the statement so the query-error path is drivable.
 struct StubEngine {
@@ -89,6 +203,7 @@ impl Catalog for StubCatalog {
 
     async fn list_namespaces(&self) -> aster_core::Result<Vec<Namespace>> {
         Ok(vec![Namespace {
+            segments: Vec::new(),
             name: "default".into(),
         }])
     }
@@ -96,6 +211,7 @@ impl Catalog for StubCatalog {
     async fn list_tables(&self, namespace: &str) -> aster_core::Result<Vec<TableRef>> {
         Ok(match namespace {
             "default" => vec![TableRef {
+                namespace_segments: Vec::new(),
                 namespace: "default".into(),
                 name: "orders".into(),
             }],
@@ -332,6 +448,7 @@ impl Contract {
             shared_models: None,
             current_identity: None,
             shared_model_use_enabled: false,
+            compiled_contracts: None,
             contracts: Arc::new(Vec::new()),
             http: reqwest::Client::new(),
             sessions: Arc::new(InMemorySessions::new(3600)),
@@ -1531,6 +1648,7 @@ fn owner_notebook(id: &str, sql: &str) -> Notebook {
             id: "c1".into(),
             sql: sql.into(),
             engine: None,
+            metadata: Default::default(),
         }],
     }
 }
@@ -2206,6 +2324,52 @@ async fn exchange_then_other_holds(world: &mut Contract, notebook: String, held_
     );
 }
 
+#[path = "support/ai_context_boundary.rs"]
+mod ai_context_boundary;
+
+#[then("protected metadata makes zero catalog or helper requests with a separate allowed schema control")]
+async fn odcs_denied_metadata(_: &mut Contract) {
+    ai_context_boundary::denied_metadata().await;
+}
+
+#[then("mixed metadata sends the allowed schema but never reads unbound catalogs or discloses unadmitted contracts")]
+async fn odcs_mixed_metadata(_: &mut Contract) {
+    ai_context_boundary::mixed_metadata().await;
+}
+
+#[then(
+    "two teams and two sessions and a personal workspace send only their admitted notebook index"
+)]
+async fn odcs_workspace_index(_: &mut Contract) {
+    ai_context_boundary::workspace_index().await;
+}
+
+#[path = "support/odcs_intake.rs"]
+mod odcs_intake;
+
+#[then("compiled artifact preservation and manifest selection pass without author files")]
+async fn s2_compiled(_: &mut Contract) {
+    odcs_intake::compiled_bundle_requires_no_author_tree();
+    odcs_intake::compiled_bundle_selection_and_pins_are_explicit();
+    odcs_intake::intake_preservation_does_not_expand_legacy_disclosure();
+}
+#[then("all compiled document objects and original identity remain intact")]
+async fn s2_preserved(_: &mut Contract) {
+    odcs_intake::compiled_bundle_requires_no_author_tree();
+}
+#[then("invalid v3.2 fails the pinned offline schema")]
+async fn s2_invalid(_: &mut Contract) {
+    odcs_intake::offline_schema_validation_is_distinct_from_support();
+}
+#[then("schema-valid v3.1 fails support without conversion")]
+async fn s2_version(_: &mut Contract) {
+    odcs_intake::schema_valid_v31_is_rejected_without_conversion();
+}
+#[then("qualified namespaces retain exact provider segments through API transport")]
+async fn s2_namespace(_: &mut Contract) {
+    odcs_intake::namespace_segments_survive_adapter_boundaries().await;
+}
+
 /// Only the features that are bound to this harness run: the repository marks
 /// drafts `@unautomated`, so dropping that tag is what wires a contract in.
 #[tokio::main]
@@ -2214,6 +2378,8 @@ async fn main() {
         .with_env_filter("error")
         .try_init();
     Contract::cucumber()
+        // Browser/HTTP fixtures share the host; isolate their wall-clock bounds.
+        .max_concurrent_scenarios(1)
         .filter_run_and_exit("features", |feature, _, _| {
             let tagged = |tag: &str| feature.tags.iter().any(|value| value == tag);
             tagged("contract") && !tagged("unautomated")

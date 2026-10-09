@@ -176,6 +176,10 @@ impl IdentityProvider for OidcProvider {
         "oidc"
     }
 
+    fn callback_uri(&self) -> Option<&str> {
+        Some(&self.config.redirect_uri)
+    }
+
     async fn begin(&self) -> Result<IdentityHandshake> {
         let client = self.client().await?;
         let (challenge, verifier) = PkceCodeChallenge::new_random_sha256();

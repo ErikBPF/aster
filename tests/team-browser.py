@@ -20,7 +20,8 @@ html = """
     <textarea id="chat-context"></textarea><button id="chat-send">Send</button></form>
 </aside>
 <div id="cells"><section class="cell" data-id="c1">
-  <textarea class="editor">SELECT 1</textarea><select class="engine"><option value="">default</option></select>
+  <div class="cell-head"><select class="engine"><option value="">default</option></select></div>
+  <textarea class="editor">SELECT 1</textarea>
 </section></div>
 <script type="application/json" id="nb" data-content-revision="old" data-team="alpha" data-workspace="session">
 {"id":"base","title":"Base","cells":[{"id":"c1","sql":"SELECT 1","engine":null}]}
@@ -38,7 +39,7 @@ with sync_playwright() as pw:
       window.fetch = async (url, options = {}) => {
         window.calls.push({url, method: options.method || 'GET',
           headers: options.headers || {}, body: options.body || null});
-        const data = url === '/api/engines' ? [] :
+        const data = url === '/api/catalogs' || url.startsWith('/api/engines') ? [] :
           url === '/api/llm' ? [{id:'go', model:'go', scope:'personal', ref:'personal/go'}] :
           url === '/api/state' ? {} :
           url.endsWith('/helper') ? options.method === 'PUT'

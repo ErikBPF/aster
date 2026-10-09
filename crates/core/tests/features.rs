@@ -161,6 +161,7 @@ fn push_cell(world: &mut App, id: String, sql: String, engine: Option<String>) {
         id,
         sql,
         engine: engine.map(EngineId::new),
+        metadata: Default::default(),
     });
 }
 
@@ -571,7 +572,11 @@ async fn a_table(world: &mut App, namespace: String, name: String, columns: Stri
         })
         .collect();
     world.table = Some(TableSchema {
-        table: TableRef { namespace, name },
+        table: TableRef {
+            namespace_segments: vec![namespace.clone()],
+            namespace,
+            name,
+        },
         columns,
     });
 }

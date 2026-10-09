@@ -313,6 +313,7 @@ mod tests {
     fn schema() -> TableSchema {
         TableSchema {
             table: TableRef {
+                namespace_segments: Vec::new(),
                 namespace: "sales".into(),
                 name: "orders".into(),
             },
@@ -466,6 +467,7 @@ mod tests {
     #[test]
     fn file_names_keep_dashes_and_digits_out_of_the_way() {
         let dashed = TableRef {
+            namespace_segments: Vec::new(),
             namespace: "sales".into(),
             name: "order-facts".into(),
         };
@@ -474,6 +476,7 @@ mod tests {
 
         let digits = TableSchema {
             table: TableRef {
+                namespace_segments: Vec::new(),
                 namespace: "sales".into(),
                 name: "2orders".into(),
             },

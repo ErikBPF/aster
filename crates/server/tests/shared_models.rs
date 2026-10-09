@@ -9,13 +9,27 @@ use base64::Engine;
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
-fn app_with_personal_helpers() -> Router {
+async fn app_with_personal_helpers() -> Router {
     let keyset = json!({"v1": base64::engine::general_purpose::STANDARD.encode([7u8; 32])});
     let shared_models = SharedModels::new(
         Arc::new(InMemorySharedModels::default()),
         DestinationPolicy::parse("https://approved.example.invalid").unwrap(),
         Keyring::parse("v1", &keyset.to_string()).unwrap(),
     );
+    let notebooks = Arc::new(SalesNotebook);
+    let notebook_owners = Arc::new(InMemoryNotebookOwners::default());
+    notebook_owners
+        .change(NotebookOwnerChange {
+            source: notebooks.source_key(),
+            id: "sales".into(),
+            expected_owner: None,
+            owner: "alice".into(),
+            source_blob: notebooks.snapshot("sales").await.unwrap().content_revision,
+            actor: "alice".into(),
+            reason: Some("shared-model fixture notebook".into()),
+        })
+        .await
+        .unwrap();
     app(Arc::new(AppState {
         config: AppConfig {
             bind: String::new(),
@@ -29,8 +43,8 @@ fn app_with_personal_helpers() -> Router {
         catalogs: CatalogRegistry::new(),
         grants: Arc::new(InMemoryGrants::new()),
         audit: Arc::new(InMemoryAudit::new()),
-        notebooks: Arc::new(NoNotebooks),
-        notebook_owners: Arc::new(InMemoryNotebookOwners::default()),
+        notebooks,
+        notebook_owners,
         notebook_write: Arc::new(tokio::sync::Mutex::new(())),
         team_workspaces: None,
         team_git_targets: None,
@@ -40,6 +54,7 @@ fn app_with_personal_helpers() -> Router {
         shared_model_use_enabled: false,
         conversations: Arc::new(InMemoryConversations::default()),
         exchanges: Arc::new(InMemoryExchanges::default()),
+        compiled_contracts: None,
         contracts: Arc::new(vec![]),
         http: reqwest::Client::new(),
         sessions: Arc::new(InMemorySessions::new(3600)),
@@ -53,18 +68,31 @@ fn app_with_personal_helpers() -> Router {
     }))
 }
 
-struct NoNotebooks;
+struct SalesNotebook;
 
 #[async_trait::async_trait]
-impl NotebookStore for NoNotebooks {
-    async fn get(&self, _: &str) -> Result<Notebook> {
-        Err(CoreError::NotFound("no notebooks".into()))
+impl NotebookStore for SalesNotebook {
+    async fn get(&self, id: &str) -> Result<Notebook> {
+        if id != "sales" {
+            return Err(CoreError::NotFound("notebook".into()));
+        }
+        Ok(Notebook {
+            id: id.into(),
+            title: "Sales".into(),
+            cells: vec![],
+        })
+    }
+    async fn snapshot(&self, id: &str) -> Result<NotebookSnapshot> {
+        Ok(NotebookSnapshot {
+            notebook: self.get(id).await?,
+            content_revision: "1".repeat(40),
+        })
     }
     async fn save(&self, _: &Notebook, _: &str) -> Result<String> {
         Err(CoreError::NotFound("no notebooks".into()))
     }
     async fn list(&self, _: &str) -> Result<Vec<String>> {
-        Ok(vec![])
+        Ok(vec!["sales".into()])
     }
 }
 
@@ -98,7 +126,7 @@ async fn request(
 
 #[tokio::test]
 async fn only_admin_can_register_a_shared_model() {
-    let app = app_with_personal_helpers();
+    let app = app_with_personal_helpers().await;
     let payload = json!({
         "base_url": "https://approved.example.invalid/v1",
         "model": "deepseek-v4.1",
@@ -118,7 +146,7 @@ async fn only_admin_can_register_a_shared_model() {
 
 #[tokio::test]
 async fn admin_shared_registration_does_not_shadow_personal_name_or_disclose_token() {
-    let app = app_with_personal_helpers();
+    let app = app_with_personal_helpers().await;
     let personal = json!({
         "base_url": "http://personal.example.invalid/v1",
         "model": "personal-qwen",
@@ -242,7 +270,7 @@ async fn admin_shared_registration_does_not_shadow_personal_name_or_disclose_tok
 
 #[tokio::test]
 async fn admin_registry_is_invisible_to_ordinary_list_selection_and_generation() {
-    let app = app_with_personal_helpers();
+    let app = app_with_personal_helpers().await;
     let shared = json!({
         "base_url": "https://approved.example.invalid/v1",
         "model": "shared-qwen",
@@ -310,7 +338,7 @@ async fn admin_registry_is_invisible_to_ordinary_list_selection_and_generation()
 
 #[tokio::test]
 async fn unapproved_and_credential_bearing_destinations_are_refused() {
-    let app = app_with_personal_helpers();
+    let app = app_with_personal_helpers().await;
     for destination in [
         "https://other.example.invalid/v1",
         "http://approved.example.invalid/v1",

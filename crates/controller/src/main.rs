@@ -90,7 +90,11 @@ pub async fn reconcile(
     }
 
     for catalog_config in &config.catalogs {
-        let catalog = aster_catalogs::catalog_from_config(catalog_config)?;
+        let catalog = aster_catalogs::catalog_from_config_with_secrets(
+            catalog_config,
+            &aster_core::EnvSecrets,
+        )
+        .await?;
         let health = catalog.health().await.as_str();
         sqlx::query(
             "INSERT INTO catalogs (id, kind, endpoint, catalog, health, checked_at)

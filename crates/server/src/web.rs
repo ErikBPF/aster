@@ -24,6 +24,34 @@ fn escape(value: &str) -> String {
         .replace('"', "&quot;")
 }
 
+fn namespace_token(segments: &[String]) -> Result<String, CoreError> {
+    if let Ok(name) = aster_core::catalog::legacy_namespace(segments) {
+        if !name.starts_with('~') {
+            return Ok(name);
+        }
+    }
+    use base64::Engine;
+    let bytes =
+        serde_json::to_vec(segments).map_err(|_| CoreError::Invalid("invalid namespace".into()))?;
+    Ok(format!(
+        "~{}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+    ))
+}
+
+fn decode_namespace(token: &str) -> Result<Vec<String>, CoreError> {
+    use base64::Engine;
+    if let Some(encoded) = token.strip_prefix('~') {
+        let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(encoded)
+            .map_err(|_| CoreError::Invalid("invalid namespace encoding".into()))?;
+        let segments: Vec<String> = serde_json::from_slice(&bytes)
+            .map_err(|_| CoreError::Invalid("invalid namespace array".into()))?;
+        return aster_core::catalog::namespace_segments("", &segments);
+    }
+    aster_core::catalog::namespace_segments(token, &[])
+}
+
 fn catalog_path(parts: &[&str]) -> String {
     let mut url = reqwest::Url::parse("http://aster.invalid/catalog").expect("static URL");
     {
@@ -110,14 +138,14 @@ pub async fn index(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    if state.team_workspaces.is_some() {
+    if !state.local_notebooks_enabled() {
         return Err(CoreError::Unauthorized("team notebook context required".into()).into());
     }
     let Some(principal) = browser_principal(&state, &headers).await else {
         return Ok(sign_in_redirect());
     };
     authorize(&principal, Action::ReadNotebook)?;
-    let ids = state.notebooks.list(&principal.subject).await?;
+    let ids = state.owned_notebooks(&principal.subject).await?;
 
     // Where the user left off, resolved from the shared state plane, so a
     // restart or a different container still offers the same place (D18).
@@ -169,14 +197,16 @@ pub async fn notebook_view(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
-    if state.team_workspaces.is_some() {
+    if !state.local_notebooks_enabled() {
         return Err(CoreError::Unauthorized("team notebook context required".into()).into());
     }
     let Some(principal) = browser_principal(&state, &headers).await else {
         return Ok(sign_in_redirect());
     };
     authorize(&principal, Action::ReadNotebook)?;
-    let snapshot = state.notebook_snapshot(&id).await?;
+    let snapshot = state
+        .owned_notebook_snapshot(&id, &principal.subject)
+        .await?;
     let body = notebook_body(&snapshot.notebook, &snapshot.content_revision, None);
     Ok(Html(layout(
         "notebooks",
@@ -340,6 +370,7 @@ fn notebook_body(
          <p class=\"status\">run with <span class=\"kbd\">⌘/Ctrl</span> <span class=\"kbd\">Enter</span>, \
          run and move on with <span class=\"kbd\">Shift</span> <span class=\"kbd\">Enter</span>, \
          save with <span class=\"kbd\">⌘/Ctrl</span> <span class=\"kbd\">S</span></p>\
+         <details><summary>Contract context for manual query review</summary>{contract_context}</details>\
          <div class=\"cells\" id=\"cells\">{cells}</div>\
          <aside id=\"chat-panel\" class=\"chat-panel\" aria-label=\"Notebook conversation\" hidden>\
          <div class=\"chat-heading\"><strong>Notebook assistant</strong>\
@@ -360,10 +391,45 @@ fn notebook_body(
         id = escape(&notebook.id),
         title = escape(&notebook.title),
         content_revision = escape(content_revision),
+        contract_context = contract_context(),
     )
 }
 
 const SESSION_COOKIE: &str = "aster_session";
+
+// A pending browser login lasts at most five minutes; a shorter handshake-store
+// TTL still expires it server-side. This cookie is host-only (no Domain).
+const OIDC_COOKIE_MAX_AGE: i64 = 300;
+
+fn secure_cookies(state: &AppState) -> bool {
+    state.identity.as_ref().is_some_and(|identity| {
+        identity
+            .callback_uri()
+            .and_then(|uri| reqwest::Url::parse(uri).ok())
+            .is_none_or(|uri| uri.scheme() != "http")
+    })
+}
+
+fn oidc_cookie_name(state: &AppState) -> &'static str {
+    if secure_cookies(state) {
+        "__Host-aster_oidc_state"
+    } else {
+        "aster_oidc_state"
+    }
+}
+
+fn set_oidc_cookie(response: &mut Response, state: &AppState, value: &str, max_age: i64) {
+    let name = oidc_cookie_name(state);
+    let secure = if secure_cookies(state) {
+        "; Secure"
+    } else {
+        ""
+    };
+    set_cookie(
+        response,
+        &format!("{name}={value}; Path=/; HttpOnly; SameSite=Lax{secure}; Max-Age={max_age}"),
+    );
+}
 
 /// Starts the authorization-code flow, or falls back to the dev login form when
 /// no identity provider is configured.
@@ -372,6 +438,9 @@ pub async fn login(State(state): State<Arc<AppState>>) -> Result<Response, ApiEr
         return Ok(Redirect::to("/dev-login").into_response());
     };
     let handshake = identity.begin().await?;
+    if !safe_cookie_value(&handshake.state) {
+        return Err(CoreError::Invalid("invalid login state".into()).into());
+    }
     // The PKCE verifier and nonce wait in the shared store, keyed by the
     // provider's state parameter, and are redeemed exactly once by the callback
     // (D20).
@@ -383,7 +452,9 @@ pub async fn login(State(state): State<Arc<AppState>>) -> Result<Response, ApiEr
             now(),
         )
         .await?;
-    Ok(Redirect::to(&handshake.url).into_response())
+    let mut response = Redirect::to(&handshake.url).into_response();
+    set_oidc_cookie(&mut response, &state, &handshake.state, OIDC_COOKIE_MAX_AGE);
+    Ok(response)
 }
 
 #[derive(serde::Deserialize)]
@@ -398,25 +469,57 @@ pub async fn callback(
     headers: HeaderMap,
     Query(params): Query<CallbackQuery>,
 ) -> Result<Response, ApiError> {
-    if let Some(error) = params.error {
-        // The provider's text is for the log; the client gets a plain refusal.
-        tracing::warn!(%error, "identity provider refused the login");
+    let returned_state = params
+        .state
+        .as_deref()
+        .ok_or_else(|| CoreError::Invalid("missing state".into()))?;
+    let name = oidc_cookie_name(&state);
+    let bindings: Vec<_> = headers
+        .get_all(header::COOKIE)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(';'))
+        .filter_map(|part| part.trim().split_once('='))
+        .filter(|(key, _)| *key == name)
+        .map(|(_, value)| value)
+        .collect();
+    if returned_state.is_empty() || bindings.as_slice() != [returned_state] {
+        // A foreign/malformed callback must neither consume the real handshake
+        // nor clear a different pending login in the receiving browser.
+        return Err(
+            CoreError::Unauthorized("login browser binding missing or invalid".into()).into(),
+        );
+    }
+    let mut response = redeem_callback(&state, &headers, params)
+        .await
+        .into_response();
+    set_oidc_cookie(&mut response, &state, "", 0);
+    Ok(response)
+}
+
+async fn redeem_callback(
+    state: &AppState,
+    headers: &HeaderMap,
+    params: CallbackQuery,
+) -> Result<Response, ApiError> {
+    // Single use: the entry is gone whether or not the exchange succeeds, so a
+    // replayed callback cannot mint a second session. Browser binding has already
+    // been checked; the store's atomic take remains the cross-replica replay gate.
+    let payload = state
+        .handshakes
+        .take(
+            params.state.as_deref().expect("binding checked state"),
+            now(),
+        )
+        .await?
+        .ok_or_else(|| CoreError::Unauthorized("login attempt expired or already used".into()))?;
+    if params.error.is_some() {
+        tracing::warn!("identity provider refused the login");
         return Err(CoreError::Unauthorized("login refused".into()).into());
     }
     let code = params
         .code
         .ok_or_else(|| CoreError::Invalid("missing authorization code".into()))?;
-    let returned_state = params
-        .state
-        .ok_or_else(|| CoreError::Invalid("missing state".into()))?;
-
-    // Single use: the entry is gone whether or not the exchange succeeds, so a
-    // replayed callback cannot mint a second session (D20).
-    let payload = state
-        .handshakes
-        .take(&returned_state, now())
-        .await?
-        .ok_or_else(|| CoreError::Unauthorized("login attempt expired or already used".into()))?;
     let (verifier, nonce) = payload
         .split_once(':')
         .ok_or_else(|| CoreError::Unauthorized("incomplete handshake payload".into()))?;
@@ -439,9 +542,7 @@ pub async fn callback(
         .await?;
 
     let mut response = Redirect::to("/").into_response();
-    // Secure only once SSO is configured: the dev seam runs over plain HTTP on
-    // localhost, where a Secure cookie would never be stored.
-    let secure = if state.identity.is_some() {
+    let secure = if secure_cookies(state) {
         "; Secure"
     } else {
         ""
@@ -465,12 +566,18 @@ pub async fn logout(State(state): State<Arc<AppState>>, headers: HeaderMap) -> R
         }
     }
     let mut response = Redirect::to("/login").into_response();
+    let secure = if secure_cookies(&state) {
+        "; Secure"
+    } else {
+        ""
+    };
     for name in [SESSION_COOKIE, "aster_subject", "aster_roles"] {
         set_cookie(
             &mut response,
-            &format!("{name}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"),
+            &format!("{name}=; Path=/; HttpOnly; SameSite=Lax{secure}; Max-Age=0"),
         );
     }
+    set_oidc_cookie(&mut response, &state, "", 0);
     response
 }
 
@@ -482,6 +589,82 @@ pub async fn catalog(
         return Ok(sign_in_redirect());
     };
     authorize(&principal, Action::ReadNotebook)?;
+    let mut body = String::from("<section class=\"panel\" aria-label=\"Physical inventory\"><h1>Catalog inventory</h1><p>Physical presence, admitted contracts and declared semantics are independent. Query-target authorization is not yet enforced by this inventory.</p>");
+    match crate::catalog_inventory::all(&state, &headers).await {
+        Ok(inventories) => {
+            for inventory in inventories {
+                body.push_str(&format!(
+                    "<h2>{}</h2>",
+                    escape(&format!(
+                        "{} / {}",
+                        inventory["catalog"], inventory["namespaceSegments"]
+                    ))
+                ));
+                if inventory["physical"]["status"] == "unknown" {
+                    body.push_str("<p role=\"status\">Physical inventory unavailable; no accessible entries confirmed.</p>");
+                    continue;
+                }
+                body.push_str("<table class=\"schema\"><tr><th>Object</th><th>Physical</th><th>Contract</th><th>Semantics</th></tr>");
+                for entry in inventory["entries"].as_array().into_iter().flatten() {
+                    body.push_str(&format!(
+                        "<tr><td>{}</td><td>present</td><td>{}</td><td>{}</td></tr>",
+                        escape(entry["physicalName"].as_str().unwrap_or("")),
+                        escape(entry["contract"]["status"].as_str().unwrap_or("unknown")),
+                        escape(entry["semantics"]["status"].as_str().unwrap_or("unknown"))
+                    ));
+                }
+                body.push_str("</table>");
+            }
+        }
+        Err(error) => {
+            tracing::warn!(%error, "inventory unavailable");
+            body.push_str("<p role=\"status\">Inventory unavailable: current identity and configured schema ownership are required.</p>");
+        }
+    }
+    body.push_str("</section><details open><summary>Authorized contract artifacts and query context (not physical inventory)</summary>");
+    body.push_str(&contract_context());
+    body.push_str("</details>");
+    Ok(Html(layout(
+        "catalog",
+        "contracts and query context",
+        &principal,
+        &body,
+    ))
+    .into_response())
+}
+
+fn contract_context() -> String {
+    "<section id=\"contract-context\" class=\"panel\" aria-label=\"Contract query context\">\
+     <div class=\"panel-body\"><h1>Contracts and query context</h1>\
+     <p>Start with declared meaning from compiled ODCS 3.2 contracts. Observation and execution require separate access.</p>\
+     <label for=\"contract-selection\">Declared contract</label>\
+     <select id=\"contract-selection\"><option value=\"\">Select a contract</option></select>\
+     <button type=\"button\" class=\"btn\" id=\"contract-refresh\">Refresh contracts</button>\
+     <p id=\"contract-status\" role=\"status\"></p>\
+     <details><summary>Full declared document and provenance</summary><pre id=\"contract-document\"></pre></details>\
+     <label for=\"contract-object\">Declared object</label>\
+     <select id=\"contract-object\" disabled><option value=\"\">Select an object</option></select>\
+     <div id=\"contract-preparation\" aria-live=\"polite\"></div>\
+     <label for=\"contract-draft\">Query draft</label>\
+     <textarea id=\"contract-draft\" rows=\"6\" spellcheck=\"false\"></textarea>\
+     <button type=\"button\" class=\"btn\" id=\"contract-review-button\" disabled>Review draft with context</button>\
+     <p>Review is manual: it does not validate SQL or execute it. No joins, aggregates or physical identifiers are inferred. \
+     AI contract assistance and exports are not available here.</p>\
+     <div id=\"contract-review\" aria-live=\"polite\"></div>\
+     <a href=\"/catalog/physical\">Physical catalogs (expert observation)</a></div></section>".into()
+}
+
+pub async fn physical_catalog(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let Some(principal) = browser_principal(&state, &headers).await else {
+        return Ok(sign_in_redirect());
+    };
+    authorize(&principal, Action::ReadNotebook)?;
+    if state.compiled_contracts.is_some() {
+        return Ok(Redirect::to("/catalog").into_response());
+    }
 
     let mut body = String::from(
         "<div class=\"page-head\"><div><h1>Catalog</h1>\
@@ -496,7 +679,7 @@ pub async fn catalog(
         body.push_str("<div class=\"empty\">no catalogs registered</div>");
     }
     for catalog in state.catalogs.list() {
-        if !crate::catalog_metadata_visible(&state, &catalog.id().0) {
+        if !crate::catalog_inventory::visible(&state, &headers, &catalog.id().0).await {
             continue;
         }
         let id = catalog.id().to_string();
@@ -508,14 +691,19 @@ pub async fn catalog(
             kind = escape(catalog.kind()),
             health = health_badge(health),
         ));
-        match catalog.list_namespaces().await {
+        match crate::catalog_inventory::namespaces(&state, &headers, &id).await {
             Ok(namespaces) if namespaces.is_empty() => {
                 body.push_str("<p class=\"status\">no namespaces</p>")
             }
             Ok(namespaces) => {
                 body.push_str("<ul class=\"list\">");
                 for namespace in namespaces {
-                    let url = escape(&catalog_path(&[&id, &namespace.name]));
+                    let segments = aster_core::catalog::namespace_segments(
+                        &namespace.name,
+                        &namespace.segments,
+                    )?;
+                    let token = namespace_token(&segments)?;
+                    let url = escape(&catalog_path(&[&id, &token]));
                     body.push_str(&format!(
                         "<li><a href=\"{url}\">{name}</a></li>",
                         name = escape(&namespace.name)
@@ -523,10 +711,10 @@ pub async fn catalog(
                 }
                 body.push_str("</ul>");
             }
-            Err(error) => body.push_str(&format!(
-                "<p class=\"status\">{}</p>",
-                escape(&error.to_string())
-            )),
+            Err(error) => {
+                tracing::warn!(%error, "physical inventory unavailable");
+                body.push_str("<p class=\"status\">Physical inventory unavailable</p>");
+            }
         }
         body.push_str("</div></div>");
     }
@@ -541,6 +729,15 @@ pub async fn contracts(
         return Ok(sign_in_redirect());
     };
     authorize(&principal, Action::ReadNotebook)?;
+    if state.compiled_contracts.is_some() {
+        return Ok(Html(layout(
+            "contracts",
+            "contracts and query context",
+            &principal,
+            &contract_context(),
+        ))
+        .into_response());
+    }
     crate::require_unscoped_metadata(&state)?;
 
     let mut body = String::from(
@@ -595,11 +792,8 @@ pub async fn catalog_namespace(
     authorize(&principal, Action::ReadNotebook)?;
     crate::require_catalog_metadata(&state, &id)?;
 
-    let catalog = state
-        .catalogs
-        .get(&aster_core::CatalogId::new(id.clone()))
-        .ok_or_else(|| CoreError::NotFound("unknown catalog".into()))?;
-    let tables = catalog.list_table_descriptors(&namespace).await?;
+    let segments = decode_namespace(&namespace)?;
+    let tables = crate::catalog_inventory::tables(&state, &headers, &id, &segments).await?;
 
     let mut items = String::new();
     for descriptor in &tables {
@@ -650,15 +844,16 @@ pub async fn catalog_table(
         .get(&aster_core::CatalogId::new(id.clone()))
         .ok_or_else(|| CoreError::NotFound("unknown catalog".into()))?;
     let table_ref = TableRef {
-        namespace: namespace.clone(),
+        namespace_segments: decode_namespace(&namespace)?,
+        namespace: decode_namespace(&namespace)?.join("."),
         name: table.clone(),
     };
-    let descriptor = catalog
-        .list_table_descriptors(&namespace)
-        .await?
-        .into_iter()
-        .find(|entry| entry.table.name == table)
-        .ok_or_else(|| CoreError::NotFound("unknown table".into()))?;
+    let descriptor =
+        crate::catalog_inventory::tables(&state, &headers, &id, &table_ref.namespace_segments)
+            .await?
+            .into_iter()
+            .find(|entry| entry.table.name == table)
+            .ok_or_else(|| CoreError::NotFound("unknown table".into()))?;
     let namespace_url = escape(&catalog_path(&[&id, &namespace]));
     if !descriptor.schema_available {
         let body = format!(

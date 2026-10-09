@@ -1,0 +1,303 @@
+{
+  "formatVersion": 1,
+  "version": "benchmark-r24",
+  "bindings": [
+    {
+      "path": "compiled/tpch.customer.yaml",
+      "object": "/schema/0",
+      "catalog": "tpch",
+      "namespaceSegments": [
+        "tiny"
+      ],
+      "physicalName": "customer"
+    },
+    {
+      "path": "compiled/tpch.lineitem.yaml",
+      "object": "/schema/0",
+      "catalog": "tpch",
+      "namespaceSegments": [
+        "tiny"
+      ],
+      "physicalName": "lineitem"
+    },
+    {
+      "path": "compiled/tpch.nation.yaml",
+      "object": "/schema/0",
+      "catalog": "tpch",
+      "namespaceSegments": [
+        "tiny"
+      ],
+      "physicalName": "nation"
+    },
+    {
+      "path": "compiled/tpch.orders.yaml",
+      "object": "/schema/0",
+      "catalog": "tpch",
+      "namespaceSegments": [
+        "tiny"
+      ],
+      "physicalName": "orders"
+    },
+    {
+      "path": "compiled/tpch.part.yaml",
+      "object": "/schema/0",
+      "catalog": "tpch",
+      "namespaceSegments": [
+        "tiny"
+      ],
+      "physicalName": "part"
+    },
+    {
+      "path": "compiled/tpch.partsupp.yaml",
+      "object": "/schema/0",
+      "catalog": "tpch",
+      "namespaceSegments": [
+        "tiny"
+      ],
+      "physicalName": "partsupp"
+    },
+    {
+      "path": "compiled/tpch.region.yaml",
+      "object": "/schema/0",
+      "catalog": "tpch",
+      "namespaceSegments": [
+        "tiny"
+      ],
+      "physicalName": "region"
+    },
+    {
+      "path": "compiled/tpch.supplier.yaml",
+      "object": "/schema/0",
+      "catalog": "tpch",
+      "namespaceSegments": [
+        "tiny"
+      ],
+      "physicalName": "supplier"
+    },
+    {
+      "path": "compiled/tpcds.call_center.yaml",
+      "object": "/schema/0",
+      "catalog": "tpcds",
+      "namespaceSegments": [
+        "tiny"
+      ],
+      "physicalName": "call_center"
+    },
+    {
+      "path": "compiled/tpcds.catalog_page.yaml",
+      "object": "/schema/0",
+      "catalog": "tpcds",
+      "namespaceSegments": [
+        "tiny"
+      ],
+      "physicalName": "catalog_page"
+    },
+    {
+      "path": "compiled/tpcds.catalog_returns.yaml",
+      "object": "/schema/0",
+      "catalog": "tpcds",
+      "namespaceSegments": [
+        "tiny"
+      ],
+      "physicalName": "catalog_returns"
+    },
+    {
+      "path": "compiled/tpcds.catalog_sales.yaml",
+      "object": "/schema/0",
+      "catalog": "tpcds",
+      "namespaceSegments": [
+        "tiny"
+      ],
+      "physicalName": "catalog_sales"
+    },
+    {
+      "path": "compiled/tpcds.customer.yaml",
+      "object": "/schema/0",
+      "catalog": "tpcds",
+      "namespaceSegments": [
+        "tiny"
+      ],
+      "physicalName": "customer"
+    },
+    {
+      "path": "compiled/tpcds.customer_address.yaml",
+      "object": "/schema/0",
+      "catalog": "tpcds",
+      "namespaceSegments": [
+        "tiny"
+      ],
+      "physicalName": "customer_address"
+    },
+    {
+      "path": "compiled/tpcds.customer_demographics.yaml",
+      "object": "/schema/0",
+      "catalog": "tpcds",
+      "namespaceSegments": [
+        "tiny"
+      ],
+      "physicalName": "customer_demographics"
+    },
+    {
+      "path": "compiled/tpcds.date_dim.yaml",
+      "object": "/schema/0",
+      "catalog": "tpcds",
+      "namespaceSegments": [
+        "tiny"
+      ],
+      "physicalName": "date_dim"
+    },
+    {
+      "path": "compiled/tpcds.dbgen_version.yaml",
+      "object": "/schema/0",
+      "catalog": "tpcds",
+      "namespaceSegments": [
+        "tiny"
+      ],
+      "physicalName": "dbgen_version"
+    },
+    {
+      "path": "compiled/tpcds.household_demographics.yaml",
+      "object": "/schema/0",
+      "catalog": "tpcds",
+      "namespaceSegments": [
+        "tiny"
+      ],
+      "physicalName": "household_demographics"
+    },
+    {
+      "path": "compiled/tpcds.income_band.yaml",
+      "object": "/schema/0",
+      "catalog": "tpcds",
+      "namespaceSegments": [
+        "tiny"
+      ],
+      "physicalName": "income_band"
+    },
+    {
+      "path": "compiled/tpcds.inventory.yaml",
+      "object": "/schema/0",
+      "catalog": "tpcds",
+      "namespaceSegments": [
+        "tiny"
+      ],
+      "physicalName": "inventory"
+    },
+    {
+      "path": "compiled/tpcds.item.yaml",
+      "object": "/schema/0",
+      "catalog": "tpcds",
+      "namespaceSegments": [
+        "tiny"
+      ],
+      "physicalName": "item"
+    },
+    {
+      "path": "compiled/tpcds.promotion.yaml",
+      "object": "/schema/0",
+      "catalog": "tpcds",
+      "namespaceSegments": [
+        "tiny"
+      ],
+      "physicalName": "promotion"
+    },
+    {
+      "path": "compiled/tpcds.reason.yaml",
+      "object": "/schema/0",
+      "catalog": "tpcds",
+      "namespaceSegments": [
+        "tiny"
+      ],
+      "physicalName": "reason"
+    },
+    {
+      "path": "compiled/tpcds.ship_mode.yaml",
+      "object": "/schema/0",
+      "catalog": "tpcds",
+      "namespaceSegments": [
+        "tiny"
+      ],
+      "physicalName": "ship_mode"
+    },
+    {
+      "path": "compiled/tpcds.store.yaml",
+      "object": "/schema/0",
+      "catalog": "tpcds",
+      "namespaceSegments": [
+        "tiny"
+      ],
+      "physicalName": "store"
+    },
+    {
+      "path": "compiled/tpcds.store_returns.yaml",
+      "object": "/schema/0",
+      "catalog": "tpcds",
+      "namespaceSegments": [
+        "tiny"
+      ],
+      "physicalName": "store_returns"
+    },
+    {
+      "path": "compiled/tpcds.store_sales.yaml",
+      "object": "/schema/0",
+      "catalog": "tpcds",
+      "namespaceSegments": [
+        "tiny"
+      ],
+      "physicalName": "store_sales"
+    },
+    {
+      "path": "compiled/tpcds.time_dim.yaml",
+      "object": "/schema/0",
+      "catalog": "tpcds",
+      "namespaceSegments": [
+        "tiny"
+      ],
+      "physicalName": "time_dim"
+    },
+    {
+      "path": "compiled/tpcds.warehouse.yaml",
+      "object": "/schema/0",
+      "catalog": "tpcds",
+      "namespaceSegments": [
+        "tiny"
+      ],
+      "physicalName": "warehouse"
+    },
+    {
+      "path": "compiled/tpcds.web_page.yaml",
+      "object": "/schema/0",
+      "catalog": "tpcds",
+      "namespaceSegments": [
+        "tiny"
+      ],
+      "physicalName": "web_page"
+    },
+    {
+      "path": "compiled/tpcds.web_returns.yaml",
+      "object": "/schema/0",
+      "catalog": "tpcds",
+      "namespaceSegments": [
+        "tiny"
+      ],
+      "physicalName": "web_returns"
+    },
+    {
+      "path": "compiled/tpcds.web_sales.yaml",
+      "object": "/schema/0",
+      "catalog": "tpcds",
+      "namespaceSegments": [
+        "tiny"
+      ],
+      "physicalName": "web_sales"
+    },
+    {
+      "path": "compiled/tpcds.web_site.yaml",
+      "object": "/schema/0",
+      "catalog": "tpcds",
+      "namespaceSegments": [
+        "tiny"
+      ],
+      "physicalName": "web_site"
+    }
+  ]
+}

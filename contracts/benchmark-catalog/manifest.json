@@ -1,0 +1,239 @@
+{
+  "manifestVersion": 1,
+  "bundle": "aster-benchmark-catalog",
+  "version": "benchmark-r24",
+  "bindingsSha256": "e4a485fa8b3b4ddf87164d1530e78bfccb23cd50684088e8f7556a1773964c5b",
+  "documents": [
+    {
+      "path": "compiled/tpch.customer.yaml",
+      "sha256": "9ce0a8c7728b2fa8d81b220140fe21e16042e6efa35c8ef838f7329ae1da8f6e",
+      "id": "aster-benchmark-tpch-customer",
+      "version": "0.1.0",
+      "target": "tpch"
+    },
+    {
+      "path": "compiled/tpch.lineitem.yaml",
+      "sha256": "2659aa7a0db1a92cbe273ef3a262c3bd1b685f1d17cbea9f25ea808cc7eb6170",
+      "id": "aster-benchmark-tpch-lineitem",
+      "version": "0.1.0",
+      "target": "tpch"
+    },
+    {
+      "path": "compiled/tpch.nation.yaml",
+      "sha256": "857b11611ef7430b1b4d5d879aefc9a49a66c4ec09298c034235007fc7b4c26f",
+      "id": "aster-benchmark-tpch-nation",
+      "version": "0.1.0",
+      "target": "tpch"
+    },
+    {
+      "path": "compiled/tpch.orders.yaml",
+      "sha256": "ff5eb9de68f4e321549415359b1a1dd78edc22c6bdb19ce17d05a422744ce7e7",
+      "id": "aster-benchmark-tpch-orders",
+      "version": "0.1.0",
+      "target": "tpch"
+    },
+    {
+      "path": "compiled/tpch.part.yaml",
+      "sha256": "79631097699e6cd5c8b5ab83037d7ac015da83c3baaf88c42bb9328f6dbbd3c7",
+      "id": "aster-benchmark-tpch-part",
+      "version": "0.1.0",
+      "target": "tpch"
+    },
+    {
+      "path": "compiled/tpch.partsupp.yaml",
+      "sha256": "029aa360c6a6db648bca9bf46197cb95f85b407fc18bbceff720907af24a7803",
+      "id": "aster-benchmark-tpch-partsupp",
+      "version": "0.1.0",
+      "target": "tpch"
+    },
+    {
+      "path": "compiled/tpch.region.yaml",
+      "sha256": "72c5c279f2481a7dff1d1ffb5b1112877df9d5e9dd519890787ca5071c07b1cd",
+      "id": "aster-benchmark-tpch-region",
+      "version": "0.1.0",
+      "target": "tpch"
+    },
+    {
+      "path": "compiled/tpch.supplier.yaml",
+      "sha256": "5bc74a64bb0071a0e5061810cebdf8320cb43a7f67518655aad598a7d92feb53",
+      "id": "aster-benchmark-tpch-supplier",
+      "version": "0.1.0",
+      "target": "tpch"
+    },
+    {
+      "path": "compiled/tpcds.call_center.yaml",
+      "sha256": "f68ea2c39555bcef338dbb646296b22696f4a14e00a0e7ed47cf5f2ce8d268c2",
+      "id": "aster-benchmark-tpcds-call_center",
+      "version": "0.1.0",
+      "target": "tpcds"
+    },
+    {
+      "path": "compiled/tpcds.catalog_page.yaml",
+      "sha256": "b11366212e7fd4d546e402079179642c1411e8e862e5c80cf75580ccae4e3cee",
+      "id": "aster-benchmark-tpcds-catalog_page",
+      "version": "0.1.0",
+      "target": "tpcds"
+    },
+    {
+      "path": "compiled/tpcds.catalog_returns.yaml",
+      "sha256": "2c5cd2d0e9a3c7aab2bb563ce735f5ffd3a542d34e8aba998452249344a701d4",
+      "id": "aster-benchmark-tpcds-catalog_returns",
+      "version": "0.1.0",
+      "target": "tpcds"
+    },
+    {
+      "path": "compiled/tpcds.catalog_sales.yaml",
+      "sha256": "3549b35eaf8a8516111387ef7a37c2b4e0dc0bf776b856ca4508c5498bd3d714",
+      "id": "aster-benchmark-tpcds-catalog_sales",
+      "version": "0.1.0",
+      "target": "tpcds"
+    },
+    {
+      "path": "compiled/tpcds.customer.yaml",
+      "sha256": "fb3a4d199fa87eff5783f4267ba12235449dd0af23a153ea1e6ee40374d16f9c",
+      "id": "aster-benchmark-tpcds-customer",
+      "version": "0.1.0",
+      "target": "tpcds"
+    },
+    {
+      "path": "compiled/tpcds.customer_address.yaml",
+      "sha256": "a85b08449db648dfb3e26a8deb0b076235027eb3c838a186b6594125faee9f7f",
+      "id": "aster-benchmark-tpcds-customer_address",
+      "version": "0.1.0",
+      "target": "tpcds"
+    },
+    {
+      "path": "compiled/tpcds.customer_demographics.yaml",
+      "sha256": "418775ce55ae04608e449f411c404f7a097c25ae3689a326056ab7b11335ef8c",
+      "id": "aster-benchmark-tpcds-customer_demographics",
+      "version": "0.1.0",
+      "target": "tpcds"
+    },
+    {
+      "path": "compiled/tpcds.date_dim.yaml",
+      "sha256": "92ae618e460ebc9ead16f37b3381a2adebd4cde681adc8e05cb4f99d9ea3aa0d",
+      "id": "aster-benchmark-tpcds-date_dim",
+      "version": "0.1.0",
+      "target": "tpcds"
+    },
+    {
+      "path": "compiled/tpcds.dbgen_version.yaml",
+      "sha256": "5004cc2ac79c99a6e08b34248bd3f538b92d043fe0187114249afacee24a3656",
+      "id": "aster-benchmark-tpcds-dbgen_version",
+      "version": "0.1.0",
+      "target": "tpcds"
+    },
+    {
+      "path": "compiled/tpcds.household_demographics.yaml",
+      "sha256": "2e2dfc62b966e23d498a41593c4a6a85335aa6904914e7c5ea48a94d7ba4ab9f",
+      "id": "aster-benchmark-tpcds-household_demographics",
+      "version": "0.1.0",
+      "target": "tpcds"
+    },
+    {
+      "path": "compiled/tpcds.income_band.yaml",
+      "sha256": "2b096093aa4c54fb9fe29f988dcead5a5e14a76f2d768ca5c486a9f070ceec49",
+      "id": "aster-benchmark-tpcds-income_band",
+      "version": "0.1.0",
+      "target": "tpcds"
+    },
+    {
+      "path": "compiled/tpcds.inventory.yaml",
+      "sha256": "dc97d0f5a08d6be8daef35ca7cac1aca87f399a05b58fed89d066848cd6aa7b5",
+      "id": "aster-benchmark-tpcds-inventory",
+      "version": "0.1.0",
+      "target": "tpcds"
+    },
+    {
+      "path": "compiled/tpcds.item.yaml",
+      "sha256": "62e6bce6e12aa23844a3fe0786f0e10e8aa5d06d94da4166f6aeeb476e645761",
+      "id": "aster-benchmark-tpcds-item",
+      "version": "0.1.0",
+      "target": "tpcds"
+    },
+    {
+      "path": "compiled/tpcds.promotion.yaml",
+      "sha256": "9e4e74d4c28ff917803ac67d515c44ec61c9c769107a521108306a0e70e6754b",
+      "id": "aster-benchmark-tpcds-promotion",
+      "version": "0.1.0",
+      "target": "tpcds"
+    },
+    {
+      "path": "compiled/tpcds.reason.yaml",
+      "sha256": "041dca621f4c819c641d4524cf44b6c73c4a2e75af5122a3ca7c68730a6103da",
+      "id": "aster-benchmark-tpcds-reason",
+      "version": "0.1.0",
+      "target": "tpcds"
+    },
+    {
+      "path": "compiled/tpcds.ship_mode.yaml",
+      "sha256": "128ff335afc024d5c02b64b2669eff4c4f180bb6d44a341c52e7fd55570f813e",
+      "id": "aster-benchmark-tpcds-ship_mode",
+      "version": "0.1.0",
+      "target": "tpcds"
+    },
+    {
+      "path": "compiled/tpcds.store.yaml",
+      "sha256": "766b85b07f3a3136f1444c9fbd3f7c894b25355014d2427b0cd2bb7644e979ab",
+      "id": "aster-benchmark-tpcds-store",
+      "version": "0.1.0",
+      "target": "tpcds"
+    },
+    {
+      "path": "compiled/tpcds.store_returns.yaml",
+      "sha256": "9edd4ca6f717aeaa7ce4edba45fbd3b42aa32bf08fa27892253b2580c750e761",
+      "id": "aster-benchmark-tpcds-store_returns",
+      "version": "0.1.0",
+      "target": "tpcds"
+    },
+    {
+      "path": "compiled/tpcds.store_sales.yaml",
+      "sha256": "e21bfec6e9d54b7c555bad5320d85291303d123690a00ee491afc1d0a5af9a2f",
+      "id": "aster-benchmark-tpcds-store_sales",
+      "version": "0.1.0",
+      "target": "tpcds"
+    },
+    {
+      "path": "compiled/tpcds.time_dim.yaml",
+      "sha256": "6084307b4182f396b27e882bd44222ff1e5934095f0308fa973077b9a88bde4e",
+      "id": "aster-benchmark-tpcds-time_dim",
+      "version": "0.1.0",
+      "target": "tpcds"
+    },
+    {
+      "path": "compiled/tpcds.warehouse.yaml",
+      "sha256": "cb349d63bac8e19d40ccc52d4a8232885b658a1e12dc38325a08f28060542d6a",
+      "id": "aster-benchmark-tpcds-warehouse",
+      "version": "0.1.0",
+      "target": "tpcds"
+    },
+    {
+      "path": "compiled/tpcds.web_page.yaml",
+      "sha256": "7d4132677dd6a938a446c52d8371bcd28439a2a7e3c74c285b3744b5e7383da7",
+      "id": "aster-benchmark-tpcds-web_page",
+      "version": "0.1.0",
+      "target": "tpcds"
+    },
+    {
+      "path": "compiled/tpcds.web_returns.yaml",
+      "sha256": "93bd9d8c537d8ee2b23b27b82222facbda4de45871223bb006da84063fb38709",
+      "id": "aster-benchmark-tpcds-web_returns",
+      "version": "0.1.0",
+      "target": "tpcds"
+    },
+    {
+      "path": "compiled/tpcds.web_sales.yaml",
+      "sha256": "67bedf5ef8f095648611389b14d3cdf3172778ba462c376dc84b1785eaee855f",
+      "id": "aster-benchmark-tpcds-web_sales",
+      "version": "0.1.0",
+      "target": "tpcds"
+    },
+    {
+      "path": "compiled/tpcds.web_site.yaml",
+      "sha256": "89ee711a7c39f2e0cf2126542b41f9dba67e79ea2052b30de097e99d5b7b4fb4",
+      "id": "aster-benchmark-tpcds-web_site",
+      "version": "0.1.0",
+      "target": "tpcds"
+    }
+  ]
+}

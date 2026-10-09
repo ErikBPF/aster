@@ -33,11 +33,11 @@ pub struct CatalogConfig {
     pub endpoint: String,
     /// Optional catalog/warehouse name within the backend (Polaris prefix).
     pub catalog: Option<String>,
-    /// A ready bearer token, when the caller already holds one.
+    /// A ready bearer token or `secret://KEY` resolved by the selected secret store.
     #[serde(default)]
     pub token: Option<String>,
     /// OAuth2 client credentials as `client_id:client_secret`, exchanged for a
-    /// token on demand. Preferred over `token`, which expires.
+    /// token on demand, or `secret://KEY`. Polaris only; a ready token takes precedence.
     #[serde(default)]
     pub credential: Option<String>,
 }
@@ -125,11 +125,13 @@ impl AppConfig {
             }
         };
 
-        let catalogs = std::env::var("ASTER_CATALOGS")
+        let catalogs = match std::env::var("ASTER_CATALOGS")
             .ok()
             .map(|spec| parse_catalogs(&spec))
             .filter(|catalogs| !catalogs.is_empty())
-            .unwrap_or_else(|| {
+        {
+            Some(catalogs) => catalogs,
+            None => {
                 vec![CatalogConfig {
                     id: "polaris".into(),
                     kind: "polaris".into(),
@@ -140,9 +142,10 @@ impl AppConfig {
                             .unwrap_or_else(|_| "quickstart_catalog".into()),
                     ),
                     token: std::env::var("POLARIS_TOKEN").ok(),
-                    credential: polaris_credential_from_env(),
+                    credential: polaris_credential_from_env()?,
                 }]
-            });
+            }
+        };
 
         let default_engine = std::env::var("ASTER_DEFAULT_ENGINE")
             .ok()
@@ -235,11 +238,21 @@ fn field(value: Option<&&str>) -> Option<String> {
 }
 
 /// `POLARIS_CLIENT_ID` + `POLARIS_CLIENT_SECRET` as the `id:secret` pair the
-/// catalog exchanges for a token, when both are set.
-fn polaris_credential_from_env() -> Option<String> {
-    let id = std::env::var("POLARIS_CLIENT_ID").ok()?;
-    let secret = std::env::var("POLARIS_CLIENT_SECRET").ok()?;
-    Some(format!("{id}:{secret}"))
+/// catalog exchanges for a token. Only two absent variables select anonymous mode.
+fn polaris_credential_from_env() -> Result<Option<String>> {
+    use std::env::VarError::NotPresent;
+    match (
+        std::env::var("POLARIS_CLIENT_ID"),
+        std::env::var("POLARIS_CLIENT_SECRET"),
+    ) {
+        (Err(NotPresent), Err(NotPresent)) => Ok(None),
+        (Ok(id), Ok(secret)) if !id.is_empty() && !secret.is_empty() => {
+            Ok(Some(format!("{id}:{secret}")))
+        }
+        _ => Err(CoreError::Invalid(
+            "POLARIS_CLIENT_ID and POLARIS_CLIENT_SECRET must both be nonempty UTF-8 values or both be absent".into(),
+        )),
+    }
 }
 
 fn parse_engines(spec: &str) -> Result<Vec<EngineConfig>> {

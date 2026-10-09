@@ -15,6 +15,18 @@ package aster.v1;
 import "google/api/annotations.proto";
 
 service Aster {
+  rpc ListCatalogInventory(ListTablesRequest) returns (ContractReadResponse) {
+    option (google.api.http) = { post: "/v1/catalog-inventory" body: "*" };
+  }
+  rpc PrepareContractQuery(ContractSelection) returns (ContractReadResponse) {
+    option (google.api.http) = { post: "/v1/contracts/prepare" body: "*" };
+  }
+  rpc ListContracts(ListContractsRequest) returns (ContractReadResponse) {
+    option (google.api.http) = { get: "/v1/contracts" };
+  }
+  rpc GetContract(ContractSelection) returns (ContractReadResponse) {
+    option (google.api.http) = { post: "/v1/contracts/read" body: "*" };
+  }
   rpc GetConversation(GetConversationRequest) returns (Conversation) {
     option (google.api.http) = { get: "/v1/notebooks/{notebook}/conversation" };
   }
@@ -136,6 +148,16 @@ service Aster {
   }
 }
 
+message ListContractsRequest {}
+message ContractSelection {
+  string path = 1;
+  string sha256 = 2;
+  string object = 3;
+}
+message ContractReadResponse {
+  string context_json = 1;
+}
+
 message GetStateRequest {}
 
 message PutStateRequest {
@@ -197,6 +219,7 @@ message ListCatalogsResponse {
 message ListTablesRequest {
   string catalog = 1;
   string namespace = 2;
+  repeated string namespace_segments = 3;
 }
 
 message TableDescriptor {
@@ -205,6 +228,7 @@ message TableDescriptor {
   optional string format = 3;
   optional string base_location = 4;
   optional bool schema_available = 5;
+  repeated string namespace_segments = 6;
 }
 
 message ListTablesResponse {
@@ -295,6 +319,7 @@ message RenderSemanticRequest {
   string catalog = 2;
   string namespace = 3;
   string table = 4;
+  repeated string namespace_segments = 5;
 }
 
 message RenderSemanticResponse {
@@ -322,6 +347,7 @@ message SendMessageRequest {
   optional string team = 6;
   optional string workspace = 7;
   optional string cell = 8;
+  optional ContractSelection contract_selection = 9;
 }
 message ChatMessage {
   string role = 1;
