@@ -5,10 +5,6 @@
   <img src="assets/brand/svg/aster-color-light.svg" alt="Aster logo" width="430" height="128">
 </picture>
 
-> This repository contains sanitized history. Deployment hosts, paths and identity
-> identifiers are examples requiring configuration. Historical deployment receipts
-> describe the original environment; they do not provide access to a running demo.
-
 Aster is a Git-backed SQL notebook with a web editor and terminal client.
 It browses catalogs, runs queries through configured engines, records an audit
 trail, and offers personal AI helpers with private notebook chat.
