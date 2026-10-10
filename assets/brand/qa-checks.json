@@ -1,0 +1,61 @@
+{
+  "svg_parse": "pass",
+  "logo_font_dependencies": "none",
+  "embedded_raster_in_vectors": "none",
+  "png_checks": [
+    {
+      "file": "png/aster-color-dark@2x.png",
+      "size": [
+        1720,
+        512
+      ],
+      "alpha_min": 0,
+      "alpha_max": 255
+    },
+    {
+      "file": "png/aster-color-light@2x.png",
+      "size": [
+        1720,
+        512
+      ],
+      "alpha_min": 0,
+      "alpha_max": 255
+    },
+    {
+      "file": "png/aster-master@2x.png",
+      "size": [
+        1720,
+        512
+      ],
+      "alpha_min": 0,
+      "alpha_max": 255
+    },
+    {
+      "file": "png/aster-midnight@2x.png",
+      "size": [
+        1720,
+        512
+      ],
+      "alpha_min": 255,
+      "alpha_max": 255
+    },
+    {
+      "file": "png/aster-monochrome-black@2x.png",
+      "size": [
+        1720,
+        512
+      ],
+      "alpha_min": 0,
+      "alpha_max": 255
+    },
+    {
+      "file": "png/aster-monochrome-white@2x.png",
+      "size": [
+        1720,
+        512
+      ],
+      "alpha_min": 0,
+      "alpha_max": 255
+    }
+  ]
+}

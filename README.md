@@ -1,5 +1,10 @@
 # Aster
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/brand/svg/aster-color-dark.svg">
+  <img src="assets/brand/svg/aster-color-light.svg" alt="Aster logo" width="430" height="128">
+</picture>
+
 > This repository contains sanitized history. Deployment hosts, paths and identity
 > identifiers are examples requiring configuration. Historical deployment receipts
 > describe the original environment; they do not provide access to a running demo.
@@ -54,6 +59,7 @@ for requirements, configuration, Helm and teardown.
 - [Deployment](docs/deploy.md) and [operations](docs/operations.md)
 - [API and test contracts](docs/api-and-tests.md)
 - [Contributing](CONTRIBUTING.md)
+- [Visual identity and reusable assets](assets/brand/README.txt) · [Identity sheet](assets/brand/guide/aster-identity-sheet.png)
 
 The [provider matrix](docs/provider-matrix.md) lists domain ports and adapters.
 The [documentation plan and feature audit](docs/documentation-plan.md) record

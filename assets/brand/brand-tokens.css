@@ -1,0 +1,10 @@
+/* Aster proposed digital identity tokens */
+:root {
+  --aster-midnight: #041F43;
+  --aster-starlight: #C3C0FF;
+  --aster-deep-violet: #6658B8;
+  --aster-white: #FFFFFF;
+  --aster-black: #000000;
+  --aster-font-ui: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --aster-font-code: ui-monospace, "SFMono-Regular", Consolas, monospace;
+}
