@@ -33,8 +33,9 @@ engine choices to connected, granted engines. See [catalogs and compute](catalog
 
 | Command | Scope |
 |---|---|
-| `just ci` | Format, Clippy, workspace tests, `.feature` shape, repository contract and provider matrix. Does not start PostgreSQL, a browser or a live compute stack. |
+| `just ci` | Format, Clippy, workspace tests, `.feature` shape, repository contract, provider matrix and local context recipe checks. Includes disposable local browser fixtures; does not start PostgreSQL or a live compute stack. |
 | `just features` | Only asserts every `.feature` has a `Feature` and a `Scenario`. It does not execute all scenarios. |
+| `just local-stack-context-check` | Real recipe dispatch against recording fake clients: context refusals, explicit target selection, inert context arguments and client failure propagation. No native client or live cluster behavior. |
 | `just notebook-validation` | Focused real-Git transaction and notebook-format tests, plus bound core Gherkin scenarios. Local commits only; no remote sync. |
 | `just notebook-ownership-validation` | Legacy checkout owner assignment, content-revision conflicts, Git failure handling, and notebook regression suite. Personal/session branch isolation remains separate work. |
 | `just ai-registration-validation` | Personal-helper validation and subject-isolated fake-upstream routing. No real model or shared registration. |
@@ -55,6 +56,7 @@ The server Cucumber runner in
 selects `@contract` features without `@unautomated`. Core Cucumber scenarios
 run through [`crates/core/tests/features.rs`](../crates/core/tests/features.rs).
 `features/repo-setup.feature` is bound by `tests/repo-setup.sh`;
+`features/local-stack-context.feature` is bound by `tests/local-stack-context.py`;
 `features/live-backends.feature` is bound by its separate live shell script.
 An `@unautomated` scenario can have equivalent unit/integration coverage, but
 its Gherkin steps have not run. The

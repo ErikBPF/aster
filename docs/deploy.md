@@ -16,6 +16,14 @@ public endpoint.
 The DevSpace stack and standalone Helm chart are alternative installations in
 the same local namespace. Choose one on a cluster. `just stack-down local`
 purges the DevSpace profile; `just chart-uninstall` removes the Helm release.
+Chart install/uninstall and stack deploy/teardown require the current Kubernetes
+context to match `ASTER_KUBE_CONTEXT` (default `aster`); an empty context is
+refused. They pass that checked context explicitly to Helm or DevSpace, so a
+later ambient context switch does not redirect the command. Bootstrap and status
+also pass their selected context explicitly. `just chart-uninstall` succeeds
+when the release is already absent and reports other Helm failures.
+`just local-stack-context-check` checks these recipe boundaries with fake clients;
+it does not start a cluster or establish native-client runtime behavior.
 Inspect state before removing volumes or deleting the minikube profile.
 For the DevSpace stack, `kubectl -n aster port-forward svc/aster-server 8080:80`
 exposes the UI on the workstation's loopback interface. Compose binds its API,
