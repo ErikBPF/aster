@@ -76,6 +76,12 @@ features:
 repo-check: features
     bash tests/repo-setup.sh
 
+# Binding for features/local-stack-context.feature; no native cluster clients run.
+local-stack-context-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    python3 -B tests/local-stack-context.py
+
 # Binding for docs/provider-matrix.md: every port is classified there and every
 # selection site refuses an unknown provider name.
 providers-check:
@@ -83,8 +89,8 @@ providers-check:
 
 # ------------------------------------------------------------------ aggregates
 
-ci: format-check lint test features repo-check providers-check
-    @echo "CI GREEN (fmt + clippy + tests + features + repo + providers)"
+ci: format-check lint test features repo-check providers-check local-stack-context-check
+    @echo "CI GREEN (fmt + clippy + tests + features + repo + providers + local context)"
 
 # Explicit context prevents the benchmark demo from changing a default cluster.
 benchmark-backend-up:
@@ -269,10 +275,14 @@ chart-diff:
 # Install the chart into the minikube cluster with the side-loaded image. The
 # engine and catalog pools must point at endpoints reachable from the namespace.
 chart-install: require-minikube
-    helm upgrade --install aster {{chart}} --namespace aster --create-namespace
+    #!/usr/bin/env bash
+    set -euo pipefail
+    helm upgrade --install aster {{chart}} --namespace aster --create-namespace --kube-context {{quote(kube_context)}}
 
-chart-uninstall:
-    helm uninstall aster --namespace aster || true
+chart-uninstall: require-minikube
+    #!/usr/bin/env bash
+    set -euo pipefail
+    helm uninstall aster --namespace aster --kube-context {{quote(kube_context)}} --ignore-not-found
 
 # ------------------------------------------------------- local stack (minikube)
 # A self-contained development stack on a throwaway minikube cluster: aster
@@ -283,17 +293,17 @@ chart-uninstall:
 
 # Point kubectl at the local stack.
 use-minikube:
-    kubectl config use-context {{kube_context}}
+    kubectl config use-context {{quote(kube_context)}}
 
-# Abort unless the current context is the local stack, so no recipe can hit the
-# shared cluster by accident.
+# Refuse unintended ambient state; client commands also bind this context explicitly.
 [private]
 require-minikube:
     #!/usr/bin/env bash
     set -euo pipefail
+    expected={{quote(kube_context)}}
     ctx=$(kubectl config current-context)
-    if [ "$ctx" != "{{kube_context}}" ]; then
-        echo "ERROR: kubectl context is '$ctx', expected '{{kube_context}}'." >&2
+    if [ -z "$expected" ] || [ "$ctx" != "$expected" ]; then
+        echo "ERROR: kubectl context is '$ctx', expected nonempty '$expected'." >&2
         echo "Run 'just use-minikube' to switch." >&2
         exit 1
     fi
@@ -388,25 +398,31 @@ build-minikube: require-minikube
 
 # Deploy or update a profile of the stack: local (default) | trino | spark | apps.
 stack-up profile="local": require-minikube
-    devspace deploy --profile {{profile}}
+    #!/usr/bin/env bash
+    set -euo pipefail
+    devspace deploy --profile {{quote(profile)}} --kube-context {{quote(kube_context)}}
 
 # Tear a profile down again.
-stack-down profile="local":
-    devspace purge --profile {{profile}}
+stack-down profile="local": require-minikube
+    #!/usr/bin/env bash
+    set -euo pipefail
+    devspace purge --profile {{quote(profile)}} --kube-context {{quote(kube_context)}}
 
 # One command from a bare host to a running stack: start minikube, build and
 # side-load the server image, then deploy a profile.
 stack-bootstrap profile="local": minikube-start build-minikube
-    devspace deploy --profile {{profile}}
-    @just stack-status
+    #!/usr/bin/env bash
+    set -euo pipefail
+    devspace deploy --profile {{quote(profile)}} --kube-context {{quote(kube_context)}}
+    just stack-status
 
 # What is up, and is the compute path answering.
 stack-status: require-minikube
     #!/usr/bin/env bash
     set -euo pipefail
-    kubectl get pods -A -l app.kubernetes.io/part-of=aster
-    kubectl get sparkconnect -n spark-jobs 2>/dev/null || true
-    kubectl get svc -n trino 2>/dev/null || true
+    kubectl --context {{quote(kube_context)}} get pods -A -l app.kubernetes.io/part-of=aster
+    kubectl --context {{quote(kube_context)}} get sparkconnect -n spark-jobs 2>/dev/null || true
+    kubectl --context {{quote(kube_context)}} get svc -n trino 2>/dev/null || true
 
 
 # ------------------------------------------------------------- remote build host
