@@ -308,6 +308,7 @@ fn notebook(id: &str, sentinel: &str) -> Notebook {
     Notebook {
         id: id.into(),
         title: id.into(),
+        engine: None,
         cells: vec![Cell {
             id: "c1".into(),
             sql: format!("SELECT '{sentinel}'"),

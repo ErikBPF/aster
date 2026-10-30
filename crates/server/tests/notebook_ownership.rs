@@ -21,6 +21,7 @@ fn notebook(id: &str, sql: &str) -> Notebook {
     Notebook {
         id: id.into(),
         title: "Sales".into(),
+        engine: None,
         cells: vec![Cell {
             id: "c1".into(),
             sql: sql.into(),

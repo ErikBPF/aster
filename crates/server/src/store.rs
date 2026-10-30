@@ -71,6 +71,7 @@ impl PgStore {
             include_str!("../../../migrations/0003_llm.sql"),
             include_str!("../../../migrations/0004_llm_helpers.sql"),
             include_str!("../../../migrations/0005_conversations.sql"),
+            include_str!("../../../migrations/0011_conversation_sessions.sql"),
             include_str!("../../../migrations/0006_notebook_owners.sql"),
             include_str!("../../../migrations/0009_team_git_targets.sql"),
         ))

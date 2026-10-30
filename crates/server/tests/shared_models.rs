@@ -79,6 +79,7 @@ impl NotebookStore for SalesNotebook {
         Ok(Notebook {
             id: id.into(),
             title: "Sales".into(),
+            engine: None,
             cells: vec![],
         })
     }

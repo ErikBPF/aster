@@ -275,12 +275,16 @@ struct Contract {
     extra_bound_catalog: Option<String>,
     binding_disabled: bool,
     exchanges: Arc<aster_core::InMemoryExchanges>,
+    conversations: Arc<aster_core::InMemoryConversations>,
     exchange_notebook: Option<String>,
     exchange_cell: Option<String>,
     exchange_original_revision: Option<String>,
     exchange_summary: Option<Value>,
     exchange_query: Option<Value>,
     exchange_result: Option<Value>,
+    session_previous: Option<String>,
+    session_new: Option<String>,
+    session_list: Option<Value>,
     catalog: Option<String>,
 }
 
@@ -432,7 +436,7 @@ impl Contract {
                 .expect("notebook store"),
         );
         Arc::new(AppState {
-            conversations: Arc::new(aster_core::InMemoryConversations::default()),
+            conversations: self.conversations.clone(),
             exchanges: self.exchanges.clone(),
             config,
             engines,
@@ -1575,8 +1579,18 @@ async fn page_renders_cells(world: &mut Contract) {
     let editors = world.body.matches("class=\"editor\"").count();
     let runs = world.body.matches("data-action=\"run\"").count();
     assert!(editors > 0, "no cell editor rendered: {}", world.body);
-    assert_eq!(editors, runs, "every cell needs an editor and a run action");
-    assert!(world.body.contains("class=\"engine\""), "no engine choice");
+    assert_eq!(
+        editors, runs,
+        "every SQL cell needs an editor and a run action"
+    );
+    assert!(
+        world.body.contains("id=\"notebook-engine\""),
+        "no notebook engine choice"
+    );
+    assert!(
+        !world.body.contains("class=\"engine\""),
+        "per-cell engine choice should be gone"
+    );
     assert!(
         world.body.contains("id=\"nb\""),
         "notebook JSON not embedded"
@@ -1644,6 +1658,7 @@ fn owner_notebook(id: &str, sql: &str) -> Notebook {
     Notebook {
         id: id.into(),
         title: "Sales".into(),
+        engine: None,
         cells: vec![aster_core::Cell {
             id: "c1".into(),
             sql: sql.into(),
@@ -1995,6 +2010,206 @@ async fn owner_race_git_consistent(world: &mut Contract) {
 // --- notebook session exchange -------------------------------------------
 
 use aster_core::ExchangeStore as _;
+
+async fn session_call(world: &mut Contract, method: &str, body: Value) -> Value {
+    let request = connect(method, Some("alice"), "editor", body);
+    world.send(request).await;
+    assert_eq!(world.status, Some(StatusCode::OK), "{}", world.body);
+    world.json.clone().unwrap_or(Value::Null)
+}
+
+#[given(expr = "Alice has an existing notebook session for {string}")]
+async fn session_given_existing(world: &mut Contract, notebook: String) {
+    let value = session_call(
+        world,
+        "GetConversation",
+        serde_json::json!({"notebook": notebook}),
+    )
+    .await;
+    world.session_previous = Some(value["id"].as_str().expect("session id").to_string());
+}
+
+#[when(expr = "Alice starts a notebook session for {string}")]
+async fn session_when_new_notebook(world: &mut Contract, notebook: String) {
+    let value = session_call(
+        world,
+        "NewConversation",
+        serde_json::json!({"notebook": notebook}),
+    )
+    .await;
+    let id = value["id"].as_str().expect("session id").to_string();
+    if world.session_previous.is_none() {
+        world.session_previous = Some(id.clone());
+    }
+    world.session_new = Some(id);
+}
+
+#[when(expr = "Alice starts a cell session for {string} cell {string}")]
+async fn session_when_new_cell(world: &mut Contract, notebook: String, cell: String) {
+    let value = session_call(
+        world,
+        "NewConversation",
+        serde_json::json!({"notebook": notebook, "cell": cell}),
+    )
+    .await;
+    world.session_new = Some(value["id"].as_str().expect("session id").to_string());
+}
+
+async fn session_store_list(world: &mut Contract, notebook: String, cell: Option<String>) {
+    let mut body = serde_json::json!({"notebook": notebook});
+    if let Some(cell) = cell {
+        body["cell"] = serde_json::json!(cell);
+    }
+    let value = session_call(world, "ListConversations", body).await;
+    world.session_list = Some(value);
+}
+
+#[then(expr = "the notebook session list for {string} starts with the new session")]
+async fn session_then_list_starts_with_new(world: &mut Contract, notebook: String) {
+    session_store_list(world, notebook, None).await;
+    let list = world.session_list.clone().expect("session list");
+    let sessions = list["sessions"].as_array().expect("sessions");
+    assert!(!sessions.is_empty(), "{list}");
+    assert_eq!(
+        sessions[0]["id"].as_str(),
+        world.session_new.as_deref(),
+        "{list}"
+    );
+    assert!(sessions[0]["phrase"].is_string(), "{list}");
+    assert!(
+        sessions[0]["createdAtMs"].is_number() || sessions[0]["createdAtMs"].is_string(),
+        "{list}"
+    );
+}
+
+#[then("the previous notebook session remains selectable")]
+async fn session_then_previous_selectable(world: &mut Contract) {
+    let list = world.session_list.clone().expect("session list");
+    let previous = world.session_previous.as_deref().expect("previous session");
+    assert!(
+        list["sessions"]
+            .as_array()
+            .expect("sessions")
+            .iter()
+            .any(|session| session["id"].as_str() == Some(previous)),
+        "{list}"
+    );
+}
+
+#[then(expr = "the cell session list for {string} cell {string} holds only the new cell session")]
+async fn session_then_cell_list_only_new(world: &mut Contract, notebook: String, cell: String) {
+    session_store_list(world, notebook, Some(cell)).await;
+    let list = world.session_list.clone().expect("session list");
+    let sessions = list["sessions"].as_array().expect("sessions");
+    assert_eq!(sessions.len(), 1, "{list}");
+    assert_eq!(
+        sessions[0]["id"].as_str(),
+        world.session_new.as_deref(),
+        "{list}"
+    );
+}
+
+#[then(expr = "the notebook session list for {string} does not hold the cell session")]
+async fn session_then_notebook_list_excludes_cell(world: &mut Contract, notebook: String) {
+    session_store_list(world, notebook, None).await;
+    let list = world.session_list.clone().expect("session list");
+    let cell_session = world.session_new.as_deref().expect("cell session");
+    assert!(
+        list["sessions"]
+            .as_array()
+            .expect("sessions")
+            .iter()
+            .all(|session| session["id"].as_str() != Some(cell_session)),
+        "{list}"
+    );
+}
+
+#[given(
+    expr = "subject {string} has saved notebook {string} with engine {string} and cell {string} holding {string}"
+)]
+async fn session_given_engine_notebook(
+    world: &mut Contract,
+    subject: String,
+    notebook: String,
+    engine: String,
+    cell: String,
+    sql: String,
+) {
+    let mut request = caller(
+        "PUT",
+        &format!("/api/notebooks/{notebook}"),
+        Some(&subject),
+        "editor",
+        Some(serde_json::json!({
+            "id": notebook,
+            "title": notebook,
+            "engine": engine,
+            "cells": [{"id": cell, "sql": sql, "engine": null}],
+        })),
+    );
+    request
+        .headers_mut()
+        .insert(header::IF_NONE_MATCH, "*".parse().unwrap());
+    world.send(request).await;
+    assert_eq!(world.status, Some(StatusCode::OK), "{}", world.body);
+}
+
+#[given(expr = "engine {string} is also registered and granted")]
+async fn session_given_extra_engine(world: &mut Contract, engine: String) {
+    world.extra_engine = Some(engine.clone());
+    world
+        .grants
+        .get_or_insert_with(|| Arc::new(InMemoryGrants::new()))
+        .grant("alice", &engine);
+}
+
+#[when(expr = "Alice runs cell {string} of notebook {string} with engine {string}")]
+async fn session_when_runs_with_engine(
+    world: &mut Contract,
+    cell: String,
+    notebook: String,
+    engine: String,
+) {
+    let request = connect(
+        "RunQuery",
+        Some("alice"),
+        "editor",
+        serde_json::json!({
+            "sql": "SELECT 1", "engine": engine, "notebook": notebook, "cell": cell,
+        }),
+    );
+    world.send(request).await;
+    world.rpc = world.json.clone();
+}
+
+#[when(expr = "Alice runs cell {string} of notebook {string} without selecting an engine")]
+async fn session_when_runs_without_engine(world: &mut Contract, cell: String, notebook: String) {
+    let request = connect(
+        "RunQuery",
+        Some("alice"),
+        "editor",
+        serde_json::json!({
+            "sql": "SELECT 1", "notebook": notebook, "cell": cell,
+        }),
+    );
+    world.send(request).await;
+    world.rpc = world.json.clone();
+}
+
+#[then("the request is refused because the notebook selects its engine")]
+async fn session_then_refused_engine(world: &mut Contract) {
+    assert_eq!(
+        world.status,
+        Some(StatusCode::BAD_REQUEST),
+        "{}",
+        world.body
+    );
+    assert!(
+        world.body.contains("notebook selects its engine"),
+        "{}",
+        world.body
+    );
+}
 
 /// Create the notebook through the real API so the git-backed document
 /// survives the per-request AppState rebuilds of this harness.

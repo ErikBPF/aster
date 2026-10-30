@@ -83,11 +83,19 @@ impl Client {
         Ok(saved.revision)
     }
 
-    fn run(&self, sql: &str, engine: Option<String>) -> Result<QueryResult, String> {
+    fn run(
+        &self,
+        notebook: &str,
+        cell: &str,
+        sql: &str,
+        engine: Option<String>,
+    ) -> Result<QueryResult, String> {
         self.call(
             self.http
                 .post(format!("{}/api/query", self.base))
-                .json(&serde_json::json!({ "sql": sql, "engine": engine })),
+                .json(&serde_json::json!({
+                    "sql": sql, "engine": engine, "notebook": notebook, "cell": cell,
+                })),
         )
     }
 }
@@ -190,11 +198,21 @@ impl App {
         let Some(cell) = notebook.cells.get(self.cell) else {
             return;
         };
-        let (sql, engine) = (
-            cell.sql.clone(),
-            cell.engine.as_ref().map(|id| id.to_string()),
+        if cell.kind() == aster_core::CellKind::Markdown {
+            self.status = "markdown cell does not execute".into();
+            return;
+        }
+        let (notebook_id, cell_id, sql, engine) = (
+            notebook.id.clone(),
+            cell.id.clone(),
+            cell.source().to_string(),
+            notebook
+                .engine
+                .as_ref()
+                .or(cell.engine.as_ref())
+                .map(|id| id.to_string()),
         );
-        match client.run(&sql, engine) {
+        match client.run(&notebook_id, &cell_id, &sql, engine) {
             Ok(result) => {
                 self.status = format!("{} row(s)", result.rows.len());
                 self.result = Some(result);
@@ -215,20 +233,17 @@ impl App {
         }
     }
 
-    /// Cycle the selected cell through the configured engine pool, then unset.
+    /// Cycle the notebook through the configured engine pool, then unset.
     fn cycle_engine(&mut self) {
         let (Some(notebook), false) = (&mut self.notebook, self.engines.is_empty()) else {
             return;
         };
-        let Some(cell) = notebook.cells.get_mut(self.cell) else {
-            return;
-        };
-        let current = cell.engine.as_ref().map(|id| id.to_string());
+        let current = notebook.engine.as_ref().map(|id| id.to_string());
         let next = self
             .engines
             .iter()
             .position(|id| Some(id) == current.as_ref());
-        cell.engine = match next {
+        notebook.engine = match next {
             None => Some(aster_core::EngineId::new(self.engines[0].clone())),
             Some(index) if index + 1 < self.engines.len() => {
                 Some(aster_core::EngineId::new(self.engines[index + 1].clone()))
@@ -237,7 +252,8 @@ impl App {
         };
         self.status = format!(
             "engine: {}",
-            cell.engine
+            notebook
+                .engine
                 .as_ref()
                 .map(|id| id.to_string())
                 .unwrap_or_else(|| "default".into())
@@ -357,12 +373,13 @@ fn draw(frame: &mut Frame, app: &App) {
     match &app.notebook {
         Some(notebook) => {
             lines.push(Line::from(format!("{} ({})", notebook.title, notebook.id)));
+            let engine = notebook
+                .engine
+                .as_ref()
+                .or_else(|| notebook.cells.iter().find_map(|cell| cell.engine.as_ref()))
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| "default".into());
             for (index, cell) in notebook.cells.iter().enumerate() {
-                let engine = cell
-                    .engine
-                    .as_ref()
-                    .map(|id| id.to_string())
-                    .unwrap_or_else(|| "default".into());
                 let marker = if index == app.cell { ">" } else { " " };
                 lines.push(Line::from(vec![Span::styled(
                     format!("{marker} {} [{}]", cell.id, engine),

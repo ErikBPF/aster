@@ -937,15 +937,11 @@ pub(crate) async fn execute_query(
     verified_session: bool,
     body: &QueryBody,
 ) -> Result<aster_core::QueryResult, CoreError> {
-    let engine_id = body
-        .engine
-        .clone()
-        .or_else(|| state.config.default_engine.clone())
-        .map(EngineId::new);
+    let mut engine_id = body.engine.clone().map(EngineId::new);
 
     let started = Instant::now();
     let outcome = match authorize(principal, aster_core::Action::RunQuery) {
-        Ok(()) => run_attempt(state, principal, verified_session, body, engine_id.as_ref()).await,
+        Ok(()) => run_attempt(state, principal, verified_session, body, &mut engine_id).await,
         Err(error) => Err(error),
     };
     let latency_ms = started.elapsed().as_millis() as u64;
@@ -985,13 +981,38 @@ async fn run_attempt(
     principal: &Principal,
     verified_session: bool,
     body: &QueryBody,
-    engine_id: Option<&EngineId>,
+    engine_id: &mut Option<EngineId>,
 ) -> Result<(aster_core::QueryResult, String), CoreError> {
     if let Some(notebook) = body.notebook.as_deref() {
-        conversations::check_notebook(state, principal, notebook).await?;
+        let document = conversations::check_notebook(state, principal, notebook).await?;
+        if let Some(cell_id) = body.cell.as_deref() {
+            if let Some(cell) = document.cells.iter().find(|entry| entry.id == cell_id) {
+                if cell.kind() == aster_core::CellKind::Markdown {
+                    return Err(CoreError::Invalid(
+                        "markdown cells do not execute queries".into(),
+                    ));
+                }
+            }
+        }
+        if let Some(notebook_engine) = document.engine.as_ref() {
+            if engine_id
+                .as_ref()
+                .is_some_and(|requested| requested != notebook_engine)
+            {
+                return Err(CoreError::Invalid(
+                    "the notebook selects its engine; a different per-cell engine is refused"
+                        .into(),
+                ));
+            }
+            *engine_id = Some(notebook_engine.clone());
+        }
     }
-    let engine_id =
-        engine_id.ok_or_else(|| CoreError::Invalid("no engine selected and no default".into()))?;
+    if engine_id.is_none() {
+        *engine_id = state.config.default_engine.clone().map(EngineId::new);
+    }
+    let engine_id = engine_id
+        .as_ref()
+        .ok_or_else(|| CoreError::Invalid("no engine selected and no default".into()))?;
     let engine = state
         .engines
         .get(engine_id)
@@ -1298,7 +1319,7 @@ pub(crate) async fn available_engines(
             "no catalog-to-engine binding configured".into(),
         ));
     }
-    let candidates: std::collections::HashSet<&str> = state
+    let mut candidates: std::collections::HashSet<&str> = state
         .config
         .catalog_bindings
         .iter()
@@ -1309,25 +1330,18 @@ pub(crate) async fn available_engines(
         })
         .map(|binding| binding.catalog.as_str())
         .collect();
-    let context = match requested_context {
-        Some(context) => {
-            if state.catalogs.get(&CatalogId::new(context)).is_none() {
-                return Err(CoreError::NotFound("unknown catalog context".into()));
-            }
-            context
+    if let Some(context) = requested_context {
+        if state.catalogs.get(&CatalogId::new(context)).is_none() {
+            return Err(CoreError::NotFound("unknown catalog context".into()));
         }
-        None if candidates.len() == 1 => candidates.into_iter().next().unwrap(),
-        None => {
-            return Err(CoreError::Invalid(
-                "no unique catalog context for engine choices".into(),
-            ))
-        }
-    };
+        candidates = std::iter::once(context).collect();
+    }
+
     let mut available = Vec::new();
     for engine in state.engines.list() {
         let id = &engine.info().id;
         if state.config.catalog_bindings.iter().any(|binding| {
-            binding.catalog == context
+            candidates.contains(binding.catalog.as_str())
                 && binding.engine == id.0
                 && binding.policy == aster_core::BindingPolicy::Unprotected
         }) && state.grants.allowed(&principal.subject, id).await?
@@ -2092,6 +2106,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/catalog/{id}/{namespace}/{table}", get(web::catalog_table))
         .route("/healthz", get(healthz))
         .route("/api/engines", get(list_engines))
+        .route("/assets/{name}", get(web::asset))
         .route("/api/catalogs", get(list_catalogs))
         .route("/api/contracts", get(list_contracts))
         .route("/api/query", post(run_query))

@@ -396,3 +396,128 @@ table.res td.num { text-align: right; }
 #contract-details li { padding: .5rem 0; border-bottom: 1px solid var(--border); }
 .cell-head .select-wrap { min-width: 0; max-width: 100%; }
 .cell-head select { max-width: 100%; }
+
+/* ---- notebook sessions, markdown and insertion rows ----------------- */
+
+.chat-sessions {
+  display: flex;
+  gap: 0.3rem;
+  overflow-x: auto;
+  padding-bottom: 0.2rem;
+}
+.chat-session {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.05rem;
+  min-width: 0;
+  max-width: 11rem;
+  padding: 0.3rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--muted);
+  cursor: pointer;
+  text-align: left;
+}
+.chat-session.active {
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  background: var(--panel);
+}
+.chat-session-phrase {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 10rem;
+  font-size: 0.82rem;
+}
+.chat-session-date { font-size: 0.7rem; color: var(--muted); }
+#chat-new, .cell-chat-new { align-self: flex-start; }
+.chat-fetch { display: flex; gap: 0.35rem; align-items: center; flex-wrap: wrap; }
+.chat-fetch select { min-width: 0; flex: 1; }
+
+.md-preview {
+  padding: 0.7rem 0.85rem;
+  min-height: 3.5rem;
+  overflow-wrap: anywhere;
+}
+.md-preview > :first-child { margin-top: 0; }
+.md-preview > :last-child { margin-bottom: 0; }
+.md-preview pre { overflow-x: auto; padding: 0.55rem 0.7rem; background: var(--panel-2); border-radius: 8px; }
+.md-preview table { border-collapse: collapse; }
+.md-preview th, .md-preview td { border: 1px solid var(--border); padding: 0.2rem 0.45rem; }
+.md-preview .mermaid { overflow-x: auto; text-align: center; }
+.md-preview .mermaid svg { max-width: 100%; height: auto; }
+.md-cell .insert-bar { border-top: 1px solid var(--border); }
+
+.cell-chat-context { font-family: var(--mono); font-size: 0.8rem; }
+.suggestion-actions { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.45rem; }
+.insert-bar {
+  display: flex;
+  gap: 0.3rem;
+  padding: 0.15rem 0.5rem;
+  opacity: 0.35;
+  transition: opacity 120ms ease-in-out;
+}
+.cell:hover .insert-bar, .cell:focus-within .insert-bar { opacity: 1; }
+.insert-bar .btn { font-size: 0.78rem; padding: 0.15rem 0.45rem; }
+
+/* ---- layout cleanup -------------------------------------------------- */
+
+[hidden] { display: none !important; }
+
+.nb-settings { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+
+.cell-head { flex-wrap: wrap; }
+.cell-id { flex: 0 0 auto; }
+.cell-context {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.cell-context .select-wrap { display: flex; align-items: center; gap: 0.35rem; margin: 0; }
+.cell-context select { font-size: 0.82rem; padding: 0.2rem 0.4rem; }
+.cell-actions { margin-left: auto; flex: 0 0 auto; }
+.cell-actions .btn { font-size: 0.8rem; padding: 0.22rem 0.5rem; }
+
+.insert-bar { opacity: 0.5; padding: 0.1rem 0.5rem; }
+.cell:hover .insert-bar, .cell:focus-within .insert-bar { opacity: 1; }
+
+.add-cell-row {
+  margin-top: 0.6rem;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  padding: 0.25rem;
+}
+.add-cell-bottom { width: 100%; justify-content: flex-start; border: 0; color: var(--muted); }
+.add-cell-bottom:hover { color: var(--text); background: var(--panel-2); }
+
+.chat-session-add {
+  justify-content: center;
+  border-style: dashed;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.chat-attach {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+}
+.chat-attach-label { font-size: 0.78rem; color: var(--muted); }
+.chat-attach select { width: 100%; }
+.chat-attach-actions { display: flex; gap: 0.35rem; }
+.chat-attach-actions .btn { flex: 1; justify-content: center; }
+.chat-empty { color: var(--muted); font-size: 0.85rem; padding: 0.5rem 0; }
+
+.cell-chat-attach { display: flex; flex-direction: column; gap: 0.35rem; }
+.cell-chat-attach .btn { align-self: flex-start; font-size: 0.78rem; padding: 0.2rem 0.45rem; }
+.cell-chat-note { font-size: 0.78rem; }
+.cell-chat .chat-heading strong { white-space: nowrap; }

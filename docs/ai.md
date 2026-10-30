@@ -41,18 +41,25 @@ volatile.
 ## Notebook conversation
 
 **Implemented:** Open **Chat** in a notebook to expand a right sidebar, send
-follow-up questions and reload the private history. A cell's **AI** action opens
-a panel beside that cell: a separate conversation grounded on the cell's SQL and
-its last run output, whose fenced SQL block offers **Replace this cell**. The two
-histories are distinct — a cell conversation cannot read the notebook
-conversation or another cell's, and the notebook conversation cannot read any
-cell conversation — and each is scoped by authenticated subject. Selecting
-another helper sends that notebook's history to the newly selected helper. Model
-text is rendered inert; a fenced SQL block gets one explicit **Insert SQL as new
-cell** button per reply (its last block) and never runs by itself, and
-Ctrl/Cmd+Enter runs the focused cell or sends the focused chat message. The cell
-panel scrolls rather than stretching the cell, and navigating away from a
-notebook no longer asks for confirmation.
+follow-up questions and reload the private history. Both the notebook and each
+cell keep server-owned sessions: the newest is selected by default, older
+sessions remain selectable tabs labelled by a short phrase from the first user
+message and the creation date, and **+ New** starts an empty session. Session
+history is scoped to the authenticated subject and to the notebook or cell;
+listing never returns another scope. A cell's **AI** action opens a panel beside
+that cell: a separate conversation grounded on the cell's SQL and its last run
+output. Notebook chat can fetch a chosen cell's SQL or last result into its
+composer, and cell chat can fetch the notebook summary and cell index. Notebook
+replies offer **Insert into current cell** or **Insert as new cell**; cell
+replies offer **Replace this cell** or **Insert as new cell**. The two histories
+are distinct — a cell conversation cannot read the notebook conversation or
+another cell's, and the notebook conversation cannot read any cell conversation
+— and each is scoped by authenticated subject. Selecting another helper sends
+that notebook's history to the newly selected helper. Model text is rendered
+inert; a fenced SQL block gets explicit insertion buttons per reply (its last
+block) and never runs by itself, and Ctrl/Cmd+Enter runs the focused cell or
+sends the focused chat message. The cell panel scrolls rather than stretching
+the cell, and navigating away from a notebook no longer asks for confirmation.
 
 The notebook session also receives a bounded index of the notebook's cells — each
 cell's id and SQL, at most 20 cells or 8 KiB — as untrusted per-turn context, so a

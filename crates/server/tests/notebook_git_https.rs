@@ -129,6 +129,7 @@ async fn notebook_git_https_sync_pushes_exact_branch_without_persisting_token() 
             &Notebook {
                 id: "sales".into(),
                 title: "Sales".into(),
+                engine: None,
                 cells: vec![Cell {
                     id: "c1".into(),
                     sql: "SELECT 1".into(),
@@ -158,6 +159,7 @@ async fn notebook_git_https_sync_pushes_exact_branch_without_persisting_token() 
             &Notebook {
                 id: "sales".into(),
                 title: "Sales".into(),
+                engine: None,
                 cells: vec![Cell {
                     id: "c1".into(),
                     sql: "SELECT 2".into(),

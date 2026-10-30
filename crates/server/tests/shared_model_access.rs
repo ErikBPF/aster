@@ -80,6 +80,7 @@ impl NotebookStore for NoNotebooks {
         Ok(Notebook {
             id: id.into(),
             title: "Report".into(),
+            engine: None,
             cells: vec![],
         })
     }
