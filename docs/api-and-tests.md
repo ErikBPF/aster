@@ -22,12 +22,18 @@ subject from authentication and requires a saved notebook and registered
 personal helper. `SendMessage.expected_revision` protects completed history
 from stale concurrent writes; both calls take an optional `cell`, and a cell
 conversation is scoped to its own cell while notebook chat never reads one.
+`ListConversations` returns session summaries newest first and
+`NewConversation` starts an empty session; both accept `notebook` and optional
+`cell`, and `GetConversation`/`SendMessage` accept an optional `session` id.
 Five exchange RPCs — `FetchQuery`, `FetchResult`, `FetchSummary`, `SendSummary`
 and `UpdateQuery` — move cell material between conversations inside the
 principal's notebook. See [AI assistance](ai.md) for behavior.
 `RunQuery.catalog_context` identifies the browse catalog; its older `catalog`
 field is the engine-native SQL alias. `ListEngines.catalog_context` filters
-engine choices to connected, granted engines. See [catalogs and compute](catalogs-and-compute.md).
+engine choices to connected, granted engines. A notebook document's `engine`
+field is authoritative: a run naming a different engine is refused, and a
+Markdown cell is refused before routing. See
+[catalogs and compute](catalogs-and-compute.md).
 
 ## What each check means
 

@@ -1,7 +1,8 @@
 //! Conversation persistence and completed-turn generation.
 use crate::AppState;
 use aster_core::{
-    authorize, Action, ChatMessage, Conversation, ConversationStore, CoreError, Principal, Result,
+    authorize, conversation_phrase, Action, ChatMessage, Conversation, ConversationStore,
+    ConversationSummary, CoreError, Principal, Result,
 };
 use async_trait::async_trait;
 use sqlx::{postgres::PgPoolOptions, PgPool};
@@ -24,6 +25,12 @@ impl PgConversations {
             .execute(&pool)
             .await
             .map_err(storage)?;
+        sqlx::raw_sql(include_str!(
+            "../../../migrations/0011_conversation_sessions.sql"
+        ))
+        .execute(&pool)
+        .await
+        .map_err(storage)?;
         Ok(Self { pool })
     }
 }
@@ -34,14 +41,89 @@ fn decode(row: (String, i64, serde_json::Value)) -> Result<Conversation> {
         messages: serde_json::from_value(row.2).map_err(storage)?,
     })
 }
+
 #[async_trait]
 impl ConversationStore for PgConversations {
     async fn get(&self, subject: &str, notebook: &str) -> Result<Conversation> {
-        sqlx::query("INSERT INTO notebook_conversations(subject,notebook,id) VALUES($1,$2,$3) ON CONFLICT(subject,notebook) DO NOTHING")
-            .bind(subject).bind(notebook).bind(aster_core::new_sid()?).execute(&self.pool).await.map_err(storage)?;
-        decode(sqlx::query_as("SELECT id,revision,messages FROM notebook_conversations WHERE subject=$1 AND notebook=$2")
-            .bind(subject).bind(notebook).fetch_one(&self.pool).await.map_err(storage)?)
+        let row: Option<(String, i64, serde_json::Value)> = sqlx::query_as(
+            "SELECT id,revision,messages FROM conversation_sessions \
+             WHERE subject=$1 AND notebook=$2 ORDER BY updated_at DESC LIMIT 1",
+        )
+        .bind(subject)
+        .bind(notebook)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(storage)?;
+        match row {
+            Some(row) => decode(row),
+            None => self.create(subject, notebook).await,
+        }
     }
+
+    async fn list(&self, subject: &str, notebook: &str) -> Result<Vec<ConversationSummary>> {
+        let rows: Vec<(String, String, i64, i64, i64)> = sqlx::query_as(
+            "SELECT id, phrase, \
+                    (extract(epoch FROM created_at) * 1000)::bigint, \
+                    (extract(epoch FROM updated_at) * 1000)::bigint, \
+                    jsonb_array_length(messages)::bigint \
+             FROM conversation_sessions WHERE subject=$1 AND notebook=$2 \
+             ORDER BY updated_at DESC, id DESC LIMIT 100",
+        )
+        .bind(subject)
+        .bind(notebook)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(storage)?;
+        Ok(rows
+            .into_iter()
+            .map(
+                |(id, phrase, created_at_ms, updated_at_ms, message_count)| ConversationSummary {
+                    id,
+                    phrase,
+                    created_at_ms,
+                    updated_at_ms,
+                    message_count: message_count.max(0) as usize,
+                },
+            )
+            .collect())
+    }
+
+    async fn create(&self, subject: &str, notebook: &str) -> Result<Conversation> {
+        let id = aster_core::new_sid()?;
+        let row: (String, i64, serde_json::Value) = sqlx::query_as(
+            "INSERT INTO conversation_sessions (id, subject, notebook) VALUES ($1,$2,$3) \
+             RETURNING id,revision,messages",
+        )
+        .bind(&id)
+        .bind(subject)
+        .bind(notebook)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(storage)?;
+        decode(row)
+    }
+
+    async fn get_session(
+        &self,
+        subject: &str,
+        notebook: &str,
+        session: &str,
+    ) -> Result<Conversation> {
+        let row: Option<(String, i64, serde_json::Value)> = sqlx::query_as(
+            "SELECT id,revision,messages FROM conversation_sessions \
+             WHERE subject=$1 AND notebook=$2 AND id=$3",
+        )
+        .bind(subject)
+        .bind(notebook)
+        .bind(session)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(storage)?;
+        row.map(decode)
+            .transpose()?
+            .ok_or_else(|| CoreError::NotFound("conversation session".into()))
+    }
+
     async fn append(
         &self,
         subject: &str,
@@ -50,13 +132,43 @@ impl ConversationStore for PgConversations {
         user: ChatMessage,
         assistant: ChatMessage,
     ) -> Result<Conversation> {
-        let next = self
-            .get(subject, notebook)
-            .await?
-            .with_exchange(expected, user, assistant)?;
-        let row = sqlx::query_as("UPDATE notebook_conversations SET revision=revision+1,messages=$4,updated_at=now() WHERE subject=$1 AND notebook=$2 AND revision=$3 RETURNING id,revision,messages")
-            .bind(subject).bind(notebook).bind(expected).bind(serde_json::to_value(&next.messages).map_err(storage)?)
-            .fetch_optional(&self.pool).await.map_err(storage)?;
+        let latest = self.get(subject, notebook).await?;
+        self.append_session(subject, notebook, &latest.id, expected, user, assistant)
+            .await
+    }
+
+    async fn append_session(
+        &self,
+        subject: &str,
+        notebook: &str,
+        session: &str,
+        expected: i64,
+        user: ChatMessage,
+        assistant: ChatMessage,
+    ) -> Result<Conversation> {
+        let current = self.get_session(subject, notebook, session).await?;
+        let next = current.with_exchange(expected, user, assistant)?;
+        let phrase = if next.messages.len() == 2 {
+            conversation_phrase(&next.messages[0].content)
+        } else {
+            String::new()
+        };
+        let row: Option<(String, i64, serde_json::Value)> = sqlx::query_as(
+            "UPDATE conversation_sessions SET revision=revision+1,messages=$5, \
+                    phrase=CASE WHEN phrase='New session' AND $6<>'' THEN $6 ELSE phrase END, \
+                    updated_at=now() \
+             WHERE id=$1 AND subject=$2 AND notebook=$3 AND revision=$4 \
+             RETURNING id,revision,messages",
+        )
+        .bind(session)
+        .bind(subject)
+        .bind(notebook)
+        .bind(expected)
+        .bind(serde_json::to_value(&next.messages).map_err(storage)?)
+        .bind(phrase)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(storage)?;
         decode(row.ok_or_else(|| {
             CoreError::Conflict("conversation changed; reload before resending".into())
         })?)
@@ -83,10 +195,44 @@ pub async fn get(
     principal: &Principal,
     notebook: &str,
     cell: Option<&str>,
+    session: Option<&str>,
 ) -> Result<Conversation> {
     check_notebook(state, principal, notebook).await?;
     let key = conversation_key(notebook, cell)?;
-    state.conversations.get(&principal.subject, &key).await
+    match session {
+        Some(session) if !aster_core::llm::valid_id(session) => {
+            Err(CoreError::Invalid("invalid session id".into()))
+        }
+        Some(session) => {
+            state
+                .conversations
+                .get_session(&principal.subject, &key, session)
+                .await
+        }
+        None => state.conversations.get(&principal.subject, &key).await,
+    }
+}
+
+pub async fn list(
+    state: &AppState,
+    principal: &Principal,
+    notebook: &str,
+    cell: Option<&str>,
+) -> Result<Vec<aster_core::ConversationSummary>> {
+    check_notebook(state, principal, notebook).await?;
+    let key = conversation_key(notebook, cell)?;
+    state.conversations.list(&principal.subject, &key).await
+}
+
+pub async fn create(
+    state: &AppState,
+    principal: &Principal,
+    notebook: &str,
+    cell: Option<&str>,
+) -> Result<Conversation> {
+    check_notebook(state, principal, notebook).await?;
+    let key = conversation_key(notebook, cell)?;
+    state.conversations.create(&principal.subject, &key).await
 }
 
 pub(crate) async fn check_notebook(
@@ -105,6 +251,8 @@ pub struct Turn<'a> {
     pub notebook: &'a str,
     /// Absent for the notebook conversation, present for a cell conversation.
     pub cell: Option<&'a str>,
+    /// Session to append to; absent uses the latest session.
+    pub session: Option<&'a str>,
     pub helper: &'a str,
     pub prompt: &'a str,
     pub context: &'a str,
@@ -155,10 +303,23 @@ async fn send_checked(
         ));
     }
     let config = crate::ai::resolve_helper(state, headers, principal, Some(turn.helper)).await?;
-    let conversation = state
-        .conversations
-        .get(&principal.subject, notebook_key)
-        .await?;
+    let conversation = match turn.session {
+        Some(session) if !aster_core::llm::valid_id(session) => {
+            return Err(CoreError::Invalid("invalid session id".into()))
+        }
+        Some(session) => {
+            state
+                .conversations
+                .get_session(&principal.subject, notebook_key, session)
+                .await?
+        }
+        None => {
+            state
+                .conversations
+                .get(&principal.subject, notebook_key)
+                .await?
+        }
+    };
     if conversation.revision != turn.expected {
         return Err(CoreError::Conflict(
             "conversation changed; reload before resending".into(),
@@ -265,9 +426,10 @@ async fn send_checked(
     let reply = crate::ai::read_completion(response).await?;
     state
         .conversations
-        .append(
+        .append_session(
             &principal.subject,
             notebook_key,
+            &conversation.id,
             turn.expected,
             user,
             ChatMessage {
@@ -367,6 +529,14 @@ mod tests {
                 .len(),
             2
         );
+        let listed = reopened_metadata
+            .conversations
+            .list(&subject, "default")
+            .await
+            .unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].message_count, 2);
+        assert_eq!(listed[0].phrase, "metadata question");
 
         delegated.get(&subject, "secondary").await.unwrap();
         let (a, b) = tokio::join!(

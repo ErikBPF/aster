@@ -20,6 +20,7 @@ impl NotebookStore for Notebooks {
         Ok(Notebook {
             id: id.into(),
             title: id.into(),
+            engine: None,
             cells: vec![],
         })
     }

@@ -806,6 +806,9 @@ impl GitNotebookStore {
         let path = self.path_for(&notebook.id)?;
         if notebook.title.contains('\r')
             || notebook.title.contains('\n')
+            || notebook.engine.as_ref().is_some_and(|engine| {
+                engine.0.is_empty() || engine.0.chars().any(char::is_whitespace)
+            })
             || notebook.cells.iter().any(|cell| {
                 cell.id.is_empty()
                     || cell.id.chars().any(char::is_whitespace)
@@ -1081,6 +1084,7 @@ mod tests {
         Notebook {
             id: id.into(),
             title: "T".into(),
+            engine: None,
             cells: vec![Cell {
                 id: "c1".into(),
                 sql: "SELECT 1".into(),

@@ -1035,6 +1035,7 @@ async fn team_mode_unqualified_notebook_reads_refuse_legacy_checkout() {
             &Notebook {
                 id: "legacy-secret".into(),
                 title: "Legacy".into(),
+                engine: None,
                 cells: vec![],
             },
             "alice",

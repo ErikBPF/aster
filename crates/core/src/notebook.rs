@@ -10,18 +10,75 @@ use crate::error::{CoreError, Result};
 pub struct Cell {
     pub id: String,
     pub sql: String,
-    /// Engine chosen for this cell; `None` means the default engine.
+    /// Legacy per-cell engine. New saves use the notebook engine; this remains
+    /// readable so older documents keep working.
     pub engine: Option<EngineId>,
     /// Persisted client context, including catalog/schema selection.
     #[serde(default)]
     pub metadata: serde_json::Map<String, serde_json::Value>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum CellKind {
+    Sql,
+    Markdown,
+}
+
+impl Cell {
+    /// The first non-empty line selects the cell kind. `%md` makes a Markdown
+    /// cell; `%sql` is accepted for symmetry and any other line is SQL.
+    pub fn kind(&self) -> CellKind {
+        match self.magic() {
+            Some("%md") => CellKind::Markdown,
+            _ => CellKind::Sql,
+        }
+    }
+
+    /// Cell text without the leading magic line, so callers never execute or
+    /// render `%md`/`%sql` as content.
+    pub fn source(&self) -> &str {
+        let mut offset = 0;
+        for line in self.sql.split_inclusive('\n') {
+            let trimmed = line.trim_end_matches(['\n', '\r']).trim();
+            if trimmed.is_empty() {
+                offset += line.len();
+                continue;
+            }
+            return match trimmed {
+                "%md" | "%sql" => &self.sql[offset + line.len()..],
+                _ => &self.sql,
+            };
+        }
+        &self.sql
+    }
+
+    fn magic(&self) -> Option<&str> {
+        self.sql
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .map(str::trim)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Notebook {
     pub id: String,
     pub title: String,
+    /// One engine for the whole notebook. `None` keeps legacy documents on
+    /// their per-cell engines and the configured default.
+    #[serde(default)]
+    pub engine: Option<EngineId>,
     pub cells: Vec<Cell>,
+}
+
+impl Notebook {
+    /// The notebook engine, falling back to the first legacy per-cell engine.
+    pub fn effective_engine(&self) -> Option<&EngineId> {
+        self.engine
+            .as_ref()
+            .or_else(|| self.cells.iter().find_map(|cell| cell.engine.as_ref()))
+    }
 }
 
 /// The content revision is a committed Git blob OID for one notebook, while
@@ -185,6 +242,7 @@ impl NotebookOwners for InMemoryNotebookOwners {
 const HEADER_V1: &str = "# aster notebook v1";
 const HEADER_V2: &str = "# aster notebook v2";
 const TITLE_PREFIX: &str = "# title: ";
+const ENGINE_PREFIX: &str = "# engine: ";
 const CELL_PREFIX: &str = "-- cell ";
 
 impl Notebook {
@@ -195,6 +253,11 @@ impl Notebook {
         out.push_str(TITLE_PREFIX);
         out.push_str(&self.title);
         out.push('\n');
+        if let Some(engine) = &self.engine {
+            out.push_str(ENGINE_PREFIX);
+            out.push_str(&engine.0);
+            out.push('\n');
+        }
         for cell in &self.cells {
             out.push_str(CELL_PREFIX);
             out.push_str(&cell.id);
@@ -233,6 +296,7 @@ impl Notebook {
         };
 
         let mut title = String::from("untitled");
+        let mut engine = None;
         let mut cells: Vec<Cell> = Vec::new();
         let mut current: Option<Cell> = None;
         let mut saw_sql_line = false;
@@ -267,6 +331,8 @@ impl Notebook {
                 saw_sql_line = false;
             } else if current.is_none() && line.starts_with(TITLE_PREFIX) {
                 title = line[TITLE_PREFIX.len()..].to_string();
+            } else if current.is_none() && line.starts_with(ENGINE_PREFIX) {
+                engine = Some(EngineId::new(line[ENGINE_PREFIX.len()..].trim()));
             } else if let Some(cell) = current.as_mut() {
                 if saw_sql_line {
                     cell.sql.push('\n');
@@ -286,6 +352,7 @@ impl Notebook {
         Ok(Notebook {
             id: String::new(),
             title,
+            engine,
             cells,
         })
     }
@@ -299,6 +366,7 @@ mod tests {
         Notebook {
             id: "nb1".into(),
             title: "Sales".into(),
+            engine: None,
             cells: vec![
                 Cell {
                     id: "c1".into(),
@@ -347,6 +415,55 @@ mod tests {
         assert_eq!(parsed.cells[0].engine.as_ref().unwrap().0, "trino-local");
         assert_eq!(parsed.cells[1].sql, "SELECT\n  2");
         assert!(parsed.cells[1].engine.is_none());
+    }
+
+    #[test]
+    fn notebook_engine_round_trips_and_wins_over_legacy_cells() {
+        let mut notebook = sample();
+        notebook.engine = Some(EngineId::new("trino-notebook"));
+        let parsed = Notebook::from_text(&notebook.to_text()).unwrap();
+        assert_eq!(
+            parsed.engine.as_ref().expect("notebook engine").0,
+            "trino-notebook"
+        );
+        assert_eq!(
+            parsed.effective_engine().expect("effective engine").0,
+            "trino-notebook"
+        );
+        assert_eq!(parsed.cells[0].engine.as_ref().unwrap().0, "trino-local");
+        let text = notebook.to_text();
+        assert!(text.contains("# engine: trino-notebook\n"), "{text}");
+    }
+
+    #[test]
+    fn cell_magic_selects_markdown_and_strips_the_marker() {
+        let cell = Cell {
+            id: "c1".into(),
+            sql: "\n%md\n# Title\n\n```mermaid\ngraph TD; A-->B\n```\n".into(),
+            engine: None,
+            metadata: Default::default(),
+        };
+        assert_eq!(cell.kind(), CellKind::Markdown);
+        assert_eq!(
+            cell.source(),
+            "# Title\n\n```mermaid\ngraph TD; A-->B\n```\n"
+        );
+        let sql = Cell {
+            id: "c2".into(),
+            sql: "%sql\nSELECT 1".into(),
+            engine: None,
+            metadata: Default::default(),
+        };
+        assert_eq!(sql.kind(), CellKind::Sql);
+        assert_eq!(sql.source(), "SELECT 1");
+        let plain = Cell {
+            id: "c3".into(),
+            sql: "SELECT 2".into(),
+            engine: None,
+            metadata: Default::default(),
+        };
+        assert_eq!(plain.kind(), CellKind::Sql);
+        assert_eq!(plain.source(), "SELECT 2");
     }
 
     #[test]

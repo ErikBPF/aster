@@ -178,6 +178,7 @@ fn to_notebook(notebook: &aster_core::Notebook) -> api::Notebook {
     api::Notebook {
         id: notebook.id.clone(),
         title: notebook.title.clone(),
+        engine: notebook.engine.as_ref().map(|engine| engine.0.clone()),
         cells,
         ..Default::default()
     }
@@ -295,11 +296,20 @@ impl api::Aster for AsterApi {
             ));
         }
         let conversation = if let Some((principal, key, _)) = context {
-            self.state
-                .conversations
-                .get(&principal.subject, &key)
-                .await
-                .map_err(connect_error)?
+            match request.session.as_deref() {
+                Some(session) => self
+                    .state
+                    .conversations
+                    .get_session(&principal.subject, &key, session)
+                    .await
+                    .map_err(connect_error)?,
+                None => self
+                    .state
+                    .conversations
+                    .get(&principal.subject, &key)
+                    .await
+                    .map_err(connect_error)?,
+            }
         } else {
             let principal = caller(&self.state, &ctx).await?;
             crate::conversations::get(
@@ -307,6 +317,7 @@ impl api::Aster for AsterApi {
                 &principal,
                 &request.notebook,
                 request.cell.as_deref(),
+                request.session.as_deref(),
             )
             .await
             .map_err(connect_error)?
@@ -321,6 +332,96 @@ impl api::Aster for AsterApi {
                 "conversation context unavailable; start a fresh conversation",
             )
         })?
+        .map_err(connect_error)?;
+        Ok(to_conversation(conversation).into())
+    }
+
+    async fn list_conversations(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, api::ListConversationsRequest>,
+    ) -> ServiceResult<api::ListConversationsResponse> {
+        let request = request.to_owned_message();
+        let context = notebook_context(
+            &self.state,
+            &ctx,
+            request.team.as_deref(),
+            request.workspace.as_deref(),
+            &request.notebook,
+        )
+        .await?;
+        if context.is_some() && request.cell.is_some() {
+            return Err(ConnectError::invalid_argument(
+                "cell conversations are not available in team workspaces",
+            ));
+        }
+        let sessions = if let Some((principal, key, _)) = context {
+            self.state
+                .conversations
+                .list(&principal.subject, &key)
+                .await
+        } else {
+            let principal = caller(&self.state, &ctx).await?;
+            crate::conversations::list(
+                &self.state,
+                &principal,
+                &request.notebook,
+                request.cell.as_deref(),
+            )
+            .await
+        }
+        .map_err(connect_error)?;
+        Ok(api::ListConversationsResponse {
+            sessions: sessions
+                .into_iter()
+                .map(|session| api::ConversationSummary {
+                    id: session.id,
+                    phrase: session.phrase,
+                    created_at_ms: session.created_at_ms,
+                    updated_at_ms: session.updated_at_ms,
+                    message_count: session.message_count as i32,
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        }
+        .into())
+    }
+
+    async fn new_conversation(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, api::NewConversationRequest>,
+    ) -> ServiceResult<api::Conversation> {
+        let request = request.to_owned_message();
+        let context = notebook_context(
+            &self.state,
+            &ctx,
+            request.team.as_deref(),
+            request.workspace.as_deref(),
+            &request.notebook,
+        )
+        .await?;
+        if context.is_some() && request.cell.is_some() {
+            return Err(ConnectError::invalid_argument(
+                "cell conversations are not available in team workspaces",
+            ));
+        }
+        let conversation = if let Some((principal, key, _)) = context {
+            self.state
+                .conversations
+                .create(&principal.subject, &key)
+                .await
+        } else {
+            let principal = caller(&self.state, &ctx).await?;
+            crate::conversations::create(
+                &self.state,
+                &principal,
+                &request.notebook,
+                request.cell.as_deref(),
+            )
+            .await
+        }
         .map_err(connect_error)?;
         Ok(to_conversation(conversation).into())
     }
@@ -362,6 +463,7 @@ impl api::Aster for AsterApi {
         let turn = crate::conversations::Turn {
             notebook: &request.notebook,
             cell: request.cell.as_deref(),
+            session: request.session.as_deref(),
             helper: &request.helper,
             prompt: &request.prompt,
             context: &request.context,
@@ -665,6 +767,7 @@ impl api::Aster for AsterApi {
         let mut notebook = aster_core::Notebook {
             id: requested.id.clone(),
             title: message.title.clone(),
+            engine: message.engine.clone().map(aster_core::EngineId::new),
             cells: message.cells.iter().map(to_cell).collect(),
         };
         let expected = match (

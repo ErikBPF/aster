@@ -181,6 +181,9 @@ if (document.getElementById('contract-context')) {
 
 let dirty = false;
 let editGeneration = 0;
+let autosaveTimer = null;
+let saving = false;
+let autosaveBlocked = false;
 let catalogsPromise;
 const contextGeneration = new WeakMap();
 
@@ -188,19 +191,57 @@ function status(text) {
   if (statusLine) statusLine.textContent = text;
 }
 
+function scheduleAutosave() {
+  if (!nb || autosaveBlocked) return;
+  clearTimeout(autosaveTimer);
+  autosaveTimer = setTimeout(() => save(true), 1800);
+}
+
 function setDirty(value) {
   if (value) editGeneration += 1;
   dirty = value;
   const syncButton = document.querySelector('[data-action="sync"]');
   if (syncButton) syncButton.disabled = dirty;
-  if (dirty) status('unsaved changes');
-  else if (statusLine) statusLine.textContent = '';
+  if (dirty) {
+    status('unsaved changes');
+    scheduleAutosave();
+  } else if (statusLine) statusLine.textContent = '';
 }
+
+window.addEventListener('beforeunload', (event) => {
+  if (!dirty) return;
+  event.preventDefault();
+  event.returnValue = '';
+});
 
 /* ---- engines -------------------------------------------------------- */
 
+/* One engine belongs to the notebook. Cells inherit it; the server refuses a
+ * run that names a different engine. */
+const notebookEngine = document.getElementById('notebook-engine');
+
 async function loadEngines() {
-  await Promise.all([...document.querySelectorAll('.cell')].map(initCellContext));
+  if (!notebookEngine) return;
+  const legacy = (nb?.cells || []).find((cell) => cell.engine)?.engine;
+  const current = nb?.engine || legacy || notebookEngine.dataset.current || '';
+  fillEngines(notebookEngine, current);
+  notebookEngine.disabled = true;
+  try {
+    const response = await fetch('/api/engines', {cache: 'no-store'});
+    if (!response.ok) throw new Error('Engine choices unavailable');
+    const choices = await response.json();
+    fillEngines(notebookEngine, current, new Map(choices.map((entry) => [entry.id, entry])));
+    for (const option of notebookEngine.options) {
+      if (option.value && !choices.some((entry) => entry.id === option.value)) option.disabled = true;
+    }
+    notebookEngine.disabled = choices.length === 0;
+  } catch (error) {
+    status(error.message);
+  }
+}
+
+function notebookEngineId() {
+  return notebookEngine ? (notebookEngine.value || null) : null;
 }
 
 function fillEngines(select, current, engineInfo = new Map()) {
@@ -231,13 +272,15 @@ function contextSelect(cell, name, className) {
   select.className = className;
   select.setAttribute('aria-label', name);
   label.append(title, select);
-  cell.querySelector('.cell-head').append(label);
+  const context = cell.querySelector('.cell-context') || cell.querySelector('.cell-head');
+  context.append(label);
   return select;
 }
 
 async function initCellContext(cell) {
   const saved = nb?.cells.find((entry) => entry.id === cell.dataset.id);
   cell.metadata = {...saved?.metadata};
+  if (cell.dataset.kind === 'markdown') return;
   const catalog = contextSelect(cell, 'Catalog', 'catalog-context');
   const schema = contextSelect(cell, 'Schema', 'query-schema');
   catalog.add(new Option('Select a catalog', ''));
@@ -246,15 +289,10 @@ async function initCellContext(cell) {
   if (cell.metadata.catalog_context) catalog.add(new Option(cell.metadata.catalog_context, cell.metadata.catalog_context, false, true));
   if (cell.metadata.schema) schema.add(new Option(cell.metadata.schema, cell.metadata.schema, false, true));
   catalog.disabled = schema.disabled = true;
-  const engine = cell.querySelector('.engine');
-  fillEngines(engine, saved?.engine || engine.dataset.current || '');
-  engine.setAttribute('aria-label', 'Engine');
-  engine.disabled = true;
-  engine.addEventListener('change', () => setDirty(true));
   schema.addEventListener('change', () => setDirty(true));
   catalog.addEventListener('change', () => {
     setDirty(true);
-    loadCellContext(cell, '', '');
+    loadCellContext(cell, '');
   });
   try {
     catalogsPromise ||= fetch('/api/catalogs', {cache: 'no-store'}).then(async (response) => {
@@ -272,37 +310,28 @@ async function initCellContext(cell) {
     }
     catalog.value = current;
     catalog.disabled = false;
-    await loadCellContext(cell, saved?.engine || engine.dataset.current || '', cell.metadata.schema || '');
+    await loadCellContext(cell, cell.metadata.schema || '');
   } catch (error) {
     status(error.message);
   }
 }
 
-async function loadCellContext(cell, currentEngine, currentSchema) {
+async function loadCellContext(cell, currentSchema) {
   const generation = (contextGeneration.get(cell) || 0) + 1;
   contextGeneration.set(cell, generation);
-  const catalog = cell.querySelector('.catalog-context').value;
-  const engine = cell.querySelector('.engine');
+  const catalog = cell.querySelector('.catalog-context');
   const schema = cell.querySelector('.query-schema');
-  engine.disabled = schema.disabled = true;
-  fillEngines(engine, currentEngine);
+  if (!catalog || !schema) return;
+  schema.disabled = true;
   schema.replaceChildren(new Option('Select a schema', ''));
   if (currentSchema) schema.add(new Option(currentSchema, currentSchema));
   schema.value = currentSchema;
-  if (!catalog) return;
+  if (!catalog.value) return;
   try {
-    const [engines, namespaces] = await Promise.all([
-      fetch('/api/engines?catalog_context=' + encodeURIComponent(catalog), {cache: 'no-store'}),
-      fetch('/api/catalogs/' + encodeURIComponent(catalog) + '/namespaces', {cache: 'no-store'}),
-    ]);
-    if (!engines.ok || !namespaces.ok) throw new Error('Catalog context unavailable; select an authorized catalog.');
-    const [choices, schemas] = await Promise.all([engines.json(), namespaces.json()]);
+    const namespaces = await fetch('/api/catalogs/' + encodeURIComponent(catalog.value) + '/namespaces', {cache: 'no-store'});
+    if (!namespaces.ok) throw new Error('Catalog context unavailable; select an authorized catalog.');
+    const schemas = await namespaces.json();
     if (contextGeneration.get(cell) !== generation) return;
-    fillEngines(engine, currentEngine, new Map(choices.map((entry) => [entry.id, entry])));
-    // A saved, now unavailable engine is visible but cannot be executed.
-    for (const option of engine.options) {
-      if (option.value && !choices.some((entry) => entry.id === option.value)) option.disabled = true;
-    }
     schema.replaceChildren(new Option('Select a schema', ''));
     for (const entry of schemas) schema.add(new Option(entry.name, entry.name));
     if (currentSchema && !schemas.some((entry) => entry.name === currentSchema)) {
@@ -311,12 +340,119 @@ async function loadCellContext(cell, currentEngine, currentSchema) {
       schema.add(missing);
     }
     schema.value = currentSchema || (schemas.some((entry) => entry.name === 'tiny') ? 'tiny' : '');
-    engine.disabled = choices.length === 0;
     schema.disabled = false;
   } catch (error) {
     if (contextGeneration.get(cell) === generation) status(error.message);
   }
 }
+
+/* ---- markdown ------------------------------------------------------- */
+
+/* The first non-empty line selects the cell kind. Only `%md` changes it;
+ * `%sql` is accepted and stripped like the implicit default. */
+function cellMagic(text) {
+  const line = text.split('\n').find((entry) => entry.trim() !== '');
+  return line ? line.trim() : '';
+}
+
+function cellKind(text) {
+  return cellMagic(text) === '%md' ? 'markdown' : 'sql';
+}
+
+function cellSource(text) {
+  const lines = text.split('\n');
+  for (let index = 0; index < lines.length; index += 1) {
+    const trimmed = lines[index].trim();
+    if (trimmed === '') continue;
+    if (trimmed === '%md' || trimmed === '%sql') return lines.slice(index + 1).join('\n');
+    break;
+  }
+  return text;
+}
+
+function renderMarkdownInto(element, text) {
+  if (!window.marked || !window.DOMPurify) {
+    element.textContent = cellSource(text);
+    return;
+  }
+  const html = window.marked.parse(cellSource(text), {gfm: true, breaks: false});
+  element.innerHTML = window.DOMPurify.sanitize(html, {USE_PROFILES: {html: true}});
+  const blocks = element.querySelectorAll('pre > code.language-mermaid');
+  blocks.forEach((code, index) => {
+    const holder = document.createElement('div');
+    holder.className = 'mermaid';
+    holder.dataset.diagram = 'mermaid-' + index;
+    holder.textContent = code.textContent;
+    code.parentElement.replaceWith(holder);
+  });
+  if (window.mermaid && blocks.length > 0) {
+    window.mermaid.run({nodes: element.querySelectorAll('.mermaid')}).catch((error) => {
+      status('diagram: ' + error.message);
+    });
+  }
+}
+
+function mountMarkdown(cell) {
+  const editor = cell.querySelector('.editor');
+  const preview = cell.querySelector('.md-preview');
+  if (!editor || !preview) return;
+  const render = () => renderMarkdownInto(preview, editor.value);
+  render();
+  if (editor.dataset.mdWired === '1') return;
+  editor.dataset.mdWired = '1';
+  editor.addEventListener('input', () => {
+    if (cellKind(editor.value) === 'markdown') render();
+  });
+  editor.addEventListener('blur', () => {
+    if (cellKind(editor.value) !== 'markdown') setCellKind(cell, 'sql');
+  });
+}
+
+function setCellKind(cell, kind) {
+  cell.dataset.kind = kind;
+  cell.classList.toggle('md-cell', kind === 'markdown');
+  const run = cell.querySelector('[data-action=run]');
+  if (run) run.hidden = kind === 'markdown';
+  const toggle = cell.querySelector('[data-action=md-toggle]');
+  if (toggle) toggle.hidden = kind !== 'markdown';
+  const out = cell.querySelector('.out');
+  if (out) out.hidden = kind === 'markdown';
+  const editor = cell.querySelector('.editor');
+  const preview = cell.querySelector('.md-preview');
+  if (kind === 'markdown') {
+    cell.classList.remove('md-editing');
+    if (toggle) toggle.textContent = 'Edit';
+    if (editor) editor.classList.add('hidden');
+    if (preview) preview.classList.remove('hidden');
+    mountMarkdown(cell);
+  } else {
+    cell.classList.remove('md-editing');
+    if (editor) editor.classList.remove('hidden');
+    if (preview) preview.classList.add('hidden');
+  }
+}
+
+function toggleMarkdownEdit(cell) {
+  if (cell.dataset.kind !== 'markdown') return;
+  const editor = cell.querySelector('.editor');
+  if (cellKind(editor.value) !== 'markdown') {
+    setCellKind(cell, 'sql');
+    return;
+  }
+  const editing = cell.classList.toggle('md-editing');
+  const toggle = cell.querySelector('[data-action=md-toggle]');
+  const preview = cell.querySelector('.md-preview');
+  if (toggle) toggle.textContent = editing ? 'Preview' : 'Edit';
+  if (editor) editor.classList.toggle('hidden', !editing);
+  if (preview) preview.classList.toggle('hidden', editing);
+  if (!editing) renderMarkdownInto(preview, editor.value);
+  else editor.focus();
+}
+
+if (window.mermaid) {
+  window.mermaid.initialize({startOnLoad: false, securityLevel: 'strict', theme: 'neutral'});
+}
+
 
 /* ---- cells ---------------------------------------------------------- */
 
@@ -330,14 +466,18 @@ function autosizeAll() {
 }
 
 function cellsFromDom() {
-  return [...document.querySelectorAll('.cell')].map((cell) => ({
-    id: cell.dataset.id,
-    sql: cell.querySelector('.editor').value,
-    engine: cell.querySelector('.engine').value || null,
-    metadata: {...cell.metadata,
-      catalog_context: cell.querySelector('.catalog-context').value || null,
-      schema: cell.querySelector('.query-schema').value || null},
-  }));
+  return [...document.querySelectorAll('.cell')].map((cell) => {
+    const catalog = cell.querySelector('.catalog-context');
+    const schema = cell.querySelector('.query-schema');
+    return {
+      id: cell.dataset.id,
+      sql: cell.querySelector('.editor').value,
+      engine: null,
+      metadata: {...cell.metadata,
+        catalog_context: catalog ? (catalog.value || null) : null,
+        schema: schema ? (schema.value || null) : null},
+    };
+  });
 }
 
 function cellButton(label, className, action) {
@@ -360,12 +500,19 @@ function wireEditor(area) {
   });
   area.addEventListener('keydown', (event) => completeKeydown(event, area));
   area.addEventListener('blur', () => closeComplete());
+  area.addEventListener('blur', () => {
+    const cell = area.closest('.cell');
+    if (cell && cell.dataset.kind !== 'markdown' && cellKind(area.value) === 'markdown') {
+      setCellKind(cell, 'markdown');
+    }
+  });
 }
 
-function cellTemplate(id, sql, engine) {
+function cellTemplate(id, sql) {
   const section = document.createElement('section');
   section.className = 'cell';
   section.dataset.id = id;
+  section.dataset.kind = 'sql';
 
   const gutter = document.createElement('div');
   gutter.className = 'cell-gutter';
@@ -385,28 +532,24 @@ function cellTemplate(id, sql, engine) {
   name.textContent = id;
   head.appendChild(name);
 
+  const context = document.createElement('div');
+  context.className = 'cell-context';
+  head.appendChild(context);
+
   const actions = document.createElement('div');
   actions.className = 'cell-actions';
+  const run = cellButton('▶ Run', 'btn btn-run', 'run');
+  const mdToggle = cellButton('Edit', 'btn ghost md-toggle', 'md-toggle');
+  mdToggle.hidden = true;
   actions.append(
-    cellButton('▶ Run', 'btn btn-run', 'run'),
+    run,
     cellButton('AI', 'btn', 'ai'),
-    cellButton('+', 'btn ghost', 'add'),
+    mdToggle,
     cellButton('↑', 'btn ghost', 'up'),
     cellButton('↓', 'btn ghost', 'down'),
     cellButton('✕', 'btn ghost danger', 'delete'),
   );
   head.appendChild(actions);
-
-  const selectWrap = document.createElement('div');
-  selectWrap.className = 'select-wrap';
-  const label = document.createElement('span');
-  label.className = 'muted';
-  label.textContent = 'engine';
-  const select = document.createElement('select');
-  select.className = 'engine';
-  select.dataset.current = engine || '';
-  selectWrap.append(label, select);
-  head.appendChild(selectWrap);
 
   const area = document.createElement('textarea');
   area.className = 'editor';
@@ -415,6 +558,9 @@ function cellTemplate(id, sql, engine) {
   /* Suggestions follow the token under the caret: a trailing word character or
    * dot keeps them coming, anything else dismisses the list. */
   wireEditor(area);
+
+  const preview = document.createElement('div');
+  preview.className = 'md-preview hidden';
 
   const out = document.createElement('div');
   out.className = 'out';
@@ -427,15 +573,18 @@ function cellTemplate(id, sql, engine) {
 
   const main = document.createElement('div');
   main.className = 'cell-main';
-  main.append(area, out);
+  main.append(area, preview, out);
 
   const split = document.createElement('div');
   split.className = 'cell-split';
   split.append(main, cellChatTemplate());
 
-  body.append(head, split);
+  const insert = document.createElement('div');
+  insert.className = 'insert-bar';
+  insert.append(cellButton('+ Cell', 'btn ghost', 'add-cell'));
+
+  body.append(head, split, insert);
   section.append(gutter, body);
-  fillEngines(select, engine || '');
   initCellContext(section);
   return section;
 }
@@ -459,8 +608,28 @@ function cellChatTemplate() {
   heading.append(title, close);
 
   const note = document.createElement('p');
-  note.className = 'status';
-  note.textContent = "For this cell only. Sends this cell's SQL and last output; it cannot read the notebook conversation or another cell's.";
+  note.className = 'status cell-chat-note';
+  note.textContent = 'This cell only: its SQL and last output, plus material you attach.';
+
+  const sessions = document.createElement('div');
+  sessions.className = 'cell-chat-sessions chat-sessions';
+  sessions.setAttribute('role', 'tablist');
+  sessions.setAttribute('aria-label', 'Cell sessions');
+
+  const fetch = document.createElement('button');
+  fetch.type = 'button';
+  fetch.className = 'btn cell-chat-fetch';
+  fetch.textContent = 'Attach notebook summary';
+
+  const context = document.createElement('textarea');
+  context.className = 'cell-chat-context';
+  context.rows = 2;
+  context.maxLength = 8192;
+  context.placeholder = 'Attached notebook material (optional)';
+
+  const attach = document.createElement('div');
+  attach.className = 'cell-chat-attach';
+  attach.append(fetch, context);
 
   const history = document.createElement('div');
   history.className = 'cell-chat-history chat-history';
@@ -489,7 +658,7 @@ function cellChatTemplate() {
   send.textContent = 'Send';
   form.append(label, prompt, send);
 
-  panel.append(heading, note, history, status, form);
+  panel.append(heading, sessions, note, attach, history, status, form);
   return panel;
 }
 
@@ -497,24 +666,33 @@ document.addEventListener('click', (event) => {
   const target = event.target.closest && event.target.closest('[data-action]');
   if (!target) return;
   const cell = target.closest('.cell');
+  if (cell) currentCell = cell;
   switch (target.dataset.action) {
     case 'run': run(target); break;
     case 'run-all': runAll(); break;
     case 'ai': toggleCellChat(cell); break;
     case 'save': save(); break;
     case 'sync': syncNotebook(); break;
-    case 'add': addCell(cell); break;
+    case 'add-cell': addCell(cell); break;
+    case 'md-toggle': toggleMarkdownEdit(cell); break;
     case 'up': moveCell(cell, -1); break;
     case 'down': moveCell(cell, 1); break;
     case 'delete': removeCell(cell); break;
   }
 });
 
+let currentCell = null;
+document.addEventListener('focusin', (event) => {
+  const cell = event.target.closest && event.target.closest('.cell');
+  if (cell) currentCell = cell;
+});
+
 function addCell(after) {
   const id = 'c' + Date.now().toString(36);
-  const section = cellTemplate(id, '', null);
+  const section = cellTemplate(id, '');
   if (after) after.after(section);
   else cellsRoot.appendChild(section);
+  currentCell = section;
   section.querySelector('.editor').focus();
   setDirty(true);
   return section;
@@ -652,9 +830,16 @@ document.addEventListener('keydown', (event) => {
   const editor = target.closest('.editor');
   if (editor) {
     const cell = editor.closest('.cell');
+    if (cell && cell.dataset.kind === 'markdown') {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      toggleMarkdownEdit(cell);
+      return;
+    }
     const run = cell ? cell.querySelector('[data-action=run]') : null;
     if (run) {
       event.preventDefault();
+      event.stopImmediatePropagation();
       run.click();
     }
   }
@@ -662,16 +847,23 @@ document.addEventListener('keydown', (event) => {
 
 async function run(btn) {
   const cell = btn.closest('.cell');
+  if (cell.dataset.kind === 'markdown') {
+    status('markdown cells do not execute queries');
+    return;
+  }
   const area = cell.querySelector('.editor');
+  if (cellKind(area.value) === 'markdown') {
+    setCellKind(cell, 'markdown');
+    status('markdown cells do not execute queries');
+    return;
+  }
   const out = cell.querySelector('.out');
-  const engine = cell.querySelector('.engine').value || null;
+  const engine = notebookEngineId();
   const catalog = cell.querySelector('.catalog-context');
   const schema = cell.querySelector('.query-schema');
-  const engineSelect = cell.querySelector('.engine');
-  if (!catalog.value || catalog.disabled || schema.disabled || engineSelect.disabled ||
-      catalog.selectedOptions[0]?.disabled || schema.selectedOptions[0]?.disabled ||
-      engineSelect.selectedOptions[0]?.disabled) {
-    renderError(out, 'Select an available catalog, schema and engine context before running.');
+  if (!catalog || !catalog.value || catalog.disabled || schema.disabled ||
+      catalog.selectedOptions[0]?.disabled || schema.selectedOptions[0]?.disabled) {
+    renderError(out, 'Select an available catalog and schema context before running.');
     return;
   }
 
@@ -686,7 +878,7 @@ async function run(btn) {
     response = await fetch('/api/query', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ sql: area.value, engine, notebook: nb.id, cell: cell.dataset.id,
+      body: JSON.stringify({ sql: cellSource(area.value), engine, notebook: nb.id, cell: cell.dataset.id,
         catalog_context: catalog.value, schema: schema.value || null }),
     });
   } catch (error) {
@@ -713,32 +905,57 @@ async function run(btn) {
  * failed cell shows its error and the run continues. */
 async function runAll() {
   for (const cell of document.querySelectorAll('.cell')) {
+    if (cell.dataset.kind === 'markdown') continue;
     await run(cell.querySelector('.btn-run'));
   }
 }
 
-async function save() {
+async function save(silent = false) {
+  if (!nb) return;
+  if (saving) {
+    if (silent) scheduleAutosave();
+    return;
+  }
+  if (silent && !dirty) return;
+  clearTimeout(autosaveTimer);
+  saving = true;
   const generation = editGeneration;
-  const res = await fetch(notebookPath(), {
-    method: 'PUT',
-    headers: {
-      'content-type': 'application/json',
-      ...workspaceHeader(),
-      ...(contentRevision ? { 'if-match': '"' + contentRevision + '"' } : { 'if-none-match': '*' }),
-    },
-    body: JSON.stringify({ ...nb, cells: cellsFromDom() }),
-  });
+  let res;
+  try {
+    res = await fetch(notebookPath(), {
+      method: 'PUT',
+      headers: {
+        'content-type': 'application/json',
+        ...workspaceHeader(),
+        ...(contentRevision ? { 'if-match': '"' + contentRevision + '"' } : { 'if-none-match': '*' }),
+      },
+      body: JSON.stringify({ ...nb, engine: notebookEngineId(), cells: cellsFromDom() }),
+    });
+  } catch (error) {
+    saving = false;
+    status((silent ? 'autosave' : 'save') + ' failed: network error');
+    return;
+  }
   const data = await res.json().catch(() => ({}));
+  saving = false;
   if (!res.ok) {
-    status('save failed: ' + (data.error || res.status));
+    if (res.status === 409) {
+      autosaveBlocked = true;
+      status('save conflict: reload or Save manually');
+    } else {
+      status((silent ? 'autosave' : 'save') + ' failed: ' + (data.error || res.status));
+    }
     return;
   }
   contentRevision = data.content_revision;
   if (generation === editGeneration) {
     setDirty(false);
-    status((team ? 'saved locally; Sync pending ' : 'saved ') + String(data.revision).slice(0, 8));
+    status(silent
+      ? 'autosaved ' + new Date().toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'})
+      : (team ? 'saved locally; Sync pending ' : 'saved ') + String(data.revision).slice(0, 8));
   } else {
     status('unsaved changes');
+    if (silent) scheduleAutosave();
   }
 }
 
@@ -920,7 +1137,10 @@ document.addEventListener('keydown', (event) => {
 
   if (accelerator && event.key === 'Enter') {
     const cell = event.target.closest && event.target.closest('.cell');
-    if (cell) {
+    if (cell && cell.dataset.kind === 'markdown') {
+      event.preventDefault();
+      toggleMarkdownEdit(cell);
+    } else if (cell) {
       event.preventDefault();
       run(cell.querySelector('.btn-run'));
     }
@@ -934,6 +1154,10 @@ document.addEventListener('keydown', (event) => {
   if (event.shiftKey && event.key === 'Enter' && inEditor) {
     const cell = event.target.closest('.cell');
     event.preventDefault();
+    if (cell.dataset.kind === 'markdown') {
+      addCell(cell);
+      return;
+    }
     run(cell.querySelector('.btn-run')).then(() => {
       const next = cell.nextElementSibling;
       if (next) next.querySelector('.editor').focus();
@@ -1094,7 +1318,11 @@ function completeKeydown(event, area) {
 /* ---- boot ----------------------------------------------------------- */
 
 for (const area of document.querySelectorAll('.editor')) wireEditor(area);
-loadEngines().then(autosizeAll);
+loadEngines();
+Promise.all([...document.querySelectorAll('.cell')].map(initCellContext)).then(() => {
+  for (const cell of document.querySelectorAll('.md-cell')) mountMarkdown(cell);
+  autosizeAll();
+});
 loadHelpers();
 if (nb) recordState(null, null);
 
@@ -1107,6 +1335,8 @@ const chatPanel = document.getElementById('chat-panel');
 let conversation = null;
 let conversationRead = 0;
 let chatBusy = false;
+let chatSessions = [];
+let activeChatSession = null;
 
 async function chatRpc(method, body) {
   if (team) body = { ...body, team, workspace };
@@ -1124,9 +1354,60 @@ async function chatRpc(method, body) {
   return value;
 }
 
+function shortDate(ms) {
+  const value = Number(ms);
+  if (!value) return '';
+  return new Date(value).toLocaleDateString(undefined, {month: 'short', day: 'numeric'});
+}
+
+function renderChatSessions() {
+  const strip = document.getElementById('chat-sessions');
+  if (!strip) return;
+  strip.replaceChildren();
+  for (const session of chatSessions) {
+    const tab = document.createElement('button');
+    tab.type = 'button';
+    tab.className = 'chat-session' + (session.id === activeChatSession ? ' active' : '');
+    tab.setAttribute('role', 'tab');
+    tab.setAttribute('aria-selected', String(session.id === activeChatSession));
+    const phrase = document.createElement('span');
+    phrase.className = 'chat-session-phrase';
+    phrase.textContent = session.phrase;
+    const date = document.createElement('span');
+    date.className = 'chat-session-date';
+    date.textContent = shortDate(session.createdAtMs);
+    tab.append(phrase, date);
+    tab.title = `${session.phrase} · ${new Date(Number(session.createdAtMs)).toLocaleString()}`;
+    tab.addEventListener('click', () => {
+      if (chatBusy || session.id === activeChatSession) return;
+      selectChatSession(session.id);
+    });
+    strip.appendChild(tab);
+  }
+  const add = document.createElement('button');
+  add.type = 'button';
+  add.className = 'chat-session chat-session-add';
+  add.textContent = '+ New';
+  add.setAttribute('aria-label', 'Start a new session');
+  add.addEventListener('click', () => {
+    newChatSession().catch((error) => {
+      document.getElementById('chat-status').textContent = error.message;
+    });
+  });
+  strip.appendChild(add);
+}
+
 function renderConversation() {
   const history = document.getElementById('chat-history');
   history.replaceChildren();
+  if (!conversation) return;
+  if (!(conversation.messages || []).length) {
+    const empty = document.createElement('p');
+    empty.className = 'chat-empty';
+    empty.textContent = 'No messages yet. Ask a question, or attach a cell below.';
+    history.appendChild(empty);
+    return;
+  }
   for (const message of conversation.messages || []) {
     const entry = document.createElement('article');
     entry.className = 'chat-message ' + (message.role === 'assistant' ? 'assistant' : 'user');
@@ -1141,18 +1422,20 @@ function renderConversation() {
       const blocks = [...message.content.matchAll(/```sql\s*\n([\s\S]*?)```/gi)];
       if (blocks.length > 0) {
         const suggested = blocks[blocks.length - 1][1].trim();
-        const insert = document.createElement('button');
-        insert.type = 'button';
-        insert.className = 'btn';
-        insert.textContent = 'Insert SQL as new cell';
-        insert.addEventListener('click', () => {
-          const cell = addCell(document.querySelector('.cell:last-child'));
-          cell.querySelector('.editor').value = suggested;
-          syncContractDraft(cell.querySelector('.editor'));
-          resize(cell.querySelector('.editor'));
-          setDirty(true);
-        });
-        entry.appendChild(insert);
+        const target = document.createElement('div');
+        target.className = 'suggestion-actions';
+        const current = document.createElement('button');
+        current.type = 'button';
+        current.className = 'btn';
+        current.textContent = 'Insert into current cell';
+        current.addEventListener('click', () => insertIntoSqlCell(suggested, false));
+        const add = document.createElement('button');
+        add.type = 'button';
+        add.className = 'btn';
+        add.textContent = 'Insert as new cell';
+        add.addEventListener('click', () => insertIntoSqlCell(suggested, true));
+        target.append(current, add);
+        entry.appendChild(target);
       }
     }
     history.appendChild(entry);
@@ -1160,11 +1443,65 @@ function renderConversation() {
   history.scrollTop = history.scrollHeight;
 }
 
+function insertIntoSqlCell(sql, asNew) {
+  let cell = asNew ? null : (currentCell || document.querySelector('.cell:last-child'));
+  if (!cell) {
+    cell = addCell(null);
+  }
+  if (cell.dataset.kind === 'markdown') {
+    cell = addCell(cell);
+  }
+  const editor = cell.querySelector('.editor');
+  editor.value = sql;
+  syncContractDraft(editor);
+  resize(editor);
+  setDirty(true);
+  cell.scrollIntoView({block: 'nearest'});
+  editor.focus();
+}
+
+async function loadChatSessions() {
+  const value = await chatRpc('ListConversations', { notebook: nb.id });
+  chatSessions = value.sessions || [];
+  renderChatSessions();
+  return chatSessions;
+}
+
+async function newChatSession() {
+  if (chatBusy) return;
+  conversationRead += 1;
+  const created = await chatRpc('NewConversation', { notebook: nb.id });
+  activeChatSession = created.id;
+  conversation = created;
+  await loadChatSessions();
+  renderChatSessions();
+  renderConversation();
+  document.getElementById('chat-status').textContent = 'New session.';
+  document.getElementById('chat-prompt').focus();
+}
+
+async function selectChatSession(id) {
+  const current = ++conversationRead;
+  try {
+    const loaded = await chatRpc('GetConversation', { notebook: nb.id, session: id });
+    if (current !== conversationRead) return;
+    activeChatSession = id;
+    conversation = loaded;
+    renderChatSessions();
+    renderConversation();
+    document.getElementById('chat-status').textContent = '';
+  } catch (error) {
+    document.getElementById('chat-status').textContent = error.message;
+  }
+}
+
 async function loadConversation() {
   const current = ++conversationRead;
   let loaded;
   try {
-    loaded = await chatRpc('GetConversation', { notebook: nb.id });
+    loaded = activeChatSession
+      ? await chatRpc('GetConversation', { notebook: nb.id, session: activeChatSession })
+      : await chatRpc('GetConversation', { notebook: nb.id });
   } catch (error) {
     if (current !== conversationRead) return false;
     conversation = null;
@@ -1172,22 +1509,65 @@ async function loadConversation() {
     throw error;
   }
   if (current !== conversationRead) return false;
-  if (!conversation || BigInt(loaded.revision || '0') >= BigInt(conversation.revision || '0')) {
+  activeChatSession = loaded.id;
+  if (!conversation || conversation.id !== loaded.id ||
+      BigInt(loaded.revision || '0') >= BigInt(conversation.revision || '0')) {
     conversation = loaded;
     renderConversation();
   }
   return true;
 }
 
+async function fetchCellMaterial(kind) {
+  const select = document.getElementById('chat-cell');
+  const context = document.getElementById('chat-context');
+  if (!select || !context || !select.value) return;
+  const status = document.getElementById('chat-status');
+  try {
+    if (kind === 'query') {
+      const value = await chatRpc('FetchQuery', { notebook: nb.id, cell: select.value });
+      const text = `Cell ${select.value} SQL (revision ${String(value.contentRevision).slice(0, 8)}):\n${value.sql}`;
+      context.value = (context.value ? context.value + '\n\n' : '') + text;
+    } else {
+      const value = await chatRpc('FetchResult', { notebook: nb.id, cell: select.value });
+      let text = `Cell ${select.value} last result (${value.rowsJson.length} rows${value.truncated ? ', truncated' : ''}):\n`;
+      text += `columns: ${(value.columns || []).join(', ')}\n`;
+      text += (value.rowsJson || []).slice(0, 20).join('\n');
+      context.value = (context.value ? context.value + '\n\n' : '') + text;
+    }
+    status.textContent = 'Attached to the next message.';
+  } catch (error) {
+    status.textContent = error.message;
+  }
+}
+
 async function openChat() {
   chatPanel.hidden = false;
   document.body.classList.add('chat-open');
   document.getElementById('chat-toggle').setAttribute('aria-expanded', 'true');
+  const cellSelect = document.getElementById('chat-cell');
+  const selected = cellSelect.value;
+  cellSelect.replaceChildren();
+  for (const cell of document.querySelectorAll('.cell')) {
+    if (cell.dataset.kind === 'markdown') continue;
+    const sql = cell.querySelector('.editor').value.split('\n').find((line) => line.trim()) || '';
+    cellSelect.add(new Option(`${cell.dataset.id} · ${sql}`, cell.dataset.id));
+  }
+  if (selected) cellSelect.value = selected;
   document.getElementById('chat-prompt').focus();
   if (!chatBusy) {
     document.getElementById('chat-send').disabled = true;
     try {
-      if (await loadConversation()) document.getElementById('chat-status').textContent = '';
+      await loadChatSessions();
+      if (!chatSessions.some((session) => session.id === activeChatSession)) {
+        if (chatSessions.length > 0) activeChatSession = chatSessions[0].id;
+        else await newChatSession();
+      }
+      if (await loadConversation()) {
+        await loadChatSessions();
+        renderChatSessions();
+        document.getElementById('chat-status').textContent = '';
+      }
     } catch (error) {
       conversation = null;
       document.getElementById('chat-status').textContent = error.message;
@@ -1205,8 +1585,23 @@ function closeChat() {
 }
 
 if (chatPanel) {
+  const cellSelect = document.getElementById('chat-cell');
+  function refreshChatCellOptions() {
+    const current = cellSelect.value;
+    cellSelect.replaceChildren();
+    for (const cell of document.querySelectorAll('.cell')) {
+      if (cell.dataset.kind === 'markdown') continue;
+      const sql = cell.querySelector('.editor').value.split('\n').find((line) => line.trim()) || '';
+      cellSelect.add(new Option(`${cell.dataset.id} · ${sql}`, cell.dataset.id));
+    }
+    if (current) cellSelect.value = current;
+  }
+  refreshChatCellOptions();
+
   document.getElementById('chat-toggle').addEventListener('click', () => chatPanel.hidden ? openChat() : closeChat());
   document.getElementById('chat-close').addEventListener('click', closeChat);
+  document.getElementById('chat-fetch-query').addEventListener('click', () => fetchCellMaterial('query'));
+  document.getElementById('chat-fetch-result').addEventListener('click', () => fetchCellMaterial('result'));
   document.getElementById('chat-expand').addEventListener('click', (event) => {
     const expanded = document.body.classList.toggle('chat-wide');
     event.target.setAttribute('aria-pressed', String(expanded));
@@ -1235,9 +1630,12 @@ if (chatPanel) {
         ...contractForTurn(),
         notebook: nb.id, helper: chosen, prompt: prompt.value,
         context: context.value, expectedRevision: conversation.revision || '0',
+        ...(activeChatSession ? {session: activeChatSession} : {}),
       });
       if (current !== conversationRead) await loadConversation();
-      else { conversation = sent; renderConversation(); }
+      else { conversation = sent; activeChatSession = sent.id; renderConversation(); }
+      await loadChatSessions();
+      renderChatSessions();
       prompt.value = '';
       context.value = '';
       status.textContent = 'Saved. Replies do not execute queries.';
@@ -1255,41 +1653,97 @@ if (chatPanel) {
 
 /* ---- cell conversation ------------------------------------------------ */
 
-/* One history per cell, kept in the browser only; the server owns the stored
- * conversation under the notebook+cell key. */
+/* One history per cell session, kept in the browser only; the server owns the
+ * stored conversation under the notebook+cell key. */
 const cellChats = new Map();
 
 function cellChatParts(cell) {
   return {
     panel: cell.querySelector('.cell-chat'),
+    sessions: cell.querySelector('.cell-chat-sessions'),
     history: cell.querySelector('.cell-chat-history'),
     status: cell.querySelector('.cell-chat-status'),
     prompt: cell.querySelector('.cell-chat-prompt'),
+    context: cell.querySelector('.cell-chat-context'),
     send: cell.querySelector('.cell-chat-send'),
+    fetch: cell.querySelector('.cell-chat-fetch'),
   };
 }
 
 function cellChatState(id) {
-  if (!cellChats.has(id)) cellChats.set(id, { revision: '0', messages: [], busy: false, loaded: false, read: 0 });
+  if (!cellChats.has(id)) {
+    cellChats.set(id, {
+      busy: false,
+      read: 0,
+      sessions: [],
+      active: null,
+      conversation: null,
+    });
+  }
   return cellChats.get(id);
 }
 
-/* The cell's own SQL and last output. Never the notebook conversation, never
- * another cell: the server grounds on exactly this text. */
+/* The cell's own SQL and last output, plus explicit notebook material the user
+ * attached. Never the notebook conversation, never another cell. */
 function cellChatContext(cell) {
-  const sql = cell.querySelector('.editor').value.trim();
+  const parts = cellChatParts(cell);
+  const sql = cellSource(cell.querySelector('.editor').value).trim();
   const out = cell.querySelector('.out-content');
   const output = (out ? out.innerText : '').trim().slice(0, 4000);
   let text = sql ? 'Current cell SQL:\n' + sql : '';
   if (output) text += (text ? '\n\n' : '') + 'Last run output:\n' + output;
+  const attached = (parts.context?.value || '').trim();
+  if (attached) text += (text ? '\n\n' : '') + attached;
   return text.slice(0, 8192);
+}
+
+function renderCellSessions(cell) {
+  const parts = cellChatParts(cell);
+  const state = cellChatState(cell.dataset.id);
+  parts.sessions.replaceChildren();
+  for (const session of state.sessions) {
+    const tab = document.createElement('button');
+    tab.type = 'button';
+    tab.className = 'chat-session' + (session.id === state.active ? ' active' : '');
+    tab.setAttribute('role', 'tab');
+    tab.setAttribute('aria-selected', String(session.id === state.active));
+    const phrase = document.createElement('span');
+    phrase.className = 'chat-session-phrase';
+    phrase.textContent = session.phrase;
+    const date = document.createElement('span');
+    date.className = 'chat-session-date';
+    date.textContent = shortDate(session.createdAtMs);
+    tab.append(phrase, date);
+    tab.title = `${session.phrase} · ${new Date(Number(session.createdAtMs)).toLocaleString()}`;
+    tab.addEventListener('click', () => {
+      if (state.busy || session.id === state.active) return;
+      selectCellSession(cell, session.id);
+    });
+    parts.sessions.appendChild(tab);
+  }
+  const add = document.createElement('button');
+  add.type = 'button';
+  add.className = 'chat-session chat-session-add';
+  add.textContent = '+ New';
+  add.setAttribute('aria-label', 'Start a new cell session');
+  add.addEventListener('click', () => newCellSession(cell).catch((error) => {
+    cellChatParts(cell).status.textContent = error.message;
+  }));
+  parts.sessions.appendChild(add);
 }
 
 function renderCellChat(cell) {
   const { history } = cellChatParts(cell);
   const state = cellChatState(cell.dataset.id);
   history.replaceChildren();
-  for (const message of state.messages) {
+  if (!(state.conversation?.messages || []).length) {
+    const empty = document.createElement('p');
+    empty.className = 'chat-empty';
+    empty.textContent = 'No messages yet. Ask about this cell, or attach the notebook summary.';
+    history.appendChild(empty);
+    return;
+  }
+  for (const message of state.conversation?.messages || []) {
     const entry = document.createElement('article');
     entry.className = 'chat-message ' + (message.role === 'assistant' ? 'assistant' : 'user');
     const label = document.createElement('strong');
@@ -1303,6 +1757,8 @@ function renderCellChat(cell) {
       const blocks = [...message.content.matchAll(/```sql\s*\n([\s\S]*?)```/gi)];
       if (blocks.length > 0) {
         const suggested = blocks[blocks.length - 1][1].trim();
+        const target = document.createElement('div');
+        target.className = 'suggestion-actions';
         const apply = document.createElement('button');
         apply.type = 'button';
         apply.className = 'btn';
@@ -1310,11 +1766,18 @@ function renderCellChat(cell) {
         apply.addEventListener('click', () => {
           const editor = cell.querySelector('.editor');
           editor.value = suggested;
+          if (cell.dataset.kind === 'markdown') editor.value = '%md\n' + suggested;
           syncContractDraft(editor);
           resize(editor);
           setDirty(true);
         });
-        entry.appendChild(apply);
+        const future = document.createElement('button');
+        future.type = 'button';
+        future.className = 'btn';
+        future.textContent = 'Insert as new cell';
+        future.addEventListener('click', () => insertIntoSqlCell(suggested, true));
+        target.append(apply, future);
+        entry.appendChild(target);
       }
     }
     history.appendChild(entry);
@@ -1325,10 +1788,46 @@ function renderCellChat(cell) {
 function invalidateCellChat(cell) {
   const state = cellChatState(cell.dataset.id);
   state.read += 1;
-  state.messages = [];
-  state.loaded = false;
-  state.revision = '0';
+  state.conversation = null;
   renderCellChat(cell);
+}
+
+async function loadCellChatSessions(cell) {
+  const state = cellChatState(cell.dataset.id);
+  const value = await chatRpc('ListConversations', { notebook: nb.id, cell: cell.dataset.id });
+  state.sessions = value.sessions || [];
+  renderCellSessions(cell);
+  return state.sessions;
+}
+
+async function selectCellSession(cell, id) {
+  const state = cellChatState(cell.dataset.id);
+  const current = ++state.read;
+  try {
+    const loaded = await chatRpc('GetConversation', { notebook: nb.id, cell: cell.dataset.id, session: id });
+    if (current !== state.read) return;
+    state.active = id;
+    state.conversation = loaded;
+    renderCellSessions(cell);
+    renderCellChat(cell);
+    cellChatParts(cell).status.textContent = '';
+  } catch (error) {
+    cellChatParts(cell).status.textContent = error.message;
+  }
+}
+
+async function newCellSession(cell) {
+  const state = cellChatState(cell.dataset.id);
+  if (state.busy) return;
+  state.read += 1;
+  const created = await chatRpc('NewConversation', { notebook: nb.id, cell: cell.dataset.id });
+  state.active = created.id;
+  state.conversation = created;
+  await loadCellChatSessions(cell);
+  renderCellSessions(cell);
+  renderCellChat(cell);
+  cellChatParts(cell).status.textContent = 'New session.';
+  cellChatParts(cell).prompt.focus();
 }
 
 async function loadCellChat(cell) {
@@ -1336,28 +1835,37 @@ async function loadCellChat(cell) {
   const current = ++state.read;
   let loaded;
   try {
-    loaded = await chatRpc('GetConversation', { notebook: nb.id, cell: cell.dataset.id });
+    loaded = state.active
+      ? await chatRpc('GetConversation', { notebook: nb.id, cell: cell.dataset.id, session: state.active })
+      : await chatRpc('GetConversation', { notebook: nb.id, cell: cell.dataset.id });
   } catch (error) {
     if (current !== state.read) return false;
     invalidateCellChat(cell);
     throw error;
   }
   if (current !== state.read) return false;
-  if (!state.loaded || BigInt(loaded.revision || '0') >= BigInt(state.revision || '0')) {
-    state.revision = loaded.revision || '0';
-    state.messages = loaded.messages || [];
-    state.loaded = true;
-    renderCellChat(cell);
-  }
+  state.active = loaded.id;
+  state.conversation = loaded;
+  renderCellChat(cell);
   return true;
 }
 
 async function openCellChat(cell) {
   const parts = cellChatParts(cell);
+  const state = cellChatState(cell.dataset.id);
   parts.panel.hidden = false;
   parts.prompt.focus();
   try {
-    if (await loadCellChat(cell)) parts.status.textContent = '';
+    await loadCellChatSessions(cell);
+    if (!state.sessions.some((session) => session.id === state.active)) {
+      if (state.sessions.length > 0) state.active = state.sessions[0].id;
+      else await newCellSession(cell);
+    }
+    if (await loadCellChat(cell)) {
+      await loadCellChatSessions(cell);
+      renderCellSessions(cell);
+      parts.status.textContent = '';
+    }
   } catch (error) {
     parts.status.textContent = error.message;
   }
@@ -1373,6 +1881,22 @@ function toggleCellChat(cell) {
   else closeCellChat(cell);
 }
 
+async function fetchNotebookSummary(cell) {
+  const parts = cellChatParts(cell);
+  try {
+    const value = await chatRpc('FetchSummary', { notebook: nb.id });
+    let text = value.summary ? `Notebook summary:\n${value.summary}` : 'Notebook summary: none';
+    const cells = value.cells || [];
+    if (cells.length > 0) {
+      text += '\n\nCell index:\n' + cells.map((entry) => `- ${entry.id}: ${entry.sql}`).join('\n');
+    }
+    parts.context.value = (parts.context.value ? parts.context.value + '\n\n' : '') + text;
+    parts.status.textContent = 'Attached to the next cell message.';
+  } catch (error) {
+    parts.status.textContent = error.message;
+  }
+}
+
 async function sendCellChat(cell) {
   const parts = cellChatParts(cell);
   const state = cellChatState(cell.dataset.id);
@@ -1384,23 +1908,26 @@ async function sendCellChat(cell) {
   parts.prompt.disabled = true;
   parts.status.textContent = 'Waiting for the helper…';
   try {
-    if (!state.loaded) await loadCellChat(cell);
-    if (!state.loaded) throw new Error('Reload authorized history before sending.');
+    if (!state.conversation) await loadCellChat(cell);
+    if (!state.conversation) throw new Error('Reload authorized history before sending.');
     const current = state.read;
     const sent = await chatRpc('SendMessage', {
       ...contractForTurn(),
       notebook: nb.id, cell: cell.dataset.id, helper: chosen,
       prompt: parts.prompt.value, context: cellChatContext(cell),
-      expectedRevision: state.revision || '0',
+      expectedRevision: state.conversation.revision || '0',
+      ...(state.active ? {session: state.active} : {}),
     });
     if (current !== state.read) await loadCellChat(cell);
     else {
-      state.revision = sent.revision || state.revision;
-      state.messages = sent.messages || [];
-      state.loaded = true;
+      state.active = sent.id;
+      state.conversation = sent;
       renderCellChat(cell);
     }
+    await loadCellChatSessions(cell);
+    renderCellSessions(cell);
     parts.prompt.value = '';
+    parts.context.value = '';
     parts.status.textContent = 'Saved. Replies do not execute queries.';
   } catch (error) {
     invalidateCellChat(cell);
@@ -1416,9 +1943,16 @@ async function sendCellChat(cell) {
 if (cellsRoot) {
   cellsRoot.addEventListener('click', (event) => {
     const close = event.target.closest && event.target.closest('.cell-chat-close');
-    if (!close) return;
-    const cell = close.closest('.cell');
-    if (cell) closeCellChat(cell);
+    if (close) {
+      const cell = close.closest('.cell');
+      if (cell) closeCellChat(cell);
+      return;
+    }
+    const fetch = event.target.closest && event.target.closest('.cell-chat-fetch');
+    if (fetch) {
+      const cell = fetch.closest('.cell');
+      if (cell) fetchNotebookSummary(cell);
+    }
   });
   cellsRoot.addEventListener('submit', (event) => {
     if (!event.target.classList.contains('cell-chat-form')) return;

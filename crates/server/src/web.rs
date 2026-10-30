@@ -13,6 +13,30 @@ use crate::{ai, cookie, now, principal, ApiError, AppState};
 // readable; `include_str!` keeps them in the binary with no extra service.
 const CSS: &str = include_str!("../assets/app.css");
 const JS: &str = include_str!("../assets/app.js");
+const MARKED: &str = include_str!("../assets/vendor/marked.min.js");
+const PURIFY: &str = include_str!("../assets/vendor/purify.min.js");
+const MERMAID: &str = include_str!("../assets/vendor/mermaid.min.js");
+
+/// Pinned browser dependencies. They are embedded so a standalone deployment
+/// never reaches a CDN at runtime.
+pub async fn asset(Path(name): Path<String>) -> Response {
+    let body = match name.as_str() {
+        "marked.js" => MARKED,
+        "purify.js" => PURIFY,
+        "mermaid.js" => MERMAID,
+        _ => return (axum::http::StatusCode::NOT_FOUND, "not found").into_response(),
+    };
+    let mut response = body.into_response();
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        header::HeaderValue::from_static("application/javascript; charset=utf-8"),
+    );
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        header::HeaderValue::from_static("public, max-age=300"),
+    );
+    response
+}
 
 /// ponytail: hand-rolled escaping for a handful of pages; add askama when a
 /// designer owns the markup.
@@ -128,7 +152,11 @@ fn layout(current: &str, title: &str, principal: &Principal, body: &str) -> Stri
         escape(&role),
     ));
     out.push_str(body);
-    out.push_str("</main><script>");
+    out.push_str(
+        "</main><script src=\"/assets/marked.js\"></script>\
+         <script src=\"/assets/purify.js\"></script>\
+         <script src=\"/assets/mermaid.js\"></script><script>",
+    );
     out.push_str(JS);
     out.push_str("</script></body></html>");
     out
@@ -279,37 +307,48 @@ fn notebook_body(
     team_context: Option<(&str, &str)>,
 ) -> String {
     let mut cells = String::new();
+    let notebook_engine = notebook
+        .engine
+        .as_ref()
+        .map(|engine| engine.0.clone())
+        .unwrap_or_default();
     for cell in &notebook.cells {
-        let engine = cell
-            .engine
-            .as_ref()
-            .map(|id| id.to_string())
-            .unwrap_or_default();
+        let markdown = cell.kind() == aster_core::CellKind::Markdown;
+        let class = if markdown { "cell md-cell" } else { "cell" };
+        let run = if markdown {
+            String::new()
+        } else {
+            "<button type=\"button\" class=\"btn btn-run\" data-action=\"run\">▶ Run</button>"
+                .to_string()
+        };
         cells.push_str(&format!(
-            "<section class=\"cell\" data-id=\"{id}\">\
+            "<section class=\"{class}\" data-id=\"{id}\" data-kind=\"{kind}\">\
              <div class=\"cell-gutter\"><span class=\"prompt in\">In&nbsp;[&nbsp;]</span></div>\
              <div class=\"cell-body\">\
              <div class=\"cell-head\"><code class=\"cell-id\">{id}</code>\
-             <div class=\"cell-actions\">\
-             <button type=\"button\" class=\"btn btn-run\" data-action=\"run\">▶ Run</button>\
+             <div class=\"cell-context\"></div>\
+             <div class=\"cell-actions\">{run}\
              <button type=\"button\" class=\"btn\" data-action=\"ai\">AI</button>\
-             <button type=\"button\" class=\"btn ghost\" data-action=\"add\">+</button>\
-             <button type=\"button\" class=\"btn ghost\" data-action=\"up\">↑</button>\
-             <button type=\"button\" class=\"btn ghost\" data-action=\"down\">↓</button>\
-             <button type=\"button\" class=\"btn ghost danger\" data-action=\"delete\">✕</button>\
-             </div>\
-             <div class=\"select-wrap\"><span class=\"muted\">engine</span>\
-             <select class=\"engine\" data-current=\"{engine}\"></select></div></div>\
+             <button type=\"button\" class=\"btn ghost md-toggle\" data-action=\"md-toggle\"{md_hidden}>Edit</button>\
+             <button type=\"button\" class=\"btn ghost\" data-action=\"up\" aria-label=\"Move cell up\" title=\"Move up\">↑</button>\
+             <button type=\"button\" class=\"btn ghost\" data-action=\"down\" aria-label=\"Move cell down\" title=\"Move down\">↓</button>\
+             <button type=\"button\" class=\"btn ghost danger\" data-action=\"delete\" aria-label=\"Delete cell\" title=\"Delete\">✕</button>\
+             </div></div>\
              <div class=\"cell-split\">\
              <div class=\"cell-main\">\
-             <textarea class=\"editor\" spellcheck=\"false\">{sql}</textarea>\
-             <div class=\"out\"><span class=\"prompt out\">Out&nbsp;[&nbsp;]</span>\
+             <textarea class=\"editor{editor_hidden}\" spellcheck=\"false\">{sql}</textarea>\
+             <div class=\"md-preview\"{preview_hidden}></div>\
+             <div class=\"out\"{out_hidden}><span class=\"prompt out\">Out&nbsp;[&nbsp;]</span>\
              <div class=\"out-content\"></div></div></div>\
              <aside class=\"cell-chat\" aria-label=\"Cell conversation\" hidden>\
              <div class=\"chat-heading\"><strong>Cell assistant</strong>\
              <button type=\"button\" class=\"btn cell-chat-close\">Close</button></div>\
-             <p class=\"status\">For this cell only. Sends this cell's SQL and last output; \
-             it cannot read the notebook conversation or another cell's.</p>\
+             <div class=\"cell-chat-sessions chat-sessions\" role=\"tablist\" \
+             aria-label=\"Cell sessions\"></div>\
+             <p class=\"status cell-chat-note\">This cell only: its SQL and last output, plus material you attach.</p>\
+             <div class=\"cell-chat-attach\"><button type=\"button\" class=\"btn cell-chat-fetch\">Attach notebook summary</button>\
+             <textarea class=\"cell-chat-context\" rows=\"2\" maxlength=\"8192\" \
+             placeholder=\"Attached notebook material (optional)\"></textarea></div>\
              <div class=\"cell-chat-history chat-history\" tabindex=\"0\" role=\"log\" \
              aria-label=\"Cell conversation messages\" aria-live=\"polite\"></div>\
              <p class=\"cell-chat-status status\" role=\"status\"></p>\
@@ -317,9 +356,18 @@ fn notebook_body(
              <textarea class=\"cell-chat-prompt\" rows=\"3\" maxlength=\"8192\" required \
              placeholder=\"Ask about this query\"></textarea>\
              <button type=\"submit\" class=\"btn primary cell-chat-send\">Send</button></form></aside>\
+             </div>\
+             <div class=\"insert-bar\">\
+             <button type=\"button\" class=\"btn ghost\" data-action=\"add-cell\">+ Cell</button>\
              </div></div></section>",
+            class = class,
             id = escape(&cell.id),
-            engine = escape(&engine),
+            kind = if markdown { "markdown" } else { "sql" },
+            run = run,
+            md_hidden = if markdown { "" } else { " hidden" },
+            editor_hidden = if markdown { " hidden" } else { "" },
+            preview_hidden = if markdown { "" } else { " hidden" },
+            out_hidden = if markdown { " hidden" } else { "" },
             sql = escape(&cell.sql),
         ));
     }
@@ -357,28 +405,43 @@ fn notebook_body(
          <p class=\"crumb\">{crumb} {id}</p>\
          <h1>{title}</h1></div></div>\
          <div class=\"nb-bar\">\
-         <button type=\"button\" class=\"btn\" data-action=\"add\">+ Cell</button>\
+         <button type=\"button\" class=\"btn\" data-action=\"add-cell\">+ Cell</button>\
          <button type=\"button\" class=\"btn\" data-action=\"run-all\">▶ Run all</button>\
          <button type=\"button\" class=\"btn primary\" data-action=\"save\">Save</button>\
          {sync_button}\
          <button type=\"button\" class=\"btn\" id=\"chat-toggle\" aria-controls=\"chat-panel\" aria-expanded=\"false\">Chat</button>\
          <div class=\"spacer\"></div>\
+         <div class=\"nb-settings\">\
+         <label class=\"helper\">engine\
+         <span class=\"select-wrap\"><select id=\"notebook-engine\" data-current=\"{notebook_engine}\" aria-label=\"Notebook engine\"></select></span>\
+         </label>\
          <label class=\"helper\">helper\
          <span class=\"select-wrap\"><select class=\"helper-select\" id=\"helper\"></select></span>\
          </label>\
+         </div>\
          </div>\
          <p class=\"status\">run with <span class=\"kbd\">⌘/Ctrl</span> <span class=\"kbd\">Enter</span>, \
          run and move on with <span class=\"kbd\">Shift</span> <span class=\"kbd\">Enter</span>, \
          save with <span class=\"kbd\">⌘/Ctrl</span> <span class=\"kbd\">S</span></p>\
          <details><summary>Contract context for manual query review</summary>{contract_context}</details>\
          <div class=\"cells\" id=\"cells\">{cells}</div>\
+         <div class=\"add-cell-row\">\
+         <button type=\"button\" class=\"btn add-cell-bottom\" data-action=\"add-cell\">+ Add cell</button>\
+         </div>\
          <aside id=\"chat-panel\" class=\"chat-panel\" aria-label=\"Notebook conversation\" hidden>\
          <div class=\"chat-heading\"><strong>Notebook assistant</strong>\
          <button type=\"button\" class=\"btn\" id=\"chat-expand\" aria-pressed=\"false\">Expand</button>\
          <button type=\"button\" class=\"btn\" id=\"chat-close\">Close</button></div>\
+         <div class=\"chat-sessions\" id=\"chat-sessions\" role=\"tablist\" aria-label=\"Notebook sessions\"></div>\
          <p class=\"status\">Private to you and this notebook. Changing helper sends this history to that helper.</p>\
          <div id=\"chat-history\" class=\"chat-history\" tabindex=\"0\" role=\"log\" aria-label=\"Conversation messages\" aria-live=\"polite\"></div>\
          <p id=\"chat-status\" role=\"status\" class=\"status\"></p>\
+         <div class=\"chat-attach\"><span class=\"chat-attach-label\">Attach a cell</span>\
+         <select id=\"chat-cell\" aria-label=\"Cell to fetch\"></select>\
+         <div class=\"chat-attach-actions\">\
+         <button type=\"button\" class=\"btn\" id=\"chat-fetch-query\">Query</button>\
+         <button type=\"button\" class=\"btn\" id=\"chat-fetch-result\">Result</button>\
+         </div></div>\
          <form id=\"chat-form\"><label for=\"chat-context\">Attached cell SQL (optional)</label>\
          <textarea id=\"chat-context\" rows=\"2\" maxlength=\"8192\"></textarea>\
          <label for=\"chat-prompt\">Message</label>\
@@ -391,6 +454,7 @@ fn notebook_body(
         id = escape(&notebook.id),
         title = escape(&notebook.title),
         content_revision = escape(content_revision),
+        notebook_engine = escape(&notebook_engine),
         contract_context = contract_context(),
     )
 }

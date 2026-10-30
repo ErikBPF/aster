@@ -40,7 +40,7 @@ pub use identity::{
 };
 pub use llm::{InMemoryLlm, LlmConfig, LlmStore};
 pub use notebook::{
-    Cell, InMemoryNotebookOwners, Notebook, NotebookOwnerChange, NotebookOwnerRecord,
+    Cell, CellKind, InMemoryNotebookOwners, Notebook, NotebookOwnerChange, NotebookOwnerRecord,
     NotebookOwners, NotebookPrecondition, NotebookSave, NotebookSnapshot, NotebookStore,
 };
 pub use registry::{CatalogRegistry, EngineRegistry};
@@ -55,7 +55,10 @@ pub use state::{
 };
 
 pub mod conversation;
-pub use conversation::{ChatMessage, Conversation, ConversationStore, InMemoryConversations};
+pub use conversation::{
+    conversation_phrase, ChatMessage, Conversation, ConversationStore, ConversationSummary,
+    InMemoryConversations,
+};
 
 pub mod exchange;
 pub use exchange::{CellResult, ExchangeStore, InMemoryExchanges, NotebookExchange};

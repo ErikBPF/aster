@@ -33,6 +33,15 @@ service Aster {
   rpc SendMessage(SendMessageRequest) returns (Conversation) {
     option (google.api.http) = { post: "/v1/notebooks/{notebook}/conversation" body: "*" };
   }
+  rpc ListConversations(ListConversationsRequest) returns (ListConversationsResponse) {
+    option (google.api.http) = { get: "/v1/notebooks/{notebook}/conversations" };
+  }
+  rpc NewConversation(NewConversationRequest) returns (Conversation) {
+    option (google.api.http) = {
+      post: "/v1/notebooks/{notebook}/conversations"
+      body: "*"
+    };
+  }
 
   // Working state of the caller. The subject comes from the session, never
   // from the request.
@@ -261,6 +270,9 @@ message Notebook {
   string title = 2;
   repeated Cell cells = 3;
   optional string content_revision = 4;
+  // One engine for the whole notebook. Saving it makes per-cell engines
+  // legacy; the server refuses a run that names a different engine.
+  optional string engine = 5;
 }
 
 message SaveNotebookRequest {
@@ -337,6 +349,8 @@ message GetConversationRequest {
   // conversation never shares history with the notebook conversation or
   // with another cell. Absent means the notebook conversation itself.
   optional string cell = 4;
+  // Specific session id. Absent selects the latest session for the scope.
+  optional string session = 5;
 }
 message SendMessageRequest {
   string notebook = 1;
@@ -348,6 +362,31 @@ message SendMessageRequest {
   optional string workspace = 7;
   optional string cell = 8;
   optional ContractSelection contract_selection = 9;
+  // Session to append to. Absent appends to the latest session.
+  optional string session = 10;
+}
+message ListConversationsRequest {
+  string notebook = 1;
+  optional string team = 2;
+  optional string workspace = 3;
+  optional string cell = 4;
+}
+message ConversationSummary {
+  string id = 1;
+  // Short phrase from the first user message; "New session" until then.
+  string phrase = 2;
+  int64 created_at_ms = 3;
+  int64 updated_at_ms = 4;
+  int32 message_count = 5;
+}
+message ListConversationsResponse {
+  repeated ConversationSummary sessions = 1;
+}
+message NewConversationRequest {
+  string notebook = 1;
+  optional string team = 2;
+  optional string workspace = 3;
+  optional string cell = 4;
 }
 message ChatMessage {
   string role = 1;
