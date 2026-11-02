@@ -138,6 +138,7 @@ async fn protected_rest_and_connect_use_trino_table_policy() {
         .unwrap();
     let audit = Arc::new(InMemoryAudit::new());
     let state = AppState {
+        catalog_assets: None,
         config: AppConfig {
             bind: String::new(),
             engines: vec![EngineConfig {

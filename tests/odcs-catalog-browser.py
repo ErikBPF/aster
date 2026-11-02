@@ -41,7 +41,7 @@ with tempfile.TemporaryDirectory(prefix="aster-s7-browser-") as work:
                 page.on("request", lambda req: requests.append((req.method, req.url)))
                 page.on("requestfinished", lambda req: responses.append(req.response().text()) if "/aster.v1.Aster/" in req.url else None)
                 page.on("pageerror", lambda error: errors.append(str(error)))
-                page.goto(fixture["base"] + "/catalog")
+                page.goto(fixture["base"] + "/contracts")
                 expect(page.locator("#contract-context")).to_be_visible()
                 page.get_by_label("Declared contract", exact=True).select_option(index=1)
                 expect(page.locator("#contract-document")).to_contain_text("TEAM_ONLY_MEANING")

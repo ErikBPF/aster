@@ -140,6 +140,7 @@ fn fixture_with_sessions(
     };
     let sessions = Arc::new(InMemorySessions::new(3600));
     let state = AppState {
+        catalog_assets: None,
         config: AppConfig {
             bind: String::new(),
             engines: vec![EngineConfig {

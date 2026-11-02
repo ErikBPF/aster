@@ -48,6 +48,7 @@ async fn fixture_configured(teams: bool, configure: impl FnOnce(&mut AppState)) 
     ));
     let store = GitNotebookStore::open(&dir, "session/alice").unwrap();
     let mut state = AppState {
+        catalog_assets: None,
         config: AppConfig {
             bind: String::new(),
             engines: vec![],

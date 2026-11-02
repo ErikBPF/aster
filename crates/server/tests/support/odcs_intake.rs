@@ -42,6 +42,7 @@ pub async fn namespace_checks(mode: &str) {
     let mut catalogs = CatalogRegistry::new();
     catalogs.register(Arc::new(catalog));
     let app = aster_server::app(Arc::new(aster_server::AppState {
+        catalog_assets: None,
         config: AppConfig {
             bind: String::new(),
             engines: vec![EngineConfig {
@@ -134,7 +135,7 @@ pub async fn namespace_checks(mode: &str) {
             .await
             .unwrap();
         let html = String::from_utf8(
-            axum::body::to_bytes(response.into_body(), 100000)
+            axum::body::to_bytes(response.into_body(), 2_000_000)
                 .await
                 .unwrap()
                 .to_vec(),
@@ -166,7 +167,7 @@ pub async fn namespace_checks(mode: &str) {
                 .unwrap();
             assert_eq!(response.status(), axum::http::StatusCode::OK);
             let html = String::from_utf8(
-                axum::body::to_bytes(response.into_body(), 100000)
+                axum::body::to_bytes(response.into_body(), 2_000_000)
                     .await
                     .unwrap()
                     .to_vec(),
@@ -204,7 +205,7 @@ pub async fn namespace_checks(mode: &str) {
                 .header("x-aster-subject", "alice").header("x-aster-roles", "viewer")
                 .body(axum::body::Body::from(serde_json::json!({"catalog":"fixture","namespaceSegments":segments,"table":"orders","target":"odcs"}).to_string())).unwrap()).await.unwrap();
             assert_eq!(response.status().as_u16(), expected);
-            let bytes = axum::body::to_bytes(response.into_body(), 100000)
+            let bytes = axum::body::to_bytes(response.into_body(), 2_000_000)
                 .await
                 .unwrap();
             if expected == 200 {

@@ -37,7 +37,8 @@
             "tag": { "type": "string", "minLength": 1 }
           }
         },
-        "persistence": {
+        "catalogAssets": { "type": "object", "properties": { "enabled": { "type": "boolean" }, "size": { "type": "string" }, "storageClassName": { "type": "string" } } },
+    "persistence": {
           "type": "object",
           "properties": {
             "enabled": { "type": "boolean" },
@@ -92,6 +93,7 @@
         "replicas": { "type": "integer", "minimum": 1 },
         "catalogBindings": { "type": "string" },
         "contractsDir": { "type": "string" },
+        "catalogAssetsDir": { "type": "string" },
         "notebookDir": { "type": "string" },
         "metricsPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
         "otlpEndpoint": { "type": "string" },
