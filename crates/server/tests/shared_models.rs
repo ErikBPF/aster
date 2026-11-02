@@ -31,6 +31,7 @@ async fn app_with_personal_helpers() -> Router {
         .await
         .unwrap();
     app(Arc::new(AppState {
+        catalog_assets: None,
         config: AppConfig {
             bind: String::new(),
             engines: vec![],

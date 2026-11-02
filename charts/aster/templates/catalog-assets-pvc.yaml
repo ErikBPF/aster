@@ -1,0 +1,17 @@
+{{- if and .Values.catalogAssets.enabled .Values.server.catalogAssetsDir }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-catalog-assets
+  labels:
+    app.kubernetes.io/name: aster-catalog-assets
+    app.kubernetes.io/part-of: aster
+spec:
+  accessModes: [ReadWriteOnce]
+  {{- if .Values.catalogAssets.storageClassName }}
+  storageClassName: {{ .Values.catalogAssets.storageClassName }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.catalogAssets.size }}
+{{- end }}

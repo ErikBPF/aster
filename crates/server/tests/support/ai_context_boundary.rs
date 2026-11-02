@@ -391,6 +391,7 @@ pub async fn state(capture: &Capture) -> AppState {
         .await
         .unwrap();
     AppState {
+        catalog_assets: None,
         config: AppConfig {
             bind: String::new(),
             engines: vec![],

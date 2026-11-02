@@ -159,6 +159,7 @@ async fn fixture_with_conversations(
         .await
         .unwrap();
     let state = AppState {
+        catalog_assets: None,
         config: AppConfig {
             bind: String::new(),
             engines: vec![],

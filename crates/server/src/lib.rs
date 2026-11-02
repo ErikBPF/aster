@@ -20,6 +20,7 @@ use aster_core::{
 mod ai;
 mod ai_context;
 mod api;
+pub mod catalog_assets;
 mod catalog_inventory;
 mod contract_reads;
 mod contracts;
@@ -66,6 +67,8 @@ pub struct AppState {
     pub config: AppConfig,
     pub engines: EngineRegistry,
     pub catalogs: CatalogRegistry,
+    /// Optional local Git checkout for catalog Markdown and images.
+    pub catalog_assets: Option<Arc<crate::catalog_assets::CatalogAssets>>,
     pub grants: Arc<dyn Grants>,
     pub audit: Arc<dyn AuditSink>,
     pub notebooks: Arc<dyn NotebookStore>,
@@ -407,10 +410,12 @@ async fn build_state(config: AppConfig) -> anyhow::Result<Arc<AppState>> {
         None
     };
     let metrics = Arc::new(Metrics::new());
+    let catalog_assets = crate::catalog_assets::CatalogAssets::from_env()?.map(Arc::new);
     Ok(Arc::new(AppState {
         config,
         engines,
         catalogs,
+        catalog_assets,
         grants: metadata.grants,
         audit: metadata.audit,
         notebooks,
@@ -1453,6 +1458,521 @@ async fn list_tables(
     ))
 }
 
+#[derive(Deserialize, Default)]
+struct CatalogTreeQuery {
+    catalog: Option<String>,
+    namespace: Option<String>,
+}
+
+fn catalog_entity(
+    catalog: String,
+    namespace: Option<String>,
+    table: Option<String>,
+) -> Result<crate::catalog_assets::Entity, CoreError> {
+    let namespace = namespace
+        .as_deref()
+        .map(web::decode_namespace)
+        .transpose()?;
+    match (namespace, table) {
+        (Some(namespace), Some(table)) => Ok(crate::catalog_assets::Entity::Table {
+            catalog,
+            namespace,
+            table,
+        }),
+        (Some(namespace), None) => Ok(crate::catalog_assets::Entity::Schema { catalog, namespace }),
+        (None, None) => Ok(crate::catalog_assets::Entity::Catalog { catalog }),
+        (None, Some(_)) => Err(CoreError::Invalid(
+            "catalog table requires a namespace".into(),
+        )),
+    }
+}
+
+fn catalog_level(namespace: Option<&str>, table: Option<&str>) -> &'static str {
+    match (namespace, table) {
+        (Some(_), Some(_)) => "table",
+        (Some(_), None) => "schema",
+        _ => "catalog",
+    }
+}
+
+fn names_table(sql: &str, table: &str) -> bool {
+    let sql = sql.to_lowercase();
+    let table = table.to_lowercase();
+    let mut start = 0;
+    while let Some(index) = sql[start..].find(&table) {
+        let at = start + index;
+        let before = sql[..at].chars().next_back();
+        let after = sql[at + table.len()..].chars().next();
+        let boundary = |character: Option<char>| {
+            character.is_none_or(|character| !(character.is_alphanumeric() || character == '_'))
+        };
+        if boundary(before) && boundary(after) {
+            return true;
+        }
+        start = at + table.len();
+    }
+    false
+}
+
+#[derive(Deserialize)]
+struct CatalogSearchQuery {
+    q: String,
+}
+
+async fn catalog_search(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<CatalogSearchQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let principal = principal(&state, &headers).await?;
+    authorize(&principal, aster_core::Action::ReadNotebook)?;
+    let needle = query.q.trim().to_lowercase();
+    if needle.len() < 2 {
+        return Ok(Json(serde_json::json!({"results": []})));
+    }
+    let mut results = Vec::new();
+    'catalogs: for catalog in state.catalogs.list() {
+        let id = catalog.id().to_string();
+        if results.len() >= 50 {
+            break;
+        }
+        if !catalog_inventory::visible(&state, &headers, &id).await {
+            continue;
+        }
+        if id.to_lowercase().contains(&needle) {
+            results.push(serde_json::json!({
+                "catalog": id,
+                "namespace": serde_json::Value::Null,
+                "table": serde_json::Value::Null,
+                "kind": "catalog",
+                "label": id,
+            }));
+        }
+        let namespaces = match catalog_inventory::namespaces(&state, &headers, &id).await {
+            Ok(namespaces) => namespaces,
+            Err(_) => continue,
+        };
+        for namespace in namespaces.into_iter().take(64) {
+            if results.len() >= 50 {
+                break 'catalogs;
+            }
+            let segments =
+                match aster_core::catalog::namespace_segments(&namespace.name, &namespace.segments)
+                {
+                    Ok(segments) => segments,
+                    Err(_) => continue,
+                };
+            let token = match web::namespace_token(&segments) {
+                Ok(token) => token,
+                Err(_) => continue,
+            };
+            let namespace_name = segments.join(".");
+            if namespace_name.to_lowercase().contains(&needle) {
+                results.push(serde_json::json!({
+                    "catalog": id,
+                    "namespace": token,
+                    "table": serde_json::Value::Null,
+                    "kind": "schema",
+                    "label": format!("{id} / {namespace_name}"),
+                }));
+            }
+            let tables = match catalog_inventory::tables(&state, &headers, &id, &segments).await {
+                Ok(tables) => tables,
+                Err(_) => continue,
+            };
+            for table in tables.into_iter().take(200) {
+                if results.len() >= 50 {
+                    break 'catalogs;
+                }
+                if table.table.name.to_lowercase().contains(&needle) {
+                    results.push(serde_json::json!({
+                        "catalog": id,
+                        "namespace": token,
+                        "table": table.table.name,
+                        "kind": "table",
+                        "label": format!("{id} / {namespace_name} / {}", table.table.name),
+                    }));
+                }
+            }
+        }
+    }
+    Ok(Json(serde_json::json!({"results": results})))
+}
+
+async fn catalog_tree(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<CatalogTreeQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let principal = principal(&state, &headers).await?;
+    authorize(&principal, aster_core::Action::ReadNotebook)?;
+    if let Some(catalog) = query.catalog.as_deref() {
+        require_catalog_metadata(&state, catalog)?;
+        if let Some(namespace) = query.namespace.as_deref() {
+            let segments = web::decode_namespace(namespace)?;
+            let tables = catalog_inventory::tables(&state, &headers, catalog, &segments).await?;
+            return Ok(Json(serde_json::json!({
+                "catalog": catalog,
+                "namespace": namespace,
+                "tables": tables.iter().map(|descriptor| serde_json::json!({
+                    "name": descriptor.table.name,
+                    "format": descriptor.format,
+                    "schemaAvailable": descriptor.schema_available,
+                })).collect::<Vec<_>>(),
+            })));
+        }
+        let namespaces = catalog_inventory::namespaces(&state, &headers, catalog).await?;
+        let mut rendered = Vec::new();
+        for namespace in namespaces {
+            let segments =
+                aster_core::catalog::namespace_segments(&namespace.name, &namespace.segments)?;
+            rendered.push(serde_json::json!({
+                "name": namespace.name,
+                "token": web::namespace_token(&segments)?,
+                "segments": segments,
+            }));
+        }
+        return Ok(Json(serde_json::json!({
+            "catalog": catalog,
+            "namespaces": rendered,
+        })));
+    }
+    let mut catalogs = Vec::new();
+    for catalog in state.catalogs.list() {
+        let id = catalog.id().to_string();
+        if !catalog_inventory::visible(&state, &headers, &id).await {
+            continue;
+        }
+        catalogs.push(serde_json::json!({
+            "id": id,
+            "kind": catalog.kind(),
+            "health": catalog.health().await,
+        }));
+    }
+    Ok(Json(serde_json::json!({
+        "catalogs": catalogs,
+        "docsEnabled": state.catalog_assets.is_some(),
+    })))
+}
+
+#[derive(Deserialize)]
+struct CatalogDetailQuery {
+    catalog: String,
+    namespace: Option<String>,
+    table: Option<String>,
+}
+
+async fn catalog_detail(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<CatalogDetailQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let principal = principal(&state, &headers).await?;
+    authorize(&principal, aster_core::Action::ReadNotebook)?;
+    require_catalog_metadata(&state, &query.catalog)?;
+    let entity = catalog_entity(
+        query.catalog.clone(),
+        query.namespace.clone(),
+        query.table.clone(),
+    )?;
+    let level = catalog_level(query.namespace.as_deref(), query.table.as_deref());
+
+    let catalog = state
+        .catalogs
+        .get(&CatalogId::new(query.catalog.clone()))
+        .ok_or_else(|| CoreError::NotFound("unknown catalog".into()))?;
+    let namespace_segments = query
+        .namespace
+        .as_deref()
+        .map(web::decode_namespace)
+        .transpose()?;
+    let mut details = serde_json::json!({
+        "catalog": query.catalog,
+        "kind": catalog.kind(),
+        "health": catalog.health().await,
+    });
+    if let Some(segments) = namespace_segments.as_deref() {
+        details["namespace"] = serde_json::json!(segments.join("."));
+        let tables = catalog_inventory::tables(&state, &headers, &query.catalog, segments).await?;
+        details["tableCount"] = serde_json::json!(tables.len());
+        details["tables"] = serde_json::json!(tables
+            .iter()
+            .map(|entry| entry.table.name.clone())
+            .collect::<Vec<_>>());
+        if let Some(table_name) = query.table.as_deref() {
+            let descriptor = tables
+                .iter()
+                .find(|entry| entry.table.name == table_name)
+                .ok_or_else(|| CoreError::NotFound("unknown table".into()))?;
+            details["table"] = serde_json::json!(descriptor.table.name);
+            details["format"] = serde_json::json!(descriptor.format);
+            details["baseLocation"] = serde_json::json!(descriptor.base_location);
+            details["schemaAvailable"] = serde_json::json!(descriptor.schema_available);
+            if descriptor.schema_available {
+                let schema = catalog.table_schema(&descriptor.table).await?;
+                details["columns"] = serde_json::json!(schema.columns);
+            }
+        }
+    }
+
+    let mut engines = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for binding in state
+        .config
+        .catalog_bindings
+        .iter()
+        .filter(|binding| binding.catalog == query.catalog)
+    {
+        if !seen.insert(binding.engine.clone()) {
+            continue;
+        }
+        let engine_id = EngineId::new(binding.engine.clone());
+        let granted = state.grants.allowed(&principal.subject, &engine_id).await?;
+        let health = match state.engines.get(&engine_id) {
+            Some(engine) => engine.health().await,
+            None => Health::Unavailable,
+        };
+        engines.push(serde_json::json!({
+            "id": binding.engine,
+            "granted": granted,
+            "health": health,
+        }));
+    }
+    let mut contract = None;
+    if let (Some(table_name), Some(bundle)) =
+        (query.table.as_deref(), state.compiled_contracts.as_ref())
+    {
+        for artifact in &bundle.documents {
+            let Some(object) = artifact.document.projection.schema.iter().find(|object| {
+                object.name == table_name || object.physical_name.as_deref() == Some(table_name)
+            }) else {
+                continue;
+            };
+            if crate::contract_reads::read_for_principal(
+                &state,
+                &principal,
+                Some((&artifact.selection.path, &artifact.selection.sha256)),
+            )
+            .await
+            .is_ok()
+            {
+                contract = Some(serde_json::json!({
+                    "id": artifact.selection.id,
+                    "version": artifact.selection.version,
+                    "path": artifact.selection.path,
+                    "object": object.name,
+                    "admission": "admitted",
+                }));
+                break;
+            }
+        }
+    }
+    let permissions = serde_json::json!({
+        "metadata": "visible",
+        "engines": engines,
+        "contract": contract,
+    });
+
+    let (docs, asset_history, assets) = if let Some(store) = state.catalog_assets.clone() {
+        let store_for_doc = store.clone();
+        let entity_for_doc = entity.clone();
+        let document = tokio::task::spawn_blocking(move || store_for_doc.document(&entity_for_doc))
+            .await
+            .map_err(|_| CoreError::Storage("catalog document task failed".into()))??;
+        let store_for_history = store.clone();
+        let entity_for_history = entity.clone();
+        let history =
+            tokio::task::spawn_blocking(move || store_for_history.history(&entity_for_history))
+                .await
+                .map_err(|_| CoreError::Storage("catalog history task failed".into()))??;
+        let store_for_assets = store;
+        let entity_for_assets = entity.clone();
+        let assets =
+            tokio::task::spawn_blocking(move || store_for_assets.assets(&entity_for_assets))
+                .await
+                .map_err(|_| CoreError::Storage("catalog asset task failed".into()))??;
+        (
+            serde_json::json!({
+                "enabled": true,
+                "markdown": document.as_ref().map(|doc| doc.markdown.clone()).unwrap_or_default(),
+                "revision": document.as_ref().and_then(|doc| doc.revision.clone()),
+                "path": document.as_ref().map(|doc| doc.path.clone()),
+            }),
+            history,
+            assets,
+        )
+    } else {
+        (
+            serde_json::json!({"enabled": false, "markdown": "", "revision": null}),
+            Vec::new(),
+            Vec::new(),
+        )
+    };
+
+    let audit = state.audit.events().await?;
+    let namespace_label = namespace_segments
+        .as_deref()
+        .map(|segments| segments.join("."));
+    let table_lower = query.table.as_deref().map(str::to_lowercase);
+    let queries = audit
+        .into_iter()
+        .filter(|event| event.subject == principal.subject)
+        .filter(|event| event.catalog.as_deref() == Some(query.catalog.as_str()))
+        .filter(|event| {
+            namespace_label.as_deref().is_none_or(|namespace| {
+                event.schema.as_deref().is_some_and(|schema| {
+                    namespace == schema || namespace.contains(schema) || schema.contains(namespace)
+                })
+            })
+        })
+        .filter(|event| {
+            table_lower
+                .as_deref()
+                .is_none_or(|table| names_table(&event.sql, table))
+        })
+        .rev()
+        .take(20)
+        .map(|event| {
+            serde_json::json!({
+                "engine": event.engine.0,
+                "catalog": event.catalog,
+                "schema": event.schema,
+                "sql": event.sql,
+                "ok": event.ok,
+                "rowCount": event.row_count,
+                "latencyMs": event.latency_ms,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    Ok(Json(serde_json::json!({
+        "level": level,
+        "entity": {
+            "catalog": query.catalog,
+            "namespace": query.namespace,
+            "table": query.table,
+        },
+        "details": details,
+        "permissions": permissions,
+        "docs": docs,
+        "history": {
+            "docs": asset_history,
+            "queries": queries,
+        },
+        "assets": assets,
+    })))
+}
+
+#[derive(Deserialize)]
+struct CatalogDocsQuery {
+    catalog: String,
+    namespace: Option<String>,
+    table: Option<String>,
+    revision: Option<String>,
+}
+
+async fn catalog_docs(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<CatalogDocsQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let principal = principal(&state, &headers).await?;
+    authorize(&principal, aster_core::Action::ReadNotebook)?;
+    require_catalog_metadata(&state, &query.catalog)?;
+    let entity = catalog_entity(query.catalog, query.namespace, query.table)?;
+    let store = state
+        .catalog_assets
+        .clone()
+        .ok_or_else(|| CoreError::Invalid("catalog asset checkout is not configured".into()))?;
+    let revision = query.revision;
+    let document = tokio::task::spawn_blocking(move || match revision.as_deref() {
+        Some(oid) => store.revision_document(&entity, oid).map(Some),
+        None => store.document(&entity),
+    })
+    .await
+    .map_err(|_| CoreError::Storage("catalog document task failed".into()))??;
+    Ok(Json(match document {
+        Some(document) => serde_json::json!({"enabled": true, "document": document}),
+        None => serde_json::json!({"enabled": true, "document": null}),
+    }))
+}
+
+#[derive(Deserialize)]
+struct CatalogDocsBody {
+    catalog: String,
+    namespace: Option<String>,
+    table: Option<String>,
+    markdown: String,
+    #[serde(rename = "expectedRevision")]
+    expected_revision: Option<String>,
+}
+
+async fn save_catalog_docs(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<CatalogDocsBody>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let principal = principal(&state, &headers).await?;
+    authorize(&principal, aster_core::Action::WriteNotebook)?;
+    require_catalog_metadata(&state, &body.catalog)?;
+    let entity = catalog_entity(body.catalog, body.namespace, body.table)?;
+    let store = state
+        .catalog_assets
+        .clone()
+        .ok_or_else(|| CoreError::Invalid("catalog asset checkout is not configured".into()))?;
+    let subject = principal.subject.clone();
+    let markdown = body.markdown;
+    let expected = body.expected_revision;
+    let document = tokio::task::spawn_blocking(move || {
+        store.save(&entity, &markdown, expected.as_deref(), &subject)
+    })
+    .await
+    .map_err(|_| CoreError::Storage("catalog document task failed".into()))??;
+    Ok(Json(serde_json::json!({"document": document})))
+}
+
+#[derive(Deserialize)]
+struct CatalogAssetQuery {
+    catalog: String,
+    namespace: Option<String>,
+    table: Option<String>,
+    name: String,
+}
+
+async fn catalog_asset(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<CatalogAssetQuery>,
+) -> Result<Response, ApiError> {
+    let principal = principal(&state, &headers).await?;
+    authorize(&principal, aster_core::Action::ReadNotebook)?;
+    require_catalog_metadata(&state, &query.catalog)?;
+    let entity = catalog_entity(query.catalog, query.namespace, query.table)?;
+    let store = state
+        .catalog_assets
+        .clone()
+        .ok_or_else(|| CoreError::NotFound("catalog asset checkout".into()))?;
+    let name = query.name;
+    let (bytes, content_type) =
+        tokio::task::spawn_blocking(move || store.read_asset(&entity, &name))
+            .await
+            .map_err(|_| CoreError::Storage("catalog asset task failed".into()))??;
+    Ok((
+        [
+            (header::CONTENT_TYPE, content_type),
+            (header::CACHE_CONTROL, "private, max-age=60"),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+            (
+                header::CONTENT_SECURITY_POLICY,
+                "default-src 'none'; sandbox",
+            ),
+            (header::CONTENT_DISPOSITION, "inline"),
+        ],
+        bytes,
+    )
+        .into_response())
+}
+
 async fn list_notebooks(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -2066,6 +2586,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/notebooks/{id}", get(web::notebook_view))
         .route("/catalog", get(web::catalog))
         .route("/catalog/physical", get(web::physical_catalog))
+        .route("/catalog/inventory", get(web::catalog_inventory_page))
         .route("/contracts", get(web::contracts))
         .route(
             "/settings/llm",
@@ -2108,6 +2629,14 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/api/engines", get(list_engines))
         .route("/assets/{name}", get(web::asset))
         .route("/api/catalogs", get(list_catalogs))
+        .route("/api/catalog/tree", get(catalog_tree))
+        .route("/api/catalog/search", get(catalog_search))
+        .route("/api/catalog/detail", get(catalog_detail))
+        .route(
+            "/api/catalog/docs",
+            get(catalog_docs).put(save_catalog_docs),
+        )
+        .route("/api/catalog/asset", get(catalog_asset))
         .route("/api/contracts", get(list_contracts))
         .route("/api/query", post(run_query))
         .route("/api/sql/complete", get(complete))

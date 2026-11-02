@@ -48,7 +48,7 @@ fn escape(value: &str) -> String {
         .replace('"', "&quot;")
 }
 
-fn namespace_token(segments: &[String]) -> Result<String, CoreError> {
+pub(crate) fn namespace_token(segments: &[String]) -> Result<String, CoreError> {
     if let Ok(name) = aster_core::catalog::legacy_namespace(segments) {
         if !name.starts_with('~') {
             return Ok(name);
@@ -63,7 +63,7 @@ fn namespace_token(segments: &[String]) -> Result<String, CoreError> {
     ))
 }
 
-fn decode_namespace(token: &str) -> Result<Vec<String>, CoreError> {
+pub(crate) fn decode_namespace(token: &str) -> Result<Vec<String>, CoreError> {
     use base64::Engine;
     if let Some(encoded) = token.strip_prefix('~') {
         let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
@@ -653,48 +653,25 @@ pub async fn catalog(
         return Ok(sign_in_redirect());
     };
     authorize(&principal, Action::ReadNotebook)?;
-    let mut body = String::from("<section class=\"panel\" aria-label=\"Physical inventory\"><h1>Catalog inventory</h1><p>Physical presence, admitted contracts and declared semantics are independent. Query-target authorization is not yet enforced by this inventory.</p>");
-    match crate::catalog_inventory::all(&state, &headers).await {
-        Ok(inventories) => {
-            for inventory in inventories {
-                body.push_str(&format!(
-                    "<h2>{}</h2>",
-                    escape(&format!(
-                        "{} / {}",
-                        inventory["catalog"], inventory["namespaceSegments"]
-                    ))
-                ));
-                if inventory["physical"]["status"] == "unknown" {
-                    body.push_str("<p role=\"status\">Physical inventory unavailable; no accessible entries confirmed.</p>");
-                    continue;
-                }
-                body.push_str("<table class=\"schema\"><tr><th>Object</th><th>Physical</th><th>Contract</th><th>Semantics</th></tr>");
-                for entry in inventory["entries"].as_array().into_iter().flatten() {
-                    body.push_str(&format!(
-                        "<tr><td>{}</td><td>present</td><td>{}</td><td>{}</td></tr>",
-                        escape(entry["physicalName"].as_str().unwrap_or("")),
-                        escape(entry["contract"]["status"].as_str().unwrap_or("unknown")),
-                        escape(entry["semantics"]["status"].as_str().unwrap_or("unknown"))
-                    ));
-                }
-                body.push_str("</table>");
-            }
-        }
-        Err(error) => {
-            tracing::warn!(%error, "inventory unavailable");
-            body.push_str("<p role=\"status\">Inventory unavailable: current identity and configured schema ownership are required.</p>");
-        }
-    }
-    body.push_str("</section><details open><summary>Authorized contract artifacts and query context (not physical inventory)</summary>");
-    body.push_str(&contract_context());
-    body.push_str("</details>");
-    Ok(Html(layout(
-        "catalog",
-        "contracts and query context",
-        &principal,
-        &body,
-    ))
-    .into_response())
+    let body = format!(
+        "<div class=\"catalog-toolbar\">\
+         <button type=\"button\" class=\"btn\" id=\"catalog-menu\" aria-controls=\"catalog-rail\" aria-expanded=\"true\">☰ Hide menu</button></div>\
+         <div class=\"catalog-workspace\" id=\"catalog-page\" data-docs=\"{docs}\">\
+         <aside class=\"catalog-rail\" id=\"catalog-rail\" aria-label=\"Catalog tree\">\
+         <div class=\"catalog-rail-head\"><h1>Catalog</h1></div>\
+         <div class=\"catalog-search\"><input id=\"catalog-search\" placeholder=\"Search catalogs, schemas, tables\" aria-label=\"Search catalog entities\" autocomplete=\"off\">\
+         <div id=\"catalog-search-results\" class=\"catalog-search-results\" hidden></div></div>\
+         <div id=\"catalog-tree\" role=\"tree\"></div>\
+         <p id=\"catalog-nav-status\" class=\"status\" role=\"status\"></p>\
+         <a class=\"btn ghost\" href=\"/contracts\">Contracts and query context</a>\
+         <a class=\"btn ghost\" href=\"/catalog/inventory\">Physical inventory</a>\
+         </aside>\
+         <section class=\"catalog-detail\" id=\"catalog-detail\" aria-live=\"polite\">\
+         <div class=\"empty\">Select a catalog, schema or table.</div>\
+         </section></div>",
+        docs = if state.catalog_assets.is_some() { "enabled" } else { "disabled" },
+    );
+    Ok(Html(layout("catalog", "catalog", &principal, &body)).into_response())
 }
 
 fn contract_context() -> String {
@@ -783,6 +760,58 @@ pub async fn physical_catalog(
         body.push_str("</div></div>");
     }
     Ok(Html(layout("catalog", "catalog", &principal, &body)).into_response())
+}
+
+pub async fn catalog_inventory_page(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let Some(principal) = browser_principal(&state, &headers).await else {
+        return Ok(sign_in_redirect());
+    };
+    authorize(&principal, Action::ReadNotebook)?;
+    let mut body = String::from("<section class=\"panel\" aria-label=\"Physical inventory\"><h1>Catalog inventory</h1><p>Physical presence, admitted contracts and declared semantics are independent. Query-target authorization is not yet enforced by this inventory.</p>");
+    match crate::catalog_inventory::all(&state, &headers).await {
+        Ok(inventories) => {
+            for inventory in inventories {
+                body.push_str(&format!(
+                    "<h2>{}</h2>",
+                    escape(&format!(
+                        "{} / {}",
+                        inventory["catalog"], inventory["namespaceSegments"]
+                    ))
+                ));
+                if inventory["physical"]["status"] == "unknown" {
+                    body.push_str("<p role=\"status\">Physical inventory unavailable; no accessible entries confirmed.</p>");
+                    continue;
+                }
+                body.push_str("<table class=\"schema\"><tr><th>Object</th><th>Physical</th><th>Contract</th><th>Semantics</th></tr>");
+                for entry in inventory["entries"].as_array().into_iter().flatten() {
+                    body.push_str(&format!(
+                        "<tr><td>{}</td><td>present</td><td>{}</td><td>{}</td></tr>",
+                        escape(entry["physicalName"].as_str().unwrap_or("")),
+                        escape(entry["contract"]["status"].as_str().unwrap_or("unknown")),
+                        escape(entry["semantics"]["status"].as_str().unwrap_or("unknown"))
+                    ));
+                }
+                body.push_str("</table>");
+            }
+        }
+        Err(error) => {
+            tracing::warn!(%error, "inventory unavailable");
+            body.push_str("<p role=\"status\">Inventory unavailable: current identity and configured schema ownership are required.</p>");
+        }
+    }
+    body.push_str("</section><details open><summary>Authorized contract artifacts and query context (not physical inventory)</summary>");
+    body.push_str(&contract_context());
+    body.push_str("</details>");
+    Ok(Html(layout(
+        "catalog",
+        "contracts and query context",
+        &principal,
+        &body,
+    ))
+    .into_response())
 }
 
 pub async fn contracts(

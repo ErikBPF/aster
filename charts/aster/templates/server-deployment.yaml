@@ -40,6 +40,22 @@ spec:
     spec:
       securityContext: {{ toYaml .Values.podSecurityContext | nindent 8 }}
       imagePullSecrets: {{ toYaml .Values.imagePullSecrets | nindent 8 }}
+      {{- if .Values.server.catalogAssetsDir }}
+      initContainers:
+        - name: catalog-assets-init
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}{{ if .Values.image.digest }}@{{ .Values.image.digest }}{{ end }}"
+          command:
+            - sh
+            - -c
+            - |
+              if [ ! -d {{ .Values.server.catalogAssetsDir }}/.git ]; then
+                git init -q {{ .Values.server.catalogAssetsDir }}
+              fi
+          securityContext: {{ toYaml .Values.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: catalog-assets
+              mountPath: {{ .Values.server.catalogAssetsDir }}
+      {{- end }}
       containers:
         - name: server
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}{{ if .Values.image.digest }}@{{ .Values.image.digest }}{{ end }}"
@@ -59,6 +75,8 @@ spec:
               value: {{ .Values.server.notebookBranch | quote }}
             - name: ASTER_CONTRACTS_DIR
               value: {{ .Values.server.contractsDir | quote }}
+            - name: ASTER_CATALOG_ASSETS_DIR
+              value: {{ .Values.server.catalogAssetsDir | quote }}
             - name: ASTER_GRANTS
               value: {{ .Values.server.grants | quote }}
             - name: ASTER_ENGINES
@@ -163,6 +181,10 @@ spec:
             - name: contracts
               mountPath: {{ .Values.server.contractsDir }}
               readOnly: true
+            {{- if .Values.server.catalogAssetsDir }}
+            - name: catalog-assets
+              mountPath: {{ .Values.server.catalogAssetsDir }}
+            {{- end }}
       volumes:
         - name: notebooks
           {{- if .Values.persistence.enabled }}
@@ -174,6 +196,11 @@ spec:
         - name: contracts
           configMap:
             name: {{ .Release.Name }}-contracts
+        {{- if .Values.server.catalogAssetsDir }}
+        - name: catalog-assets
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-catalog-assets
+        {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector: {{ toYaml . | nindent 8 }}
       {{- end }}

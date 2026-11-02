@@ -1961,3 +1961,592 @@ if (cellsRoot) {
     if (cell) sendCellChat(cell);
   });
 }
+
+/* ---- catalog workspace ---------------------------------------------- */
+
+const catalogPage = document.getElementById('catalog-page');
+if (catalogPage) {
+  const treeRoot = document.getElementById('catalog-tree');
+  const detailRoot = document.getElementById('catalog-detail');
+  const navStatus = document.getElementById('catalog-nav-status');
+  const menuButton = document.getElementById('catalog-menu');
+  const rail = document.getElementById('catalog-rail');
+  const searchInput = document.getElementById('catalog-search');
+  const searchResults = document.getElementById('catalog-search-results');
+  const docsEnabled = catalogPage.dataset.docs === 'enabled';
+  let selected = { catalog: null, namespace: null, table: null };
+  let currentDetail = null;
+  let currentTab = 'details';
+  let detailSeq = 0;
+
+  async function catalogJson(url) {
+    const response = await fetch(url, {cache: 'no-store'});
+    const value = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(value.error || value.message || 'catalog request failed');
+    return value;
+  }
+
+  function treeButton(label, className, onClick) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = className;
+    button.textContent = label;
+    button.addEventListener('click', onClick);
+    return button;
+  }
+
+  function catalogUrl(catalog, namespace, table) {
+    const params = new URLSearchParams();
+    if (catalog) params.set('catalog', catalog);
+    if (namespace) params.set('namespace', namespace);
+    if (table) params.set('table', table);
+    return '/catalog?' + params.toString();
+  }
+
+  function updateLocation() {
+    const url = catalogUrl(selected.catalog, selected.namespace, selected.table);
+    history.replaceState(null, '', url);
+  }
+
+  async function expandCatalog(node, catalog) {
+    const children = node.querySelector('.tree-children');
+    if (!children.hidden) return;
+    children.hidden = false;
+    node.querySelector('.tree-toggle').textContent = '▾';
+    if (children.dataset.loaded === '1') return;
+    navStatus.textContent = 'Loading schemas…';
+    try {
+      const value = await catalogJson('/api/catalog/tree?catalog=' + encodeURIComponent(catalog));
+      children.replaceChildren();
+      for (const namespace of value.namespaces || []) {
+        const child = document.createElement('div');
+        child.className = 'tree-node schema-node';
+        child.dataset.name = namespace.name;
+        child.dataset.token = namespace.token;
+        const head = document.createElement('div');
+        head.className = 'tree-row';
+        const toggle = treeButton('▸', 'tree-toggle', () => expandSchema(child, catalog, namespace.token));
+        const label = treeButton(namespace.name, 'tree-label', () => selectEntity(catalog, namespace.token, null));
+        head.append(toggle, label);
+        const grandchildren = document.createElement('div');
+        grandchildren.className = 'tree-children';
+        grandchildren.hidden = true;
+        child.append(head, grandchildren);
+        children.appendChild(child);
+      }
+      children.dataset.loaded = '1';
+      navStatus.textContent = '';
+    } catch (error) {
+      navStatus.textContent = error.message;
+    }
+  }
+
+  async function expandSchema(node, catalog, namespace) {
+    const children = node.querySelector('.tree-children');
+    if (!children.hidden) return;
+    children.hidden = false;
+    node.querySelector('.tree-toggle').textContent = '▾';
+    if (children.dataset.loaded === '1') return;
+    navStatus.textContent = 'Loading tables…';
+    try {
+      const value = await catalogJson('/api/catalog/tree?catalog=' + encodeURIComponent(catalog) + '&namespace=' + encodeURIComponent(namespace));
+      children.replaceChildren();
+      for (const table of value.tables || []) {
+        const child = document.createElement('div');
+        child.className = 'tree-node table-node';
+        child.dataset.name = table.name;
+        const head = document.createElement('div');
+        head.className = 'tree-row';
+        const spacer = document.createElement('span');
+        spacer.className = 'tree-spacer';
+        const label = treeButton(table.name, 'tree-label', () => selectEntity(catalog, namespace, table.name));
+        head.append(spacer, label);
+        child.appendChild(head);
+        children.appendChild(child);
+      }
+      children.dataset.loaded = '1';
+      navStatus.textContent = '';
+    } catch (error) {
+      navStatus.textContent = error.message;
+    }
+  }
+
+  function renderCatalogs(value) {
+    treeRoot.replaceChildren();
+    for (const catalog of value.catalogs || []) {
+      const node = document.createElement('div');
+      node.className = 'tree-node catalog-node';
+      node.dataset.name = catalog.id;
+      const head = document.createElement('div');
+      head.className = 'tree-row';
+      const toggle = treeButton('▸', 'tree-toggle', () => expandCatalog(node, catalog.id));
+      const label = treeButton(catalog.id, 'tree-label', () => selectEntity(catalog.id, null, null));
+      const chip = document.createElement('span');
+      chip.className = 'chip';
+      chip.textContent = catalog.kind;
+      head.append(toggle, label, chip);
+      const children = document.createElement('div');
+      children.className = 'tree-children';
+      children.hidden = true;
+      node.append(head, children);
+      treeRoot.appendChild(node);
+    }
+    if (!(value.catalogs || []).length) {
+      treeRoot.innerHTML = '<p class="status">No visible catalogs.</p>';
+    }
+  }
+
+  async function selectEntity(catalog, namespace, table, tab = 'details') {
+    const sequence = ++detailSeq;
+    selected = { catalog, namespace, table };
+    updateLocation();
+    detailRoot.innerHTML = '<p class="status">Loading…</p>';
+    try {
+      const params = new URLSearchParams({catalog});
+      if (namespace) params.set('namespace', namespace);
+      if (table) params.set('table', table);
+      const loaded = await catalogJson('/api/catalog/detail?' + params.toString());
+      if (sequence !== detailSeq) return;
+      currentDetail = loaded;
+      currentTab = tab;
+      renderDetail();
+    } catch (error) {
+      detailRoot.innerHTML = '';
+      const message = document.createElement('p');
+      message.className = 'err';
+      message.textContent = error.message;
+      detailRoot.appendChild(message);
+    }
+  }
+
+  function detailTitle() {
+    const entity = currentDetail.entity;
+    const parts = [entity.catalog];
+    if (entity.namespace) parts.push(currentDetail.details.namespace || entity.namespace);
+    if (entity.table) parts.push(entity.table);
+    return parts.join(' / ');
+  }
+
+  function addField(parent, label, value) {
+    const row = document.createElement('div');
+    row.className = 'detail-field';
+    const name = document.createElement('span');
+    name.className = 'detail-label';
+    name.textContent = label;
+    const content = document.createElement('span');
+    content.textContent = value === null || value === undefined || value === '' ? '—' : String(value);
+    row.append(name, content);
+    parent.appendChild(row);
+  }
+
+  function renderDetail() {
+    const detail = currentDetail;
+    detailRoot.replaceChildren();
+    const head = document.createElement('div');
+    head.className = 'catalog-detail-head';
+    const title = document.createElement('h1');
+    title.textContent = detailTitle();
+    const level = document.createElement('span');
+    level.className = 'chip';
+    level.textContent = detail.level;
+    head.append(title, level);
+    detailRoot.appendChild(head);
+
+    const tabs = document.createElement('div');
+    tabs.className = 'detail-tabs';
+    for (const [id, label] of [['details', 'Details'], ['docs', 'Docs'], ['history', 'History'], ['permissions', 'Permissions']]) {
+      const tab = treeButton(label, 'btn detail-tab' + (currentTab === id ? ' active' : ''), () => {
+        currentTab = id;
+        renderDetail();
+      });
+      tab.dataset.tab = id;
+      tabs.appendChild(tab);
+    }
+    detailRoot.appendChild(tabs);
+
+    const pane = document.createElement('div');
+    pane.className = 'detail-pane';
+    detailRoot.appendChild(pane);
+    if (currentTab === 'details') renderDetailsPane(pane);
+    if (currentTab === 'docs') renderDocsPane(pane);
+    if (currentTab === 'history') renderHistoryPane(pane);
+    if (currentTab === 'permissions') renderPermissionsPane(pane);
+  }
+
+  function renderDetailsPane(pane) {
+    const details = currentDetail.details;
+    const panel = document.createElement('div');
+    panel.className = 'panel';
+    const body = document.createElement('div');
+    body.className = 'panel-body';
+    addField(body, 'Catalog', details.catalog);
+    addField(body, 'Kind', details.kind);
+    addField(body, 'Health', details.health);
+    if (details.namespace) addField(body, 'Namespace', details.namespace);
+    if (details.table) {
+      addField(body, 'Table', details.table);
+      addField(body, 'Format', details.format);
+      addField(body, 'Base location', details.baseLocation);
+      addField(body, 'Schema available', details.schemaAvailable ? 'yes' : 'no');
+    }
+    if (details.tableCount !== undefined) addField(body, 'Tables', details.tableCount);
+    panel.appendChild(body);
+    pane.appendChild(panel);
+
+    if (details.columns) {
+      const columns = document.createElement('div');
+      columns.className = 'panel';
+      const table = document.createElement('table');
+      table.className = 'schema';
+      table.innerHTML = '<thead><tr><th>column</th><th>type</th><th>nullable</th></tr></thead>';
+      const tbody = document.createElement('tbody');
+      for (const column of details.columns) {
+        const row = document.createElement('tr');
+        const name = document.createElement('td');
+        name.innerHTML = '<code></code>';
+        name.firstChild.textContent = column.name;
+        const type = document.createElement('td');
+        type.textContent = column.type || column.data_type;
+        const nullable = document.createElement('td');
+        nullable.textContent = column.nullable ? 'yes' : 'no';
+        row.append(name, type, nullable);
+        tbody.appendChild(row);
+      }
+      table.appendChild(tbody);
+      columns.appendChild(table);
+      pane.appendChild(columns);
+    }
+  }
+
+  function renderDocsPane(pane) {
+    const docs = currentDetail.docs;
+    if (!docs.enabled) {
+      const note = document.createElement('p');
+      note.className = 'empty';
+      note.textContent = 'Catalog docs are disabled: set ASTER_CATALOG_ASSETS_DIR to a Git checkout.';
+      pane.appendChild(note);
+      return;
+    }
+    const panel = document.createElement('div');
+    panel.className = 'panel';
+    const body = document.createElement('div');
+    body.className = 'panel-body';
+    if (docs.viewRevision) {
+      const note = document.createElement('p');
+      note.className = 'status';
+      note.textContent = 'Read-only revision ' + docs.viewRevision.slice(0, 12) + '.';
+      body.appendChild(note);
+    } else {
+      const actions = document.createElement('div');
+      actions.className = 'docs-actions';
+      const edit = treeButton('Edit', 'btn', () => startDocEdit(pane));
+      actions.appendChild(edit);
+      body.appendChild(actions);
+    }
+    const preview = document.createElement('div');
+    preview.className = 'md-preview docs-preview';
+    renderMarkdownInto(preview, docs.markdown || '');
+    body.appendChild(preview);
+    const editor = document.createElement('div');
+    editor.className = 'docs-editor';
+    editor.hidden = true;
+    const area = document.createElement('textarea');
+    area.className = 'editor';
+    area.rows = 16;
+    area.value = docs.markdown || '';
+    const save = treeButton('Save docs', 'btn primary', () => saveDocs(pane, area.value, docs.revision));
+    const cancel = treeButton('Cancel', 'btn', () => startDocView(pane));
+    const status = document.createElement('p');
+    status.className = 'status';
+    editor.append(area, save, cancel, status);
+    body.appendChild(editor);
+    panel.appendChild(body);
+    pane.appendChild(panel);
+
+    if (docs.path) {
+      const meta = document.createElement('p');
+      meta.className = 'status';
+      meta.textContent = 'Git path: ' + docs.path + (docs.revision ? ' · blob ' + docs.revision.slice(0, 12) : '');
+      pane.appendChild(meta);
+    }
+    if ((currentDetail.assets || []).length) {
+      const gallery = document.createElement('div');
+      gallery.className = 'asset-gallery';
+      for (const asset of currentDetail.assets) {
+        const params = new URLSearchParams({catalog: currentDetail.entity.catalog, name: asset.name});
+        if (currentDetail.entity.namespace) params.set('namespace', currentDetail.entity.namespace);
+        if (currentDetail.entity.table) params.set('table', currentDetail.entity.table);
+        const link = document.createElement('a');
+        link.href = '/api/catalog/asset?' + params.toString();
+        link.target = '_blank';
+        link.rel = 'noopener';
+        const image = document.createElement('img');
+        image.loading = 'lazy';
+        image.src = link.href;
+        image.alt = asset.name;
+        link.appendChild(image);
+        gallery.appendChild(link);
+      }
+      pane.appendChild(gallery);
+    }
+  }
+
+  function startDocEdit(pane) {
+    const preview = pane.querySelector('.docs-preview');
+    const editor = pane.querySelector('.docs-editor');
+    if (preview) preview.hidden = true;
+    if (editor) editor.hidden = false;
+  }
+
+  function startDocView(pane) {
+    const preview = pane.querySelector('.docs-preview');
+    const editor = pane.querySelector('.docs-editor');
+    if (preview) preview.hidden = false;
+    if (editor) editor.hidden = true;
+  }
+
+  async function saveDocs(pane, markdown, expectedRevision) {
+    const status = pane.querySelector('.docs-editor .status');
+    status.textContent = 'Saving…';
+    const body = {catalog: currentDetail.entity.catalog, markdown, expectedRevision: expectedRevision || null};
+    if (currentDetail.entity.namespace) body.namespace = currentDetail.entity.namespace;
+    if (currentDetail.entity.table) body.table = currentDetail.entity.table;
+    const response = await fetch('/api/catalog/docs', {
+      method: 'PUT',
+      headers: {'content-type': 'application/json'},
+      body: JSON.stringify(body),
+    });
+    const value = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      status.textContent = response.status === 409
+        ? 'Document changed; reload before saving.'
+        : (value.error || 'save failed');
+      return;
+    }
+    await selectEntity(selected.catalog, selected.namespace, selected.table, 'docs');
+    navStatus.textContent = 'Docs saved.';
+  }
+
+  function renderHistoryPane(pane) {
+    const history = currentDetail.history;
+    const docsPanel = document.createElement('div');
+    docsPanel.className = 'panel';
+    const docsHead = document.createElement('div');
+    docsHead.className = 'panel-head';
+    docsHead.textContent = 'Document history';
+    const docsBody = document.createElement('div');
+    docsBody.className = 'panel-body';
+    if (!(history.docs || []).length) {
+      docsBody.innerHTML = '<p class="status">No document commits.</p>';
+    } else {
+      const list = document.createElement('ul');
+      list.className = 'history-list';
+      for (const commit of history.docs) {
+        const item = document.createElement('li');
+        const button = treeButton(commit.message || commit.oid.slice(0, 12), 'tree-label', () => {
+          viewDocRevision(commit.oid);
+        });
+        const meta = document.createElement('span');
+        meta.className = 'status';
+        meta.textContent = `${commit.author} · ${commit.date} · ${commit.oid.slice(0, 12)}`;
+        item.append(button, meta);
+        list.appendChild(item);
+      }
+      docsBody.appendChild(list);
+    }
+    docsPanel.append(docsHead, docsBody);
+    pane.appendChild(docsPanel);
+
+    const queryPanel = document.createElement('div');
+    queryPanel.className = 'panel';
+    const queryHead = document.createElement('div');
+    queryHead.className = 'panel-head';
+    queryHead.textContent = 'Recent queries by you';
+    const queryBody = document.createElement('div');
+    queryBody.className = 'panel-body';
+    if (!(history.queries || []).length) {
+      queryBody.innerHTML = '<p class="status">No recorded queries for this scope.</p>';
+    } else {
+      const list = document.createElement('ul');
+      list.className = 'history-list';
+      for (const query of history.queries) {
+        const item = document.createElement('li');
+        const sql = document.createElement('code');
+        sql.textContent = query.sql;
+        const meta = document.createElement('span');
+        meta.className = 'status';
+        meta.textContent = `${query.engine} · ${query.ok ? 'ok' : 'failed'} · ${query.rowCount} row(s)`;
+        item.append(sql, meta);
+        list.appendChild(item);
+      }
+      queryBody.appendChild(list);
+    }
+    queryPanel.append(queryHead, queryBody);
+    pane.appendChild(queryPanel);
+  }
+
+  async function viewDocRevision(oid) {
+    const params = new URLSearchParams({catalog: currentDetail.entity.catalog, revision: oid});
+    if (currentDetail.entity.namespace) params.set('namespace', currentDetail.entity.namespace);
+    if (currentDetail.entity.table) params.set('table', currentDetail.entity.table);
+    try {
+      const value = await catalogJson('/api/catalog/docs?' + params.toString());
+      if (!value.document) return;
+      currentTab = 'docs';
+      currentDetail.docs = {
+        ...currentDetail.docs,
+        markdown: value.document.markdown,
+        viewRevision: oid,
+      };
+      renderDetail();
+    } catch (error) {
+      navStatus.textContent = error.message;
+    }
+  }
+
+  function renderPermissionsPane(pane) {
+    const permissions = currentDetail.permissions;
+    const panel = document.createElement('div');
+    panel.className = 'panel';
+    const body = document.createElement('div');
+    body.className = 'panel-body';
+    addField(body, 'Metadata', permissions.metadata);
+    if (permissions.contract) {
+      addField(body, 'Contract', `${permissions.contract.id} ${permissions.contract.version}`);
+      addField(body, 'Contract path', permissions.contract.path);
+      addField(body, 'Contract admission', permissions.contract.admission);
+    } else {
+      addField(body, 'Contract', 'not declared in the compiled bundle');
+    }
+    const engineTitle = document.createElement('h2');
+    engineTitle.textContent = 'Bound engines';
+    body.appendChild(engineTitle);
+    if (!(permissions.engines || []).length) {
+      body.innerHTML += '<p class="status">No bound engines.</p>';
+    } else {
+      const table = document.createElement('table');
+      table.className = 'schema';
+      table.innerHTML = '<thead><tr><th>engine</th><th>grant</th><th>health</th></tr></thead>';
+      const tbody = document.createElement('tbody');
+      for (const engine of permissions.engines) {
+        const row = document.createElement('tr');
+        const id = document.createElement('td');
+        id.textContent = engine.id;
+        const grant = document.createElement('td');
+        const badge = document.createElement('span');
+        badge.className = engine.granted ? 'badge ok' : 'badge warn';
+        badge.textContent = engine.granted ? 'granted' : 'not granted';
+        grant.appendChild(badge);
+        const health = document.createElement('td');
+        health.textContent = engine.health;
+        row.append(id, grant, health);
+        tbody.appendChild(row);
+      }
+      table.appendChild(tbody);
+      body.appendChild(table);
+    }
+    panel.appendChild(body);
+    pane.appendChild(panel);
+  }
+
+  async function initCatalog() {
+    try {
+      const value = await catalogJson('/api/catalog/tree');
+      renderCatalogs(value);
+      const params = new URLSearchParams(location.search);
+      const catalog = params.get('catalog');
+      if (!catalog) return;
+      const node = treeRoot.querySelector(`.catalog-node[data-name="${CSS.escape(catalog)}"]`);
+      if (!node) return;
+      await expandCatalog(node, catalog);
+      const namespace = params.get('namespace');
+      const table = params.get('table');
+      if (namespace) {
+        const schema = node.querySelector(`.schema-node[data-token="${CSS.escape(namespace)}"]`);
+        if (schema) await expandSchema(schema, catalog, namespace);
+      }
+      await selectEntity(catalog, namespace, table);
+    } catch (error) {
+      navStatus.textContent = error.message;
+    }
+  }
+
+  function setMenu(open, persist = true) {
+    catalogPage.classList.toggle('rail-closed', !open);
+    if (rail) rail.hidden = !open;
+    menuButton.textContent = open ? '☰ Hide menu' : '☰ Show menu';
+    menuButton.setAttribute('aria-expanded', String(open));
+    if (persist) localStorage.setItem('aster.catalog.menu', open ? 'open' : 'closed');
+  }
+
+  menuButton.addEventListener('click', () => {
+    setMenu(catalogPage.classList.contains('rail-closed'));
+  });
+
+  function clearSearch() {
+    searchResults.hidden = true;
+    searchResults.replaceChildren();
+  }
+
+  function showSearchResults(results) {
+    searchResults.replaceChildren();
+    if (!results.length) {
+      const empty = document.createElement('p');
+      empty.className = 'status';
+      empty.textContent = 'No matching catalogs, schemas or tables.';
+      searchResults.appendChild(empty);
+    } else {
+      for (const result of results) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'search-result';
+        const label = document.createElement('span');
+        label.textContent = result.label;
+        const kind = document.createElement('span');
+        kind.className = 'status';
+        kind.textContent = result.kind;
+        button.append(label, kind);
+        button.addEventListener('click', () => selectSearchResult(result));
+        searchResults.appendChild(button);
+      }
+    }
+    searchResults.hidden = false;
+  }
+
+  async function selectSearchResult(result) {
+    clearSearch();
+    const node = treeRoot.querySelector(`.catalog-node[data-name="${CSS.escape(result.catalog)}"]`);
+    if (!node) return;
+    await expandCatalog(node, result.catalog);
+    if (result.namespace) {
+      const schema = node.querySelector(`.schema-node[data-token="${CSS.escape(result.namespace)}"]`);
+      if (schema) await expandSchema(schema, result.catalog, result.namespace);
+    }
+    await selectEntity(result.catalog, result.namespace, result.table);
+  }
+
+  let searchTimer = null;
+  searchInput.addEventListener('input', () => {
+    clearTimeout(searchTimer);
+    const query = searchInput.value.trim();
+    if (query.length < 2) {
+      clearSearch();
+      return;
+    }
+    searchTimer = setTimeout(async () => {
+      try {
+        const value = await catalogJson('/api/catalog/search?q=' + encodeURIComponent(query));
+        showSearchResults(value.results || []);
+      } catch (error) {
+        navStatus.textContent = error.message;
+      }
+    }, 250);
+  });
+
+  searchInput.addEventListener('blur', () => setTimeout(clearSearch, 150));
+
+  const savedMenu = localStorage.getItem('aster.catalog.menu');
+  setMenu(savedMenu ? savedMenu === 'open' : !window.matchMedia('(max-width: 900px)').matches, false);
+
+  initCatalog();
+}

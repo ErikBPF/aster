@@ -521,3 +521,113 @@ table.res td.num { text-align: right; }
 .cell-chat-attach .btn { align-self: flex-start; font-size: 0.78rem; padding: 0.2rem 0.45rem; }
 .cell-chat-note { font-size: 0.78rem; }
 .cell-chat .chat-heading strong { white-space: nowrap; }
+
+/* ---- catalog workspace ---------------------------------------------- */
+
+.catalog-toolbar { margin-bottom: 0.5rem; }
+.catalog-workspace {
+  display: grid;
+  grid-template-columns: minmax(15rem, 19rem) minmax(0, 1fr);
+  gap: 1rem;
+  align-items: start;
+  transition: grid-template-columns 120ms ease-in-out;
+}
+.catalog-workspace.rail-closed { grid-template-columns: minmax(0, 1fr); }
+.catalog-workspace.rail-closed .catalog-rail { display: none; }
+.catalog-search { position: relative; margin-bottom: 0.5rem; }
+.catalog-search input { width: 100%; }
+.catalog-search-results {
+  position: absolute;
+  z-index: 30;
+  left: 0;
+  right: 0;
+  top: calc(100% + 2px);
+  max-height: 22rem;
+  overflow: auto;
+  padding: 0.25rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+.search-result {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  width: 100%;
+  border: 0;
+  border-radius: 6px;
+  padding: 0.35rem 0.45rem;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.search-result:hover { background: var(--panel-2); }
+.catalog-rail {
+  position: sticky;
+  top: 4.5rem;
+  max-height: calc(100vh - 5.5rem);
+  overflow: auto;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+.catalog-rail-head { display: flex; align-items: center; gap: 0.5rem; }
+.catalog-rail-head h1 { margin: 0 0 0.5rem; font-size: 1.1rem; }
+.catalog-rail-head input { flex: 1; min-width: 0; }
+.tree-node { margin: 0.1rem 0; }
+.tree-row { display: flex; align-items: center; gap: 0.3rem; min-width: 0; }
+.tree-toggle {
+  flex: 0 0 auto;
+  width: 1.25rem;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0;
+}
+.tree-label {
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  padding: 0.1rem 0.2rem;
+  border-radius: 6px;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tree-label:hover { background: var(--panel-2); }
+.tree-children { margin-left: 1.15rem; border-left: 1px solid var(--border); padding-left: 0.35rem; }
+.tree-spacer { width: 1.25rem; flex: 0 0 auto; }
+.catalog-node > .tree-row > .chip { margin-left: auto; }
+.tree-node.filtered-out { display: none; }
+
+.catalog-detail { min-width: 0; }
+.catalog-detail-head { display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.6rem; }
+.catalog-detail-head h1 { margin: 0; overflow-wrap: anywhere; }
+.detail-tabs { display: flex; gap: 0.25rem; border-bottom: 1px solid var(--border); margin-bottom: 0.75rem; }
+.detail-tab { border-radius: 8px 8px 0 0; border-bottom: 0; color: var(--muted); }
+.detail-tab.active { color: var(--text); background: var(--panel-2); font-weight: 550; }
+.detail-pane { display: flex; flex-direction: column; gap: 0.75rem; }
+.detail-field { display: grid; grid-template-columns: 10rem minmax(0, 1fr); gap: 0.5rem; padding: 0.25rem 0; border-bottom: 1px solid var(--border); }
+.detail-label { color: var(--muted); font-size: 0.85rem; }
+.detail-field > span:last-child { overflow-wrap: anywhere; }
+.docs-actions { display: flex; gap: 0.4rem; margin-bottom: 0.5rem; }
+.docs-editor { display: flex; flex-direction: column; gap: 0.4rem; }
+.docs-editor textarea { width: 100%; resize: vertical; }
+.docs-preview { padding: 0; }
+.asset-gallery { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.asset-gallery img { max-width: 14rem; max-height: 10rem; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-2); }
+.history-list { list-style: none; padding: 0; margin: 0; }
+.history-list li { padding: 0.4rem 0; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 0.2rem; }
+.history-list code { overflow-wrap: anywhere; }
+@media (max-width: 900px) {
+  .catalog-workspace { grid-template-columns: 1fr; }
+  .catalog-rail { position: static; max-height: none; }
+  .detail-field { grid-template-columns: 1fr; gap: 0.1rem; }
+}

@@ -95,6 +95,7 @@ fn test_app() -> (Router, Arc<AtomicUsize>) {
         schema_calls: Arc::clone(&calls),
     }));
     let app = app(Arc::new(AppState {
+        catalog_assets: None,
         config: AppConfig {
             bind: String::new(),
             engines: vec![EngineConfig {

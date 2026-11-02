@@ -90,6 +90,7 @@ fn test_app_with_llm(llm: Arc<InMemoryLlm>) -> Router {
 
 fn test_state_with_llm(llm: Arc<InMemoryLlm>) -> AppState {
     AppState {
+        catalog_assets: None,
         config: AppConfig {
             bind: String::new(),
             engines: vec![],

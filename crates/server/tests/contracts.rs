@@ -285,6 +285,14 @@ struct Contract {
     session_previous: Option<String>,
     session_new: Option<String>,
     session_list: Option<Value>,
+    catalog_assets: Option<Arc<aster_server::catalog_assets::CatalogAssets>>,
+    catalog_tree: Option<Value>,
+    catalog_detail: Option<Value>,
+    catalog_namespace_token: Option<String>,
+    catalog_repo: Option<PathBuf>,
+    catalog_revision: Option<String>,
+    catalog_first_blob: Option<String>,
+    catalog_first_revision: Option<String>,
     catalog: Option<String>,
 }
 
@@ -436,6 +444,7 @@ impl Contract {
                 .expect("notebook store"),
         );
         Arc::new(AppState {
+            catalog_assets: self.catalog_assets.clone(),
             conversations: self.conversations.clone(),
             exchanges: self.exchanges.clone(),
             config,
@@ -2583,6 +2592,390 @@ async fn s2_version(_: &mut Contract) {
 #[then("qualified namespaces retain exact provider segments through API transport")]
 async fn s2_namespace(_: &mut Contract) {
     odcs_intake::namespace_segments_survive_adapter_boundaries().await;
+}
+
+#[given(
+    expr = "subject {string} has a visible catalog {string} with schema {string} and table {string}"
+)]
+async fn catalog_given_visible(
+    world: &mut Contract,
+    _subject: String,
+    catalog: String,
+    _schema: String,
+    _table: String,
+) {
+    world.catalog = Some(catalog);
+}
+
+async fn catalog_get(world: &mut Contract, path: &str) {
+    let request = caller("GET", path, Some("alice"), "editor", None);
+    world.send(request).await;
+    assert_eq!(world.status, Some(StatusCode::OK), "{}", world.body);
+}
+
+async fn catalog_ensure_token(world: &mut Contract) {
+    if world.catalog_namespace_token.is_some() {
+        return;
+    }
+    catalog_get(world, "/api/catalog/tree?catalog=polaris-local").await;
+    let tree = world.json.clone().expect("tree");
+    world.catalog_namespace_token = tree["namespaces"]
+        .as_array()
+        .and_then(|entries| entries.first())
+        .and_then(|entry| entry["token"].as_str())
+        .map(str::to_string);
+    world.catalog_tree = Some(tree);
+}
+
+#[when("Alice opens the catalog tree")]
+async fn catalog_when_tree(world: &mut Contract) {
+    catalog_get(world, "/api/catalog/tree").await;
+    world.catalog_tree = world.json.clone();
+}
+
+#[then(expr = "the tree lists catalog {string}")]
+async fn catalog_then_catalog(world: &mut Contract, catalog: String) {
+    let tree = world.catalog_tree.clone().expect("tree");
+    assert!(
+        tree["catalogs"]
+            .as_array()
+            .expect("catalogs")
+            .iter()
+            .any(|entry| entry["id"].as_str() == Some(catalog.as_str())),
+        "{tree}"
+    );
+}
+
+#[when(expr = "Alice expands catalog {string}")]
+async fn catalog_when_expand_catalog(world: &mut Contract, catalog: String) {
+    catalog_get(world, &format!("/api/catalog/tree?catalog={catalog}")).await;
+    let tree = world.json.clone().expect("tree");
+    world.catalog_namespace_token = tree["namespaces"]
+        .as_array()
+        .and_then(|entries| entries.first())
+        .and_then(|entry| entry["token"].as_str())
+        .map(str::to_string);
+    world.catalog_tree = Some(tree);
+}
+
+#[then(expr = "the tree lists schema {string}")]
+async fn catalog_then_schema(world: &mut Contract, schema: String) {
+    let tree = world.catalog_tree.clone().expect("tree");
+    assert!(
+        tree["namespaces"]
+            .as_array()
+            .expect("namespaces")
+            .iter()
+            .any(|entry| entry["name"].as_str() == Some(schema.as_str())),
+        "{tree}"
+    );
+}
+
+#[when(expr = "Alice expands schema {string}")]
+async fn catalog_when_expand_schema(world: &mut Contract, _schema: String) {
+    let token = world
+        .catalog_namespace_token
+        .clone()
+        .expect("namespace token");
+    catalog_get(
+        world,
+        &format!("/api/catalog/tree?catalog=polaris-local&namespace={token}"),
+    )
+    .await;
+    world.catalog_tree = world.json.clone();
+}
+
+#[when(expr = "Alice searches the catalog tree for {string}")]
+async fn catalog_when_search(world: &mut Contract, query: String) {
+    catalog_get(
+        world,
+        &format!("/api/catalog/search?q={}", query.replace(' ', "+")),
+    )
+    .await;
+    world.catalog_tree = world.json.clone();
+}
+
+#[then(expr = "the search results include table {string}")]
+async fn catalog_then_search_table(world: &mut Contract, table: String) {
+    let results = world.catalog_tree.clone().expect("search");
+    assert!(
+        results["results"]
+            .as_array()
+            .expect("results")
+            .iter()
+            .any(|entry| entry["table"].as_str() == Some(table.as_str())),
+        "{results}"
+    );
+}
+
+#[then(expr = "the tree lists table {string}")]
+async fn catalog_then_table(world: &mut Contract, table: String) {
+    let tree = world.catalog_tree.clone().expect("tree");
+    assert!(
+        tree["tables"]
+            .as_array()
+            .expect("tables")
+            .iter()
+            .any(|entry| entry["name"].as_str() == Some(table.as_str())),
+        "{tree}"
+    );
+}
+
+#[when(expr = "Alice selects catalog {string} schema {string} table {string}")]
+async fn catalog_when_select(
+    world: &mut Contract,
+    catalog: String,
+    _schema: String,
+    table: String,
+) {
+    catalog_ensure_token(world).await;
+    let token = world
+        .catalog_namespace_token
+        .clone()
+        .expect("namespace token");
+    catalog_get(
+        world,
+        &format!("/api/catalog/detail?catalog={catalog}&namespace={token}&table={table}"),
+    )
+    .await;
+    world.catalog_detail = world.json.clone();
+}
+
+#[then(expr = "the detail names table {string}")]
+async fn catalog_then_table_detail(world: &mut Contract, table: String) {
+    let detail = world.catalog_detail.clone().expect("detail");
+    assert_eq!(
+        detail["details"]["table"].as_str(),
+        Some(table.as_str()),
+        "{detail}"
+    );
+}
+
+#[then("the detail lists the observed columns")]
+async fn catalog_then_columns(world: &mut Contract) {
+    let detail = world.catalog_detail.clone().expect("detail");
+    let columns = detail["details"]["columns"].as_array().expect("columns");
+    assert!(
+        columns.iter().any(|column| column["name"] == "order_id"),
+        "{detail}"
+    );
+}
+
+#[then(expr = "the permissions name bound engine {string} as granted")]
+async fn catalog_then_engine(world: &mut Contract, engine: String) {
+    let detail = world.catalog_detail.clone().expect("detail");
+    assert!(
+        detail["permissions"]["engines"]
+            .as_array()
+            .expect("engines")
+            .iter()
+            .any(|entry| entry["id"].as_str() == Some(engine.as_str()) && entry["granted"] == true),
+        "{detail}"
+    );
+}
+
+#[then("the permissions do not expose a raw binding secret")]
+async fn catalog_then_no_secret(world: &mut Contract) {
+    let detail = world.catalog_detail.clone().expect("detail");
+    let text = detail.to_string().to_lowercase();
+    assert!(!text.contains("password"), "{detail}");
+    assert!(!text.contains("client-secret"), "{detail}");
+}
+
+#[given("the catalog asset repository is empty")]
+async fn catalog_given_repo(world: &mut Contract) {
+    let dir = std::env::temp_dir().join(format!(
+        "aster-catalog-nav-{}-{}",
+        std::process::id(),
+        world.calls.load(Ordering::SeqCst)
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    assert!(std::process::Command::new("git")
+        .current_dir(&dir)
+        .args(["init", "-q"])
+        .status()
+        .unwrap()
+        .success());
+    world.catalog_assets = Some(Arc::new(
+        aster_server::catalog_assets::CatalogAssets::open(&dir).expect("asset store"),
+    ));
+    world.catalog_repo = Some(dir);
+}
+
+async fn catalog_save(world: &mut Contract, markdown: String, expected: Option<String>) {
+    catalog_ensure_token(world).await;
+    let token = world
+        .catalog_namespace_token
+        .clone()
+        .expect("namespace token");
+    let request = caller(
+        "PUT",
+        "/api/catalog/docs",
+        Some("alice"),
+        "editor",
+        Some(serde_json::json!({
+            "catalog": "polaris-local",
+            "namespace": token,
+            "table": "orders",
+            "markdown": markdown,
+            "expectedRevision": expected,
+        })),
+    );
+    world.send(request).await;
+}
+
+#[when(expr = "Alice saves catalog docs for table {string} with {string}")]
+async fn catalog_when_save(world: &mut Contract, _table: String, markdown: String) {
+    catalog_save(world, markdown, world.catalog_revision.clone()).await;
+    assert_eq!(world.status, Some(StatusCode::OK), "{}", world.body);
+    let document = &world.json.as_ref().expect("json")["document"];
+    let revision = document["revision"].as_str().expect("revision").to_string();
+    if world.catalog_first_blob.is_none() {
+        world.catalog_first_blob = Some(revision.clone());
+        world.catalog_first_revision = document["commit"].as_str().map(str::to_string);
+    }
+    world.catalog_revision = Some(revision);
+}
+
+#[then("the document has a revision")]
+async fn catalog_then_revision(world: &mut Contract) {
+    assert!(world.catalog_revision.is_some());
+}
+
+#[then("the document has a new revision")]
+async fn catalog_then_new_revision(world: &mut Contract) {
+    assert_ne!(
+        world.catalog_revision.as_deref(),
+        world.catalog_first_revision.as_deref()
+    );
+}
+
+#[then(expr = "the history contains a commit by {string}")]
+async fn catalog_then_history(world: &mut Contract, author: String) {
+    catalog_ensure_token(world).await;
+    let token = world
+        .catalog_namespace_token
+        .clone()
+        .expect("namespace token");
+    catalog_get(
+        world,
+        &format!("/api/catalog/detail?catalog=polaris-local&namespace={token}&table=orders"),
+    )
+    .await;
+    let detail = world.json.clone().expect("detail");
+    assert!(
+        detail["history"]["docs"]
+            .as_array()
+            .expect("history")
+            .iter()
+            .any(|commit| commit["author"].as_str() == Some(author.as_str())),
+        "{detail}"
+    );
+}
+
+#[when(expr = "Alice saves catalog docs for table {string} with the first revision")]
+async fn catalog_when_save_stale(world: &mut Contract, _table: String) {
+    let first = world.catalog_first_blob.clone().expect("first revision");
+    catalog_save(world, "# stale".into(), Some(first)).await;
+}
+
+#[then("the save is refused as a conflict")]
+async fn catalog_then_conflict(world: &mut Contract) {
+    assert_eq!(world.status, Some(StatusCode::CONFLICT), "{}", world.body);
+}
+
+#[when("Alice reads the first revision")]
+async fn catalog_when_read_first(world: &mut Contract) {
+    catalog_ensure_token(world).await;
+    let token = world
+        .catalog_namespace_token
+        .clone()
+        .expect("namespace token");
+    let oid = world
+        .catalog_first_revision
+        .clone()
+        .expect("first revision");
+    catalog_get(
+        world,
+        &format!(
+            "/api/catalog/docs?catalog=polaris-local&namespace={token}&table=orders&revision={oid}"
+        ),
+    )
+    .await;
+}
+
+#[then(expr = "the returned Markdown is {string}")]
+async fn catalog_then_markdown(world: &mut Contract, markdown: String) {
+    assert_eq!(
+        world.json.as_ref().expect("json")["document"]["markdown"].as_str(),
+        Some(markdown.as_str()),
+        "{}",
+        world.body
+    );
+}
+
+#[given(expr = "the table asset directory contains {string} and {string}")]
+async fn catalog_given_assets(world: &mut Contract, first: String, second: String) {
+    if world.catalog_assets.is_none() {
+        let dir = std::env::temp_dir().join(format!(
+            "aster-catalog-assets-{}-{}",
+            std::process::id(),
+            world.calls.load(Ordering::SeqCst)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(["init", "-q"])
+            .status()
+            .unwrap()
+            .success());
+        world.catalog_assets = Some(Arc::new(
+            aster_server::catalog_assets::CatalogAssets::open(&dir).expect("asset store"),
+        ));
+        world.catalog_repo = Some(dir);
+    }
+    let repo = world.catalog_repo.clone().expect("asset repo");
+    let dir = repo.join("catalogs/polaris-local/schemas/default/tables/assets");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(first), "<svg/>").unwrap();
+    std::fs::write(dir.join(second), "not an image").unwrap();
+}
+
+#[when(expr = "Alice requests asset {string}")]
+async fn catalog_when_asset(world: &mut Contract, name: String) {
+    catalog_ensure_token(world).await;
+    let token = world
+        .catalog_namespace_token
+        .clone()
+        .expect("namespace token");
+    let request = caller(
+        "GET",
+        &format!(
+            "/api/catalog/asset?catalog=polaris-local&namespace={token}&table=orders&name={name}"
+        ),
+        Some("alice"),
+        "editor",
+        None,
+    );
+    world.send(request).await;
+}
+
+#[then("the response is an image")]
+async fn catalog_then_image(world: &mut Contract) {
+    assert_eq!(world.status, Some(StatusCode::OK), "{}", world.body);
+    assert!(world.body.contains("<svg/>"));
+}
+
+#[then("the request is refused")]
+async fn catalog_then_refused(world: &mut Contract) {
+    assert_eq!(
+        world.status,
+        Some(StatusCode::BAD_REQUEST),
+        "{}",
+        world.body
+    );
 }
 
 /// Only the features that are bound to this harness run: the repository marks
