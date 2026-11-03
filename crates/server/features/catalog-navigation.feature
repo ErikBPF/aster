@@ -17,9 +17,9 @@ Feature: Navigable catalog workspace
     When Alice expands schema "default"
     Then the tree lists table "orders"
 
-  Scenario: Search finds nested tables
-    When Alice searches the catalog tree for "orders"
-    Then the search results include table "orders"
+  Scenario: Search index contains nested tables
+    When Alice opens the catalog search index
+    Then the search index includes table "orders"
 
   Scenario: A table detail shows metadata and effective permissions
     When Alice selects catalog "polaris-local" schema "default" table "orders"

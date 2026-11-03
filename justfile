@@ -268,6 +268,11 @@ chart-lint:
       echo "ingress requires a configured OIDC issuer" >&2
       exit 1
     fi
+    disabled=$(helm template aster {{chart}} --set catalogAssets.enabled=false)
+    if printf '%s' "$disabled" | grep -q "catalog-assets"; then
+      echo "catalogAssets.enabled=false must not render catalog asset resources" >&2
+      exit 1
+    fi
 
 chart-diff:
     helm template aster {{chart}}

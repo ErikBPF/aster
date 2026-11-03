@@ -2685,26 +2685,24 @@ async fn catalog_when_expand_schema(world: &mut Contract, _schema: String) {
     world.catalog_tree = world.json.clone();
 }
 
-#[when(expr = "Alice searches the catalog tree for {string}")]
-async fn catalog_when_search(world: &mut Contract, query: String) {
-    catalog_get(
-        world,
-        &format!("/api/catalog/search?q={}", query.replace(' ', "+")),
-    )
-    .await;
+#[when("Alice opens the catalog search index")]
+async fn catalog_when_search(world: &mut Contract) {
+    catalog_get(world, "/api/catalog/tree?all=true").await;
     world.catalog_tree = world.json.clone();
 }
 
-#[then(expr = "the search results include table {string}")]
+#[then(expr = "the search index includes table {string}")]
 async fn catalog_then_search_table(world: &mut Contract, table: String) {
-    let results = world.catalog_tree.clone().expect("search");
+    let index = world.catalog_tree.clone().expect("index");
     assert!(
-        results["results"]
+        index["catalogs"]
             .as_array()
-            .expect("results")
+            .expect("catalogs")
             .iter()
-            .any(|entry| entry["table"].as_str() == Some(table.as_str())),
-        "{results}"
+            .flat_map(|catalog| catalog["namespaces"].as_array().into_iter().flatten())
+            .flat_map(|namespace| namespace["tables"].as_array().into_iter().flatten())
+            .any(|entry| entry["name"].as_str() == Some(table.as_str())),
+        "{index}"
     );
 }
 

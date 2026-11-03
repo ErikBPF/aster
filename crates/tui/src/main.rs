@@ -133,6 +133,7 @@ struct App {
     engines: Vec<String>,
     result: Option<QueryResult>,
     status: String,
+    unsaved_engine: bool,
 }
 
 impl App {
@@ -146,6 +147,7 @@ impl App {
             engines: Vec::new(),
             result: None,
             status: String::new(),
+            unsaved_engine: false,
         };
         app.refresh(client);
         match client.engines() {
@@ -184,6 +186,7 @@ impl App {
                 self.notebook = Some(notebook);
                 self.cell = 0;
                 self.result = None;
+                self.unsaved_engine = false;
                 self.screen = Screen::Cells;
                 self.status = format!("opened {id}");
             }
@@ -192,6 +195,9 @@ impl App {
     }
 
     fn run_cell(&mut self, client: &Client) {
+        if self.unsaved_engine && !self.save(client) {
+            return;
+        }
         let Some(notebook) = &self.notebook else {
             return;
         };
@@ -221,15 +227,20 @@ impl App {
         }
     }
 
-    fn save(&mut self, client: &Client) {
+    fn save(&mut self, client: &Client) -> bool {
         let Some(notebook) = &self.notebook else {
-            return;
+            return false;
         };
         match client.save(notebook) {
             Ok(revision) => {
-                self.status = format!("saved {}", revision.chars().take(8).collect::<String>())
+                self.unsaved_engine = false;
+                self.status = format!("saved {}", revision.chars().take(8).collect::<String>());
+                true
             }
-            Err(error) => self.status = error,
+            Err(error) => {
+                self.status = error;
+                false
+            }
         }
     }
 
@@ -250,8 +261,9 @@ impl App {
             }
             Some(_) => None,
         };
+        self.unsaved_engine = true;
         self.status = format!(
-            "engine: {}",
+            "engine: {} (unsaved)",
             notebook
                 .engine
                 .as_ref()
@@ -311,7 +323,9 @@ fn event_loop(
                 Screen::Cells => app.run_cell(client),
             },
             KeyCode::Char('g') if app.screen == Screen::Cells => app.cycle_engine(),
-            KeyCode::Char('s') if app.screen == Screen::Cells => app.save(client),
+            KeyCode::Char('s') if app.screen == Screen::Cells => {
+                app.save(client);
+            }
             KeyCode::Esc if app.screen == Screen::Cells => {
                 app.screen = Screen::Notebooks;
                 app.notebook = None;

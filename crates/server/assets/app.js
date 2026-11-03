@@ -2526,21 +2526,48 @@ if (catalogPage) {
   }
 
   let searchTimer = null;
+  let searchIndex = null;
+  let searchIndexPromise = null;
+
+  async function ensureSearchIndex() {
+    if (searchIndex) return searchIndex;
+    searchIndexPromise ||= catalogJson('/api/catalog/tree?all=true').then((value) => {
+      const entries = [];
+      for (const catalog of value.catalogs || []) {
+        entries.push({catalog: catalog.id, namespace: null, table: null, kind: 'catalog', label: catalog.id});
+        for (const namespace of catalog.namespaces || []) {
+          entries.push({catalog: catalog.id, namespace: namespace.token, table: null, kind: 'schema', label: `${catalog.id} / ${namespace.name}`});
+          for (const table of namespace.tables || []) {
+            entries.push({catalog: catalog.id, namespace: namespace.token, table: table.name, kind: 'table', label: `${catalog.id} / ${namespace.name} / ${table.name}`});
+          }
+        }
+      }
+      searchIndex = entries;
+      return entries;
+    });
+    return searchIndexPromise;
+  }
+
   searchInput.addEventListener('input', () => {
     clearTimeout(searchTimer);
-    const query = searchInput.value.trim();
+    const query = searchInput.value.trim().toLowerCase();
     if (query.length < 2) {
       clearSearch();
       return;
     }
     searchTimer = setTimeout(async () => {
       try {
-        const value = await catalogJson('/api/catalog/search?q=' + encodeURIComponent(query));
-        showSearchResults(value.results || []);
+        navStatus.textContent = 'Searching…';
+        const entries = await ensureSearchIndex();
+        const matches = entries
+          .filter((entry) => entry.label.toLowerCase().includes(query))
+          .slice(0, 50);
+        showSearchResults(matches);
+        navStatus.textContent = '';
       } catch (error) {
         navStatus.textContent = error.message;
       }
-    }, 250);
+    }, 120);
   });
 
   searchInput.addEventListener('blur', () => setTimeout(clearSearch, 150));
