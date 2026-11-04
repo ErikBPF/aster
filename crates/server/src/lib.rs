@@ -1487,6 +1487,48 @@ fn catalog_entity(
     }
 }
 
+async fn require_entity_visible(
+    state: &AppState,
+    headers: &HeaderMap,
+    entity: &crate::catalog_assets::Entity,
+) -> Result<(), CoreError> {
+    let catalog = match entity {
+        crate::catalog_assets::Entity::Catalog { catalog }
+        | crate::catalog_assets::Entity::Schema { catalog, .. }
+        | crate::catalog_assets::Entity::Table { catalog, .. } => catalog,
+    };
+    if !catalog_inventory::visible(state, headers, catalog).await {
+        return Err(CoreError::Unauthorized(
+            "catalog entity is not available".into(),
+        ));
+    }
+    match entity {
+        crate::catalog_assets::Entity::Catalog { .. } => Ok(()),
+        crate::catalog_assets::Entity::Schema { namespace, .. } => {
+            let available = catalog_inventory::namespaces(state, headers, catalog).await?;
+            if available.iter().any(|entry| entry.segments == *namespace) {
+                Ok(())
+            } else {
+                Err(CoreError::Unauthorized(
+                    "catalog entity is not available".into(),
+                ))
+            }
+        }
+        crate::catalog_assets::Entity::Table {
+            namespace, table, ..
+        } => {
+            let available = catalog_inventory::tables(state, headers, catalog, namespace).await?;
+            if available.iter().any(|entry| entry.table.name == *table) {
+                Ok(())
+            } else {
+                Err(CoreError::Unauthorized(
+                    "catalog entity is not available".into(),
+                ))
+            }
+        }
+    }
+}
+
 fn catalog_level(namespace: Option<&str>, table: Option<&str>) -> &'static str {
     match (namespace, table) {
         (Some(_), Some(_)) => "table",
@@ -1640,6 +1682,7 @@ async fn catalog_detail(
         query.namespace.clone(),
         query.table.clone(),
     )?;
+    require_entity_visible(&state, &headers, &entity).await?;
     let level = catalog_level(query.namespace.as_deref(), query.table.as_deref());
 
     let catalog = state
@@ -1845,6 +1888,7 @@ async fn catalog_docs(
     authorize(&principal, aster_core::Action::ReadNotebook)?;
     require_catalog_metadata(&state, &query.catalog)?;
     let entity = catalog_entity(query.catalog, query.namespace, query.table)?;
+    require_entity_visible(&state, &headers, &entity).await?;
     let store = state
         .catalog_assets
         .clone()
@@ -1881,6 +1925,7 @@ async fn save_catalog_docs(
     authorize(&principal, aster_core::Action::WriteNotebook)?;
     require_catalog_metadata(&state, &body.catalog)?;
     let entity = catalog_entity(body.catalog, body.namespace, body.table)?;
+    require_entity_visible(&state, &headers, &entity).await?;
     let store = state
         .catalog_assets
         .clone()
@@ -1913,6 +1958,7 @@ async fn catalog_asset(
     authorize(&principal, aster_core::Action::ReadNotebook)?;
     require_catalog_metadata(&state, &query.catalog)?;
     let entity = catalog_entity(query.catalog, query.namespace, query.table)?;
+    require_entity_visible(&state, &headers, &entity).await?;
     let store = state
         .catalog_assets
         .clone()

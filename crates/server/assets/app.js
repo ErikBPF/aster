@@ -244,6 +244,8 @@ function notebookEngineId() {
   return notebookEngine ? (notebookEngine.value || null) : null;
 }
 
+notebookEngine?.addEventListener('change', () => setDirty(true));
+
 function fillEngines(select, current, engineInfo = new Map()) {
   select.replaceChildren();
   const fallback = document.createElement('option');
@@ -856,6 +858,13 @@ async function run(btn) {
     setCellKind(cell, 'markdown');
     status('markdown cells do not execute queries');
     return;
+  }
+  if (dirty) {
+    await save();
+    if (dirty) {
+      renderError(cell.querySelector('.out'), 'save the notebook before running on this engine.');
+      return;
+    }
   }
   const out = cell.querySelector('.out');
   const engine = notebookEngineId();
