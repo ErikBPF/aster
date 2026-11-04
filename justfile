@@ -476,6 +476,14 @@ conversation-browser:
     export ASTER_SERVER_BIN="${ASTER_SERVER_BIN:-${CARGO_TARGET_DIR:-target}/debug/aster-server}"
     python3 tests/conversation-browser.py
 
+# Legacy per-cell engines must survive an edit and autosave.
+legacy-engine-browser:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo build -p aster-server
+    export ASTER_SERVER_BIN="${ASTER_SERVER_BIN:-${CARGO_TARGET_DIR:-target}/debug/aster-server}"
+    python3 tests/legacy-engine-browser.py
+
 # Measured cell conversation geometry with the real browser; no provider calls.
 cell-panel-visual:
     #!/usr/bin/env bash

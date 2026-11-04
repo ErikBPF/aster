@@ -4,6 +4,12 @@ Feature: Notebook session tabs, insertion rows and Markdown cells
   Browser-only behavior recorded for human and eventual browser-runner
   validation. The server contract is `notebook-sessions.feature`.
 
+  Scenario: Legacy per-cell engines survive autosave
+    Given a notebook with no notebook engine and two cells pinned to different engines
+    When Alice edits one cell and autosave runs
+    Then the saved document keeps both per-cell engine markers
+    And it does not add a notebook engine header
+
   Scenario: Edits autosave after a short idle
     Given a notebook with one cell
     When Alice edits the cell and stops typing
