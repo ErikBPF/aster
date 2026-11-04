@@ -436,6 +436,18 @@ mod tests {
     }
 
     #[test]
+    fn legacy_mixed_cell_engines_survive_a_round_trip() {
+        let mut notebook = sample();
+        notebook.engine = None;
+        notebook.cells[0].engine = Some(EngineId::new("trino-a"));
+        notebook.cells[1].engine = Some(EngineId::new("trino-b"));
+        let parsed = Notebook::from_text(&notebook.to_text()).unwrap();
+        assert_eq!(parsed.engine, None);
+        assert_eq!(parsed.cells[0].engine.as_ref().unwrap().0, "trino-a");
+        assert_eq!(parsed.cells[1].engine.as_ref().unwrap().0, "trino-b");
+    }
+
+    #[test]
     fn cell_magic_selects_markdown_and_strips_the_marker() {
         let cell = Cell {
             id: "c1".into(),

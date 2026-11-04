@@ -219,18 +219,27 @@ window.addEventListener('beforeunload', (event) => {
 /* One engine belongs to the notebook. Cells inherit it; the server refuses a
  * run that names a different engine. */
 const notebookEngine = document.getElementById('notebook-engine');
+const legacyEngineMode = !nb?.engine && (nb?.cells || []).some((cell) => cell.engine);
+
+function markLegacyEngine() {
+  if (!legacyEngineMode || !notebookEngine) return;
+  const option = new Option('legacy per-cell engines', '__legacy');
+  notebookEngine.prepend(option);
+  notebookEngine.value = '__legacy';
+}
 
 async function loadEngines() {
   if (!notebookEngine) return;
-  const legacy = (nb?.cells || []).find((cell) => cell.engine)?.engine;
-  const current = nb?.engine || legacy || notebookEngine.dataset.current || '';
+  const current = nb?.engine || notebookEngine.dataset.current || '';
   fillEngines(notebookEngine, current);
+  markLegacyEngine();
   notebookEngine.disabled = true;
   try {
     const response = await fetch('/api/engines', {cache: 'no-store'});
     if (!response.ok) throw new Error('Engine choices unavailable');
     const choices = await response.json();
     fillEngines(notebookEngine, current, new Map(choices.map((entry) => [entry.id, entry])));
+    markLegacyEngine();
     for (const option of notebookEngine.options) {
       if (option.value && !choices.some((entry) => entry.id === option.value)) option.disabled = true;
     }
@@ -241,7 +250,8 @@ async function loadEngines() {
 }
 
 function notebookEngineId() {
-  return notebookEngine ? (notebookEngine.value || null) : null;
+  if (!notebookEngine || notebookEngine.value === '__legacy') return null;
+  return notebookEngine.value || null;
 }
 
 notebookEngine?.addEventListener('change', () => setDirty(true));
@@ -867,7 +877,8 @@ async function run(btn) {
     }
   }
   const out = cell.querySelector('.out');
-  const engine = notebookEngineId();
+  const legacyCell = nb?.cells.find((entry) => entry.id === cell.dataset.id);
+  const engine = notebookEngineId() ?? (legacyCell?.engine || null);
   const catalog = cell.querySelector('.catalog-context');
   const schema = cell.querySelector('.query-schema');
   if (!catalog || !catalog.value || catalog.disabled || schema.disabled ||
@@ -951,10 +962,14 @@ async function save(silent = false) {
     if (res.status === 409) {
       autosaveBlocked = true;
       try {
-        const fresh = await fetch(notebookPath(), {cache: 'no-store'});
-        const etag = fresh.headers.get('etag');
-        if (etag) contentRevision = etag.replace(/^"|"$/g, '');
-        status('conflict: remote changed; Save overwrites with the refreshed revision');
+        const fresh = await fetch(notebookPath(), {cache: 'no-store', headers: workspaceHeader()});
+        const etag = fresh.ok ? fresh.headers.get('etag') : null;
+        if (etag) {
+          contentRevision = etag.replace(/^"|"$/g, '');
+          status('conflict: remote changed; Save overwrites with the refreshed revision');
+        } else {
+          status('save conflict: reload before saving');
+        }
       } catch (_) {
         status('save conflict: reload before saving');
       }
