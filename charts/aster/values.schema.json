@@ -37,7 +37,7 @@
             "tag": { "type": "string", "minLength": 1 }
           }
         },
-        "catalogAssets": { "type": "object", "properties": { "enabled": { "type": "boolean" }, "size": { "type": "string" }, "storageClassName": { "type": "string" } } },
+    "catalogAssets": { "type": "object", "required": ["size"], "properties": { "enabled": { "type": "boolean" }, "size": { "type": "string" }, "storageClassName": { "type": "string" } } },
     "persistence": {
           "type": "object",
           "properties": {

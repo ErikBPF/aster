@@ -478,13 +478,15 @@ function autosizeAll() {
 }
 
 function cellsFromDom() {
+  const selectedEngine = notebookEngineId();
   return [...document.querySelectorAll('.cell')].map((cell) => {
     const catalog = cell.querySelector('.catalog-context');
     const schema = cell.querySelector('.query-schema');
+    const saved = nb?.cells.find((entry) => entry.id === cell.dataset.id);
     return {
       id: cell.dataset.id,
       sql: cell.querySelector('.editor').value,
-      engine: null,
+      engine: selectedEngine ? null : (saved?.engine || null),
       metadata: {...cell.metadata,
         catalog_context: catalog ? (catalog.value || null) : null,
         schema: schema ? (schema.value || null) : null},
