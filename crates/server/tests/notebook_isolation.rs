@@ -836,7 +836,7 @@ async fn call(
 }
 
 fn notebook(sql: &str) -> serde_json::Value {
-    json!({"id":"sales", "title":"Sales", "cells":[{"id":"c1", "sql":sql}]})
+    json!({"id":"sales", "title":"Sales", "engine":null, "cells":[{"id":"c1", "sql":sql}]})
 }
 
 async fn json_body(response: Response<Body>) -> serde_json::Value {

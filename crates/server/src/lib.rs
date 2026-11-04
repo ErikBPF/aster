@@ -1572,7 +1572,7 @@ async fn catalog_tree(
             }
             let mut schemas = Vec::new();
             if let Ok(namespaces) = catalog_inventory::namespaces(&state, &headers, &id).await {
-                for namespace in namespaces.into_iter().take(64) {
+                for namespace in namespaces {
                     let Ok(segments) = aster_core::catalog::namespace_segments(
                         &namespace.name,
                         &namespace.segments,
@@ -1586,7 +1586,7 @@ async fn catalog_tree(
                     if let Ok(entries) =
                         catalog_inventory::tables(&state, &headers, &id, &segments).await
                     {
-                        for table in entries.into_iter().take(200) {
+                        for table in entries {
                             tables.push(serde_json::json!({
                                 "name": table.table.name,
                                 "format": table.format,
@@ -2509,7 +2509,7 @@ async fn save_team_notebook(
         .ok_or_else(|| CoreError::Invalid("notebook body must be an object".into()))?;
     if fields
         .keys()
-        .any(|field| !matches!(field.as_str(), "id" | "title" | "cells"))
+        .any(|field| !matches!(field.as_str(), "id" | "title" | "cells" | "engine"))
     {
         return Err(CoreError::Invalid(
             "client workspace or repository fields are not accepted".into(),

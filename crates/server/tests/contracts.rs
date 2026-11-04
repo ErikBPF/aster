@@ -2627,6 +2627,90 @@ async fn catalog_ensure_token(world: &mut Contract) {
     world.catalog_tree = Some(tree);
 }
 
+#[given("the catalog is hidden from metadata")]
+async fn catalog_hidden(world: &mut Contract) {
+    world.binding_disabled = true;
+}
+
+async fn catalog_get_raw(world: &mut Contract, path: &str) {
+    let request = caller("GET", path, Some("alice"), "editor", None);
+    world.send(request).await;
+}
+
+#[when("Alice requests the hidden catalog detail")]
+async fn catalog_hidden_detail(world: &mut Contract) {
+    catalog_ensure_token(world).await;
+    let token = world
+        .catalog_namespace_token
+        .clone()
+        .expect("namespace token");
+    catalog_get_raw(
+        world,
+        &format!("/api/catalog/detail?catalog=polaris-local&namespace={token}&table=orders"),
+    )
+    .await;
+}
+
+#[when(expr = "Alice tries to save hidden catalog docs for table {string} with {string}")]
+async fn catalog_hidden_save(world: &mut Contract, _table: String, markdown: String) {
+    let token = world
+        .catalog_namespace_token
+        .clone()
+        .expect("namespace token");
+    let request = caller(
+        "PUT",
+        "/api/catalog/docs",
+        Some("alice"),
+        "editor",
+        Some(serde_json::json!({
+            "catalog": "polaris-local",
+            "namespace": token,
+            "table": "orders",
+            "markdown": markdown,
+            "expectedRevision": null,
+        })),
+    );
+    world.send(request).await;
+}
+
+#[when(expr = "Alice reads hidden catalog docs for table {string}")]
+async fn catalog_hidden_read(world: &mut Contract, _table: String) {
+    let token = world
+        .catalog_namespace_token
+        .clone()
+        .expect("namespace token");
+    catalog_get_raw(
+        world,
+        &format!("/api/catalog/docs?catalog=polaris-local&namespace={token}&table=orders"),
+    )
+    .await;
+}
+
+#[when(expr = "Alice requests hidden asset {string}")]
+async fn catalog_hidden_asset(world: &mut Contract, name: String) {
+    let token = world
+        .catalog_namespace_token
+        .clone()
+        .expect("namespace token");
+    catalog_get_raw(
+        world,
+        &format!(
+            "/api/catalog/asset?catalog=polaris-local&namespace={token}&table=orders&name={name}"
+        ),
+    )
+    .await;
+}
+
+#[then("the call fails as permission denied")]
+async fn catalog_forbidden(world: &mut Contract) {
+    assert_eq!(world.status, Some(StatusCode::FORBIDDEN), "{}", world.body);
+}
+
+#[then("the request is refused with permission denied")]
+async fn catalog_asset_forbidden(world: &mut Contract) {
+    assert_eq!(world.status, Some(StatusCode::FORBIDDEN), "{}", world.body);
+}
+
 #[when("Alice opens the catalog tree")]
 async fn catalog_when_tree(world: &mut Contract) {
     catalog_get(world, "/api/catalog/tree").await;
