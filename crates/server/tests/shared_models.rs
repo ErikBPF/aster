@@ -31,6 +31,7 @@ async fn app_with_personal_helpers() -> Router {
         .await
         .unwrap();
     app(Arc::new(AppState {
+        catalog_assets: None,
         config: AppConfig {
             bind: String::new(),
             engines: vec![],
@@ -79,6 +80,7 @@ impl NotebookStore for SalesNotebook {
         Ok(Notebook {
             id: id.into(),
             title: "Sales".into(),
+            engine: None,
             cells: vec![],
         })
     }

@@ -268,7 +268,7 @@ HTTPServer(("0.0.0.0", 8081), Handler).serve_forever()
                 inventory = json.loads(json.loads(body)["contextJson"])
                 assert inventory["physical"]["status"] == "present", inventory
                 assert any(entry["physicalName"] == "orders" and entry["contract"]["status"] == "admitted" for entry in inventory["entries"]), inventory
-                status, body = request("/catalog", cookie=cookie)
+                status, body = request("/catalog/inventory", cookie=cookie)
                 assert status == 200 and "Catalog inventory" in body and "orders" in body, (status, body)
                 (bundle / "member").unlink()
                 status, body = request("/aster.v1.Aster/ListCatalogInventory", inventory_request, cookie)
@@ -290,7 +290,7 @@ HTTPServer(("0.0.0.0", 8081), Handler).serve_forever()
                     page = context.new_page()
                     calls = []
                     page.on("request", lambda req: calls.append(req.url))
-                    page.goto(base + "/catalog")
+                    page.goto(base + "/contracts")
                     page.get_by_label("Declared contract", exact=True).select_option(index=1)
                     page.get_by_label("Declared object", exact=True).select_option("/schema/0")
                     expect(page.locator("#contract-preparation")).to_contain_text("NET_AFTER_REFUNDS")

@@ -141,6 +141,7 @@ async fn notebook_with_title(world: &mut App, title: String) {
     world.notebook = Some(Notebook {
         id: "nb".into(),
         title,
+        engine: None,
         cells: Vec::new(),
     });
 }

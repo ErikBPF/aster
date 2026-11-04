@@ -308,6 +308,7 @@ fn notebook(id: &str, sentinel: &str) -> Notebook {
     Notebook {
         id: id.into(),
         title: id.into(),
+        engine: None,
         cells: vec![Cell {
             id: "c1".into(),
             sql: format!("SELECT '{sentinel}'"),
@@ -390,6 +391,7 @@ pub async fn state(capture: &Capture) -> AppState {
         .await
         .unwrap();
     AppState {
+        catalog_assets: None,
         config: AppConfig {
             bind: String::new(),
             engines: vec![],

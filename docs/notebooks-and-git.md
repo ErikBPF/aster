@@ -30,13 +30,25 @@ assignment, include `expected_owner` and a nonempty `reason`. A content or
 owner mismatch returns a conflict; unassigned material stays readable but
 read-only until assignment succeeds.
 
-Use the notebook page's **Save** action or the `SaveNotebook` RPC. A saved
+Use the notebook page's **Save** action or the `SaveNotebook` RPC; browser edits
+also autosave after a short idle and leave the tab with a warning if a save is
+still pending. A saved
 notebook can be reopened through `GetNotebook`; from the checkout, `git log`
 and `git show <revision>` inspect older committed content. The v2 text format
 escapes SQL lines that resemble cell markers or begin with a backslash; the
-reader still accepts v1 files. Back up the repository before replacing its
-volume or enabling v2 writes; an older Aster version cannot read v2 files.
-See [operations](operations.md).
+reader still accepts v1 files. The optional `# engine: <id>` header makes one
+engine authoritative for the notebook; runs that name another engine are
+refused. Legacy per-cell `engine=` markers still parse when the header is
+absent. Back up the repository before replacing its volume or enabling v2
+writes; an older Aster version cannot read v2 files. See
+[operations](operations.md).
+
+A cell's first non-empty line selects its kind: `%md` renders sanitized
+Markdown (including Mermaid fenced blocks) and never executes; `%sql` is
+accepted for symmetry and is stripped; anything else is SQL. The browser shows
+edit and preview modes for Markdown, one `+ Cell` control below every cell and
+`+ Add cell` below the cell list. Typing `%md` changes the cell kind; there is no
+separate Markdown creation button.
 
 In the browser, `Ctrl/⌘+Enter` runs the focused cell, `Shift+Enter` runs it
 and advances, and `Ctrl/⌘+S` saves the notebook. The toolbar also offers

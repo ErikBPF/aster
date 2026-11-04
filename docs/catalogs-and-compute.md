@@ -62,6 +62,38 @@ retains its older policy and is not an r20 enforcement mode. Do not remove the
 bundle as a policy rollback. No live activation has occurred; independent S8 RV
 and the [execution receipt](plans/odcs-ai-catalog-rv.md) govern this candidate.
 
+
+## Catalog navigation and Git-backed docs
+
+`/catalog` is a lateral catalog tree: visible catalogs expand to schemas and
+schemas expand to tables. The selected entity opens a detail pane with
+**Details**, **Docs**, **History** and **Permissions** tabs. Existing
+`/catalog/{id}/{namespace}/{table}` links and `/catalog/physical` keep working.
+
+Docs are Markdown files in a separate local Git checkout configured by
+`ASTER_CATALOG_ASSETS_DIR`. The layout is
+`catalogs/<catalog>/README.md`,
+`catalogs/<catalog>/schemas/<segment>/…/README.md` and
+`catalogs/<catalog>/schemas/<segment>/…/tables/<table>.md`; images live beside
+the document under `assets/`. The browser renders Markdown with the same
+sanitized marked/DOMPurify/Mermaid path as notebooks. Saving requires editor
+permission and the current Git blob OID as `expectedRevision`; a mismatch is a
+409. Each save is a local, hook-free commit authored by the signed-in subject.
+The UI does not push.
+
+History shows commits for the document and the caller's recent audit events for
+the same catalog, schema and (when named in the SQL) table. The audit filter runs
+on the server before serialization; the existing admin-only `/api/audit` route is
+unchanged. Permissions show metadata visibility, bound engine IDs with the
+caller's grant state, and any compiled contract declaration. Contract admission
+is explicitly **not evaluated** in this pane; the Contracts page owns it. Raw
+binding configuration and credentials are never returned.
+
+If `ASTER_CATALOG_ASSETS_DIR` is unset or empty, navigation and metadata still
+work and the Docs tab reports that the checkout is disabled. The directory must
+already exist as a Git checkout. Use a persistent volume for real deployments;
+the chart exposes `server.catalogAssetsDir` for this.
+
 `ASTER_CATALOG_BINDINGS` takes comma-separated
 `browse_catalog_id;engine_id;native_sql_catalog;unprotected|protected` entries.
 The policy field is mandatory. `unprotected` permits only explicit disposable

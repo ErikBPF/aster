@@ -69,17 +69,20 @@ instead of implicit.
 
 ## Notebook conversation memory
 
-`ConversationStore` owns private per-user/per-notebook transcripts. Implementations:
+`ConversationStore` owns private per-user/per-notebook transcripts. Each scope
+(notebook or notebook+cell) holds one or more sessions keyed by a server-owned
+session id; listing is newest first. Implementations:
 `InMemoryConversations` and `PgConversations`, selected by
 `providers::conversations`. The default `metadata` reuses the metadata provider's
 store/pool; `postgres` uses `ASTER_CONVERSATION_DATABASE_URL` and installs only
 conversation tables; `memory` is disposable. Setting the secondary URL selects
 PostgreSQL unless `ASTER_CONVERSATION_STORE` explicitly overrides it.
-Unknown providers and missing dedicated URLs fail startup.
+Unknown providers and missing dedicated URLs fail startup. PostgreSQL installs
+`conversation_sessions` and backfills the earlier single-conversation rows as
+their first session (phrase from the first user message, original timestamp).
 
-Contract: `crates/server/features/conversations.feature`.
-Database changes do not migrate existing transcripts. Preserve the old database
-and copy data explicitly before switching an established installation.
+Contract: `crates/server/features/notebook-sessions.feature` and the browser
+draft `notebook-cells-ui.feature`.
 
 ## Notebook session exchange
 

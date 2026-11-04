@@ -275,12 +275,24 @@ struct Contract {
     extra_bound_catalog: Option<String>,
     binding_disabled: bool,
     exchanges: Arc<aster_core::InMemoryExchanges>,
+    conversations: Arc<aster_core::InMemoryConversations>,
     exchange_notebook: Option<String>,
     exchange_cell: Option<String>,
     exchange_original_revision: Option<String>,
     exchange_summary: Option<Value>,
     exchange_query: Option<Value>,
     exchange_result: Option<Value>,
+    session_previous: Option<String>,
+    session_new: Option<String>,
+    session_list: Option<Value>,
+    catalog_assets: Option<Arc<aster_server::catalog_assets::CatalogAssets>>,
+    catalog_tree: Option<Value>,
+    catalog_detail: Option<Value>,
+    catalog_namespace_token: Option<String>,
+    catalog_repo: Option<PathBuf>,
+    catalog_revision: Option<String>,
+    catalog_first_blob: Option<String>,
+    catalog_first_revision: Option<String>,
     catalog: Option<String>,
 }
 
@@ -432,7 +444,8 @@ impl Contract {
                 .expect("notebook store"),
         );
         Arc::new(AppState {
-            conversations: Arc::new(aster_core::InMemoryConversations::default()),
+            catalog_assets: self.catalog_assets.clone(),
+            conversations: self.conversations.clone(),
             exchanges: self.exchanges.clone(),
             config,
             engines,
@@ -1575,8 +1588,18 @@ async fn page_renders_cells(world: &mut Contract) {
     let editors = world.body.matches("class=\"editor\"").count();
     let runs = world.body.matches("data-action=\"run\"").count();
     assert!(editors > 0, "no cell editor rendered: {}", world.body);
-    assert_eq!(editors, runs, "every cell needs an editor and a run action");
-    assert!(world.body.contains("class=\"engine\""), "no engine choice");
+    assert_eq!(
+        editors, runs,
+        "every SQL cell needs an editor and a run action"
+    );
+    assert!(
+        world.body.contains("id=\"notebook-engine\""),
+        "no notebook engine choice"
+    );
+    assert!(
+        !world.body.contains("class=\"engine\""),
+        "per-cell engine choice should be gone"
+    );
     assert!(
         world.body.contains("id=\"nb\""),
         "notebook JSON not embedded"
@@ -1644,6 +1667,7 @@ fn owner_notebook(id: &str, sql: &str) -> Notebook {
     Notebook {
         id: id.into(),
         title: "Sales".into(),
+        engine: None,
         cells: vec![aster_core::Cell {
             id: "c1".into(),
             sql: sql.into(),
@@ -1995,6 +2019,206 @@ async fn owner_race_git_consistent(world: &mut Contract) {
 // --- notebook session exchange -------------------------------------------
 
 use aster_core::ExchangeStore as _;
+
+async fn session_call(world: &mut Contract, method: &str, body: Value) -> Value {
+    let request = connect(method, Some("alice"), "editor", body);
+    world.send(request).await;
+    assert_eq!(world.status, Some(StatusCode::OK), "{}", world.body);
+    world.json.clone().unwrap_or(Value::Null)
+}
+
+#[given(expr = "Alice has an existing notebook session for {string}")]
+async fn session_given_existing(world: &mut Contract, notebook: String) {
+    let value = session_call(
+        world,
+        "GetConversation",
+        serde_json::json!({"notebook": notebook}),
+    )
+    .await;
+    world.session_previous = Some(value["id"].as_str().expect("session id").to_string());
+}
+
+#[when(expr = "Alice starts a notebook session for {string}")]
+async fn session_when_new_notebook(world: &mut Contract, notebook: String) {
+    let value = session_call(
+        world,
+        "NewConversation",
+        serde_json::json!({"notebook": notebook}),
+    )
+    .await;
+    let id = value["id"].as_str().expect("session id").to_string();
+    if world.session_previous.is_none() {
+        world.session_previous = Some(id.clone());
+    }
+    world.session_new = Some(id);
+}
+
+#[when(expr = "Alice starts a cell session for {string} cell {string}")]
+async fn session_when_new_cell(world: &mut Contract, notebook: String, cell: String) {
+    let value = session_call(
+        world,
+        "NewConversation",
+        serde_json::json!({"notebook": notebook, "cell": cell}),
+    )
+    .await;
+    world.session_new = Some(value["id"].as_str().expect("session id").to_string());
+}
+
+async fn session_store_list(world: &mut Contract, notebook: String, cell: Option<String>) {
+    let mut body = serde_json::json!({"notebook": notebook});
+    if let Some(cell) = cell {
+        body["cell"] = serde_json::json!(cell);
+    }
+    let value = session_call(world, "ListConversations", body).await;
+    world.session_list = Some(value);
+}
+
+#[then(expr = "the notebook session list for {string} starts with the new session")]
+async fn session_then_list_starts_with_new(world: &mut Contract, notebook: String) {
+    session_store_list(world, notebook, None).await;
+    let list = world.session_list.clone().expect("session list");
+    let sessions = list["sessions"].as_array().expect("sessions");
+    assert!(!sessions.is_empty(), "{list}");
+    assert_eq!(
+        sessions[0]["id"].as_str(),
+        world.session_new.as_deref(),
+        "{list}"
+    );
+    assert!(sessions[0]["phrase"].is_string(), "{list}");
+    assert!(
+        sessions[0]["createdAtMs"].is_number() || sessions[0]["createdAtMs"].is_string(),
+        "{list}"
+    );
+}
+
+#[then("the previous notebook session remains selectable")]
+async fn session_then_previous_selectable(world: &mut Contract) {
+    let list = world.session_list.clone().expect("session list");
+    let previous = world.session_previous.as_deref().expect("previous session");
+    assert!(
+        list["sessions"]
+            .as_array()
+            .expect("sessions")
+            .iter()
+            .any(|session| session["id"].as_str() == Some(previous)),
+        "{list}"
+    );
+}
+
+#[then(expr = "the cell session list for {string} cell {string} holds only the new cell session")]
+async fn session_then_cell_list_only_new(world: &mut Contract, notebook: String, cell: String) {
+    session_store_list(world, notebook, Some(cell)).await;
+    let list = world.session_list.clone().expect("session list");
+    let sessions = list["sessions"].as_array().expect("sessions");
+    assert_eq!(sessions.len(), 1, "{list}");
+    assert_eq!(
+        sessions[0]["id"].as_str(),
+        world.session_new.as_deref(),
+        "{list}"
+    );
+}
+
+#[then(expr = "the notebook session list for {string} does not hold the cell session")]
+async fn session_then_notebook_list_excludes_cell(world: &mut Contract, notebook: String) {
+    session_store_list(world, notebook, None).await;
+    let list = world.session_list.clone().expect("session list");
+    let cell_session = world.session_new.as_deref().expect("cell session");
+    assert!(
+        list["sessions"]
+            .as_array()
+            .expect("sessions")
+            .iter()
+            .all(|session| session["id"].as_str() != Some(cell_session)),
+        "{list}"
+    );
+}
+
+#[given(
+    expr = "subject {string} has saved notebook {string} with engine {string} and cell {string} holding {string}"
+)]
+async fn session_given_engine_notebook(
+    world: &mut Contract,
+    subject: String,
+    notebook: String,
+    engine: String,
+    cell: String,
+    sql: String,
+) {
+    let mut request = caller(
+        "PUT",
+        &format!("/api/notebooks/{notebook}"),
+        Some(&subject),
+        "editor",
+        Some(serde_json::json!({
+            "id": notebook,
+            "title": notebook,
+            "engine": engine,
+            "cells": [{"id": cell, "sql": sql, "engine": null}],
+        })),
+    );
+    request
+        .headers_mut()
+        .insert(header::IF_NONE_MATCH, "*".parse().unwrap());
+    world.send(request).await;
+    assert_eq!(world.status, Some(StatusCode::OK), "{}", world.body);
+}
+
+#[given(expr = "engine {string} is also registered and granted")]
+async fn session_given_extra_engine(world: &mut Contract, engine: String) {
+    world.extra_engine = Some(engine.clone());
+    world
+        .grants
+        .get_or_insert_with(|| Arc::new(InMemoryGrants::new()))
+        .grant("alice", &engine);
+}
+
+#[when(expr = "Alice runs cell {string} of notebook {string} with engine {string}")]
+async fn session_when_runs_with_engine(
+    world: &mut Contract,
+    cell: String,
+    notebook: String,
+    engine: String,
+) {
+    let request = connect(
+        "RunQuery",
+        Some("alice"),
+        "editor",
+        serde_json::json!({
+            "sql": "SELECT 1", "engine": engine, "notebook": notebook, "cell": cell,
+        }),
+    );
+    world.send(request).await;
+    world.rpc = world.json.clone();
+}
+
+#[when(expr = "Alice runs cell {string} of notebook {string} without selecting an engine")]
+async fn session_when_runs_without_engine(world: &mut Contract, cell: String, notebook: String) {
+    let request = connect(
+        "RunQuery",
+        Some("alice"),
+        "editor",
+        serde_json::json!({
+            "sql": "SELECT 1", "notebook": notebook, "cell": cell,
+        }),
+    );
+    world.send(request).await;
+    world.rpc = world.json.clone();
+}
+
+#[then("the request is refused because the notebook selects its engine")]
+async fn session_then_refused_engine(world: &mut Contract) {
+    assert_eq!(
+        world.status,
+        Some(StatusCode::BAD_REQUEST),
+        "{}",
+        world.body
+    );
+    assert!(
+        world.body.contains("notebook selects its engine"),
+        "{}",
+        world.body
+    );
+}
 
 /// Create the notebook through the real API so the git-backed document
 /// survives the per-request AppState rebuilds of this harness.
@@ -2368,6 +2592,468 @@ async fn s2_version(_: &mut Contract) {
 #[then("qualified namespaces retain exact provider segments through API transport")]
 async fn s2_namespace(_: &mut Contract) {
     odcs_intake::namespace_segments_survive_adapter_boundaries().await;
+}
+
+#[given(
+    expr = "subject {string} has a visible catalog {string} with schema {string} and table {string}"
+)]
+async fn catalog_given_visible(
+    world: &mut Contract,
+    _subject: String,
+    catalog: String,
+    _schema: String,
+    _table: String,
+) {
+    world.catalog = Some(catalog);
+}
+
+async fn catalog_get(world: &mut Contract, path: &str) {
+    let request = caller("GET", path, Some("alice"), "editor", None);
+    world.send(request).await;
+    assert_eq!(world.status, Some(StatusCode::OK), "{}", world.body);
+}
+
+async fn catalog_ensure_token(world: &mut Contract) {
+    if world.catalog_namespace_token.is_some() {
+        return;
+    }
+    catalog_get(world, "/api/catalog/tree?catalog=polaris-local").await;
+    let tree = world.json.clone().expect("tree");
+    world.catalog_namespace_token = tree["namespaces"]
+        .as_array()
+        .and_then(|entries| entries.first())
+        .and_then(|entry| entry["token"].as_str())
+        .map(str::to_string);
+    world.catalog_tree = Some(tree);
+}
+
+async fn catalog_get_raw(world: &mut Contract, path: &str) {
+    let request = caller("GET", path, Some("alice"), "editor", None);
+    world.send(request).await;
+}
+
+#[when(expr = "Alice requests detail for missing table {string}")]
+async fn catalog_missing_detail(world: &mut Contract, table: String) {
+    catalog_ensure_token(world).await;
+    let token = world
+        .catalog_namespace_token
+        .clone()
+        .expect("namespace token");
+    catalog_get_raw(
+        world,
+        &format!("/api/catalog/detail?catalog=polaris-local&namespace={token}&table={table}"),
+    )
+    .await;
+}
+
+#[when(expr = "Alice tries to save docs for missing table {string} with {string}")]
+async fn catalog_missing_save(world: &mut Contract, table: String, markdown: String) {
+    let token = world
+        .catalog_namespace_token
+        .clone()
+        .expect("namespace token");
+    let request = caller(
+        "PUT",
+        "/api/catalog/docs",
+        Some("alice"),
+        "editor",
+        Some(serde_json::json!({
+            "catalog": "polaris-local",
+            "namespace": token,
+            "table": table,
+            "markdown": markdown,
+            "expectedRevision": null,
+        })),
+    );
+    world.send(request).await;
+}
+
+#[when(expr = "Alice reads docs for missing table {string}")]
+async fn catalog_missing_read(world: &mut Contract, table: String) {
+    catalog_ensure_token(world).await;
+    let token = world
+        .catalog_namespace_token
+        .clone()
+        .expect("namespace token");
+    catalog_get_raw(
+        world,
+        &format!("/api/catalog/docs?catalog=polaris-local&namespace={token}&table={table}"),
+    )
+    .await;
+}
+
+#[when(expr = "Alice requests asset for missing table {string} named {string}")]
+async fn catalog_missing_asset(world: &mut Contract, table: String, name: String) {
+    let token = world
+        .catalog_namespace_token
+        .clone()
+        .expect("namespace token");
+    catalog_get_raw(
+        world,
+        &format!(
+            "/api/catalog/asset?catalog=polaris-local&namespace={token}&table={table}&name={name}"
+        ),
+    )
+    .await;
+}
+
+#[then("the call fails as permission denied")]
+async fn catalog_forbidden(world: &mut Contract) {
+    assert_eq!(world.status, Some(StatusCode::FORBIDDEN), "{}", world.body);
+}
+
+#[then("the request is refused with permission denied")]
+async fn catalog_asset_forbidden(world: &mut Contract) {
+    assert_eq!(world.status, Some(StatusCode::FORBIDDEN), "{}", world.body);
+}
+
+#[when("Alice opens the catalog tree")]
+async fn catalog_when_tree(world: &mut Contract) {
+    catalog_get(world, "/api/catalog/tree").await;
+    world.catalog_tree = world.json.clone();
+}
+
+#[then(expr = "the tree lists catalog {string}")]
+async fn catalog_then_catalog(world: &mut Contract, catalog: String) {
+    let tree = world.catalog_tree.clone().expect("tree");
+    assert!(
+        tree["catalogs"]
+            .as_array()
+            .expect("catalogs")
+            .iter()
+            .any(|entry| entry["id"].as_str() == Some(catalog.as_str())),
+        "{tree}"
+    );
+}
+
+#[when(expr = "Alice expands catalog {string}")]
+async fn catalog_when_expand_catalog(world: &mut Contract, catalog: String) {
+    catalog_get(world, &format!("/api/catalog/tree?catalog={catalog}")).await;
+    let tree = world.json.clone().expect("tree");
+    world.catalog_namespace_token = tree["namespaces"]
+        .as_array()
+        .and_then(|entries| entries.first())
+        .and_then(|entry| entry["token"].as_str())
+        .map(str::to_string);
+    world.catalog_tree = Some(tree);
+}
+
+#[then(expr = "the tree lists schema {string}")]
+async fn catalog_then_schema(world: &mut Contract, schema: String) {
+    let tree = world.catalog_tree.clone().expect("tree");
+    assert!(
+        tree["namespaces"]
+            .as_array()
+            .expect("namespaces")
+            .iter()
+            .any(|entry| entry["name"].as_str() == Some(schema.as_str())),
+        "{tree}"
+    );
+}
+
+#[when(expr = "Alice expands schema {string}")]
+async fn catalog_when_expand_schema(world: &mut Contract, _schema: String) {
+    let token = world
+        .catalog_namespace_token
+        .clone()
+        .expect("namespace token");
+    catalog_get(
+        world,
+        &format!("/api/catalog/tree?catalog=polaris-local&namespace={token}"),
+    )
+    .await;
+    world.catalog_tree = world.json.clone();
+}
+
+#[when("Alice opens the catalog search index")]
+async fn catalog_when_search(world: &mut Contract) {
+    catalog_get(world, "/api/catalog/tree?all=true").await;
+    world.catalog_tree = world.json.clone();
+}
+
+#[then(expr = "the search index includes table {string}")]
+async fn catalog_then_search_table(world: &mut Contract, table: String) {
+    let index = world.catalog_tree.clone().expect("index");
+    assert!(
+        index["catalogs"]
+            .as_array()
+            .expect("catalogs")
+            .iter()
+            .flat_map(|catalog| catalog["namespaces"].as_array().into_iter().flatten())
+            .flat_map(|namespace| namespace["tables"].as_array().into_iter().flatten())
+            .any(|entry| entry["name"].as_str() == Some(table.as_str())),
+        "{index}"
+    );
+}
+
+#[then(expr = "the tree lists table {string}")]
+async fn catalog_then_table(world: &mut Contract, table: String) {
+    let tree = world.catalog_tree.clone().expect("tree");
+    assert!(
+        tree["tables"]
+            .as_array()
+            .expect("tables")
+            .iter()
+            .any(|entry| entry["name"].as_str() == Some(table.as_str())),
+        "{tree}"
+    );
+}
+
+#[when(expr = "Alice selects catalog {string} schema {string} table {string}")]
+async fn catalog_when_select(
+    world: &mut Contract,
+    catalog: String,
+    _schema: String,
+    table: String,
+) {
+    catalog_ensure_token(world).await;
+    let token = world
+        .catalog_namespace_token
+        .clone()
+        .expect("namespace token");
+    catalog_get(
+        world,
+        &format!("/api/catalog/detail?catalog={catalog}&namespace={token}&table={table}"),
+    )
+    .await;
+    world.catalog_detail = world.json.clone();
+}
+
+#[then(expr = "the detail names table {string}")]
+async fn catalog_then_table_detail(world: &mut Contract, table: String) {
+    let detail = world.catalog_detail.clone().expect("detail");
+    assert_eq!(
+        detail["details"]["table"].as_str(),
+        Some(table.as_str()),
+        "{detail}"
+    );
+}
+
+#[then("the detail lists the observed columns")]
+async fn catalog_then_columns(world: &mut Contract) {
+    let detail = world.catalog_detail.clone().expect("detail");
+    let columns = detail["details"]["columns"].as_array().expect("columns");
+    assert!(
+        columns.iter().any(|column| column["name"] == "order_id"),
+        "{detail}"
+    );
+}
+
+#[then(expr = "the permissions name bound engine {string} as granted")]
+async fn catalog_then_engine(world: &mut Contract, engine: String) {
+    let detail = world.catalog_detail.clone().expect("detail");
+    assert!(
+        detail["permissions"]["engines"]
+            .as_array()
+            .expect("engines")
+            .iter()
+            .any(|entry| entry["id"].as_str() == Some(engine.as_str()) && entry["granted"] == true),
+        "{detail}"
+    );
+}
+
+#[then("the permissions do not expose a raw binding secret")]
+async fn catalog_then_no_secret(world: &mut Contract) {
+    let detail = world.catalog_detail.clone().expect("detail");
+    let text = detail.to_string().to_lowercase();
+    assert!(!text.contains("password"), "{detail}");
+    assert!(!text.contains("client-secret"), "{detail}");
+}
+
+#[given("the catalog asset repository is empty")]
+async fn catalog_given_repo(world: &mut Contract) {
+    let dir = std::env::temp_dir().join(format!(
+        "aster-catalog-nav-{}-{}",
+        std::process::id(),
+        world.calls.load(Ordering::SeqCst)
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    assert!(std::process::Command::new("git")
+        .current_dir(&dir)
+        .args(["init", "-q"])
+        .status()
+        .unwrap()
+        .success());
+    world.catalog_assets = Some(Arc::new(
+        aster_server::catalog_assets::CatalogAssets::open(&dir).expect("asset store"),
+    ));
+    world.catalog_repo = Some(dir);
+}
+
+async fn catalog_save(world: &mut Contract, markdown: String, expected: Option<String>) {
+    catalog_ensure_token(world).await;
+    let token = world
+        .catalog_namespace_token
+        .clone()
+        .expect("namespace token");
+    let request = caller(
+        "PUT",
+        "/api/catalog/docs",
+        Some("alice"),
+        "editor",
+        Some(serde_json::json!({
+            "catalog": "polaris-local",
+            "namespace": token,
+            "table": "orders",
+            "markdown": markdown,
+            "expectedRevision": expected,
+        })),
+    );
+    world.send(request).await;
+}
+
+#[when(expr = "Alice saves catalog docs for table {string} with {string}")]
+async fn catalog_when_save(world: &mut Contract, _table: String, markdown: String) {
+    catalog_save(world, markdown, world.catalog_revision.clone()).await;
+    assert_eq!(world.status, Some(StatusCode::OK), "{}", world.body);
+    let document = &world.json.as_ref().expect("json")["document"];
+    let revision = document["revision"].as_str().expect("revision").to_string();
+    if world.catalog_first_blob.is_none() {
+        world.catalog_first_blob = Some(revision.clone());
+        world.catalog_first_revision = document["commit"].as_str().map(str::to_string);
+    }
+    world.catalog_revision = Some(revision);
+}
+
+#[then("the document has a revision")]
+async fn catalog_then_revision(world: &mut Contract) {
+    assert!(world.catalog_revision.is_some());
+}
+
+#[then("the document has a new revision")]
+async fn catalog_then_new_revision(world: &mut Contract) {
+    assert_ne!(
+        world.catalog_revision.as_deref(),
+        world.catalog_first_revision.as_deref()
+    );
+}
+
+#[then(expr = "the history contains a commit by {string}")]
+async fn catalog_then_history(world: &mut Contract, author: String) {
+    catalog_ensure_token(world).await;
+    let token = world
+        .catalog_namespace_token
+        .clone()
+        .expect("namespace token");
+    catalog_get(
+        world,
+        &format!("/api/catalog/detail?catalog=polaris-local&namespace={token}&table=orders"),
+    )
+    .await;
+    let detail = world.json.clone().expect("detail");
+    assert!(
+        detail["history"]["docs"]
+            .as_array()
+            .expect("history")
+            .iter()
+            .any(|commit| commit["author"].as_str() == Some(author.as_str())),
+        "{detail}"
+    );
+}
+
+#[when(expr = "Alice saves catalog docs for table {string} with the first revision")]
+async fn catalog_when_save_stale(world: &mut Contract, _table: String) {
+    let first = world.catalog_first_blob.clone().expect("first revision");
+    catalog_save(world, "# stale".into(), Some(first)).await;
+}
+
+#[then("the save is refused as a conflict")]
+async fn catalog_then_conflict(world: &mut Contract) {
+    assert_eq!(world.status, Some(StatusCode::CONFLICT), "{}", world.body);
+}
+
+#[when("Alice reads the first revision")]
+async fn catalog_when_read_first(world: &mut Contract) {
+    catalog_ensure_token(world).await;
+    let token = world
+        .catalog_namespace_token
+        .clone()
+        .expect("namespace token");
+    let oid = world
+        .catalog_first_revision
+        .clone()
+        .expect("first revision");
+    catalog_get(
+        world,
+        &format!(
+            "/api/catalog/docs?catalog=polaris-local&namespace={token}&table=orders&revision={oid}"
+        ),
+    )
+    .await;
+}
+
+#[then(expr = "the returned Markdown is {string}")]
+async fn catalog_then_markdown(world: &mut Contract, markdown: String) {
+    assert_eq!(
+        world.json.as_ref().expect("json")["document"]["markdown"].as_str(),
+        Some(markdown.as_str()),
+        "{}",
+        world.body
+    );
+}
+
+#[given(expr = "the table asset directory contains {string} and {string}")]
+async fn catalog_given_assets(world: &mut Contract, first: String, second: String) {
+    if world.catalog_assets.is_none() {
+        let dir = std::env::temp_dir().join(format!(
+            "aster-catalog-assets-{}-{}",
+            std::process::id(),
+            world.calls.load(Ordering::SeqCst)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(["init", "-q"])
+            .status()
+            .unwrap()
+            .success());
+        world.catalog_assets = Some(Arc::new(
+            aster_server::catalog_assets::CatalogAssets::open(&dir).expect("asset store"),
+        ));
+        world.catalog_repo = Some(dir);
+    }
+    let repo = world.catalog_repo.clone().expect("asset repo");
+    let dir = repo.join("catalogs/polaris-local/schemas/default/tables/assets");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(first), "<svg/>").unwrap();
+    std::fs::write(dir.join(second), "not an image").unwrap();
+}
+
+#[when(expr = "Alice requests asset {string}")]
+async fn catalog_when_asset(world: &mut Contract, name: String) {
+    catalog_ensure_token(world).await;
+    let token = world
+        .catalog_namespace_token
+        .clone()
+        .expect("namespace token");
+    let request = caller(
+        "GET",
+        &format!(
+            "/api/catalog/asset?catalog=polaris-local&namespace={token}&table=orders&name={name}"
+        ),
+        Some("alice"),
+        "editor",
+        None,
+    );
+    world.send(request).await;
+}
+
+#[then("the response is an image")]
+async fn catalog_then_image(world: &mut Contract) {
+    assert_eq!(world.status, Some(StatusCode::OK), "{}", world.body);
+    assert!(world.body.contains("<svg/>"));
+}
+
+#[then("the request is refused")]
+async fn catalog_then_refused(world: &mut Contract) {
+    assert_eq!(
+        world.status,
+        Some(StatusCode::BAD_REQUEST),
+        "{}",
+        world.body
+    );
 }
 
 /// Only the features that are bound to this harness run: the repository marks

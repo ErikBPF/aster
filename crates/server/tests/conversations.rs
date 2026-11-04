@@ -20,6 +20,7 @@ impl NotebookStore for Notebooks {
         Ok(Notebook {
             id: id.into(),
             title: id.into(),
+            engine: None,
             cells: vec![],
         })
     }
@@ -118,6 +119,7 @@ async fn setup_with(
             .unwrap();
     }
     let state = Arc::new(AppState {
+        catalog_assets: None,
         conversations: store,
         exchanges: Arc::new(InMemoryExchanges::default()),
         config: AppConfig {

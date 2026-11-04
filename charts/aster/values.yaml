@@ -64,6 +64,9 @@ server:
   notebookDir: /data/notebooks
   notebookBranch: session
   contractsDir: /etc/aster/contracts
+  # Optional Git checkout for catalog Markdown and image assets. Empty disables
+  # the Docs tab; navigation and metadata still work.
+  catalogAssetsDir: /data/catalog-assets
   # State lifetimes in the shared store: an idle session, an in-flight OIDC
   # handshake, and where a subject left off.
   sessionTtlSeconds: 28800
@@ -130,6 +133,11 @@ ingress:
   enabled: false
   className: ""
   host: aster.local
+
+catalogAssets:
+  enabled: true
+  size: 1Gi
+  storageClassName: ""
 
 persistence:
   enabled: true

@@ -88,6 +88,7 @@ async fn fixture_with_services(
         .unwrap();
     let sessions = Arc::new(InMemorySessions::new(3600));
     let state = AppState {
+        catalog_assets: None,
         config: AppConfig {
             bind: String::new(),
             engines: vec![],
@@ -835,7 +836,7 @@ async fn call(
 }
 
 fn notebook(sql: &str) -> serde_json::Value {
-    json!({"id":"sales", "title":"Sales", "cells":[{"id":"c1", "sql":sql}]})
+    json!({"id":"sales", "title":"Sales", "engine":null, "cells":[{"id":"c1", "sql":sql}]})
 }
 
 async fn json_body(response: Response<Body>) -> serde_json::Value {
@@ -1035,6 +1036,7 @@ async fn team_mode_unqualified_notebook_reads_refuse_legacy_checkout() {
             &Notebook {
                 id: "legacy-secret".into(),
                 title: "Legacy".into(),
+                engine: None,
                 cells: vec![],
             },
             "alice",

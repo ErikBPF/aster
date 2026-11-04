@@ -542,6 +542,7 @@ async fn run_case_inner(
         })));
     }
     let router = app(Arc::new(AppState {
+        catalog_assets: None,
         config: AppConfig {
             bind: String::new(),
             engines: vec![],
@@ -780,7 +781,7 @@ async fn run_case_inner(
             .to_string(),
         )
         .unwrap();
-        for url in ["/catalog", "/api/catalogs/warehouse/namespaces"] {
+        for url in ["/catalog/inventory", "/api/catalogs/warehouse/namespaces"] {
             *authority.0.lock().unwrap() = true;
             authority.2.lock().unwrap().clear();
             for member in [true, false] {
@@ -972,7 +973,7 @@ async fn run_case_inner(
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/catalog")
+                    .uri("/catalog/inventory")
                     .header("cookie", &cookie)
                     .body(Body::empty())
                     .unwrap(),
@@ -990,7 +991,8 @@ async fn run_case_inner(
         assert!(
             html.contains("Catalog inventory")
                 && html.contains("uncovered")
-                && html.contains("Semantics")
+                && html.contains("Semantics"),
+            "{html}"
         );
         *authority.0.lock().unwrap() = false;
         let (status, body) = request(
@@ -1008,7 +1010,7 @@ async fn run_case_inner(
             base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(br#"["sales.eu"]"#)
         );
         for url in [
-            "/catalog".to_string(),
+            "/catalog/inventory".to_string(),
             format!("/catalog/warehouse/{token}/uncovered"),
             "/api/catalogs/warehouse/namespaces".into(),
         ] {
@@ -1122,7 +1124,7 @@ async fn run_case_inner(
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/catalog")
+                    .uri("/contracts")
                     .header("cookie", &cookie)
                     .body(Body::empty())
                     .unwrap(),

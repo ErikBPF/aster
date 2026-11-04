@@ -148,6 +148,18 @@ spec:
     - port: 6379
       targetPort: 6379
 ---
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: catalog-assets
+  namespace: aster
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -169,6 +181,23 @@ spec:
         fsGroup: 65532
         seccompProfile:
           type: RuntimeDefault
+      initContainers:
+        - name: catalog-assets-init
+          image: aster-server:local
+          command:
+            - sh
+            - -c
+            - |
+              if [ ! -d /data/catalog-assets/.git ]; then
+                git init -q /data/catalog-assets
+              fi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: catalog-assets
+              mountPath: /data/catalog-assets
       containers:
         - name: server
           image: aster-server:local
@@ -237,6 +266,8 @@ spec:
               value: /data/notebooks
             - name: ASTER_CONTRACTS_DIR
               value: /etc/aster/contracts
+            - name: ASTER_CATALOG_ASSETS_DIR
+              value: /data/catalog-assets
             - name: ASTER_METRICS_BIND
               value: 0.0.0.0:9090
           ports:
@@ -260,6 +291,8 @@ spec:
           volumeMounts:
             - name: notebooks
               mountPath: /data/notebooks
+            - name: catalog-assets
+              mountPath: /data/catalog-assets
           resources:
             requests:
               cpu: 50m
@@ -270,6 +303,9 @@ spec:
       volumes:
         - name: notebooks
           emptyDir: {}
+        - name: catalog-assets
+          persistentVolumeClaim:
+            claimName: catalog-assets
 ---
 apiVersion: v1
 kind: Service
