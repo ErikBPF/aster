@@ -950,13 +950,21 @@ async function save(silent = false) {
   if (!res.ok) {
     if (res.status === 409) {
       autosaveBlocked = true;
-      status('save conflict: reload or Save manually');
+      try {
+        const fresh = await fetch(notebookPath(), {cache: 'no-store'});
+        const etag = fresh.headers.get('etag');
+        if (etag) contentRevision = etag.replace(/^"|"$/g, '');
+        status('conflict: remote changed; Save overwrites with the refreshed revision');
+      } catch (_) {
+        status('save conflict: reload before saving');
+      }
     } else {
       status((silent ? 'autosave' : 'save') + ' failed: ' + (data.error || res.status));
     }
     return;
   }
   contentRevision = data.content_revision;
+  autosaveBlocked = false;
   if (generation === editGeneration) {
     setDirty(false);
     status(silent

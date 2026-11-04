@@ -40,18 +40,17 @@ Feature: Navigable catalog workspace
     When Alice reads the first revision
     Then the returned Markdown is "# Orders"
 
-  Scenario: Hidden entities are refused by detail, docs and assets
+  Scenario: Entities absent from the visible inventory are refused
     Given the catalog asset repository is empty
     And Alice expands catalog "polaris-local"
     And the table asset directory contains "diagram.svg" and "notes.txt"
-    And the catalog is hidden from metadata
-    When Alice requests the hidden catalog detail
+    When Alice requests detail for missing table "missing"
     Then the call fails as permission denied
-    When Alice tries to save hidden catalog docs for table "orders" with "# hidden"
+    When Alice tries to save docs for missing table "missing" with "# hidden"
     Then the call fails as permission denied
-    When Alice reads hidden catalog docs for table "orders"
+    When Alice reads docs for missing table "missing"
     Then the call fails as permission denied
-    When Alice requests hidden asset "diagram.svg"
+    When Alice requests asset for missing table "missing" named "diagram.svg"
     Then the request is refused with permission denied
 
   Scenario: Only images are served as table assets

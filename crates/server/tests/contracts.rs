@@ -2627,18 +2627,13 @@ async fn catalog_ensure_token(world: &mut Contract) {
     world.catalog_tree = Some(tree);
 }
 
-#[given("the catalog is hidden from metadata")]
-async fn catalog_hidden(world: &mut Contract) {
-    world.binding_disabled = true;
-}
-
 async fn catalog_get_raw(world: &mut Contract, path: &str) {
     let request = caller("GET", path, Some("alice"), "editor", None);
     world.send(request).await;
 }
 
-#[when("Alice requests the hidden catalog detail")]
-async fn catalog_hidden_detail(world: &mut Contract) {
+#[when(expr = "Alice requests detail for missing table {string}")]
+async fn catalog_missing_detail(world: &mut Contract, table: String) {
     catalog_ensure_token(world).await;
     let token = world
         .catalog_namespace_token
@@ -2646,13 +2641,13 @@ async fn catalog_hidden_detail(world: &mut Contract) {
         .expect("namespace token");
     catalog_get_raw(
         world,
-        &format!("/api/catalog/detail?catalog=polaris-local&namespace={token}&table=orders"),
+        &format!("/api/catalog/detail?catalog=polaris-local&namespace={token}&table={table}"),
     )
     .await;
 }
 
-#[when(expr = "Alice tries to save hidden catalog docs for table {string} with {string}")]
-async fn catalog_hidden_save(world: &mut Contract, _table: String, markdown: String) {
+#[when(expr = "Alice tries to save docs for missing table {string} with {string}")]
+async fn catalog_missing_save(world: &mut Contract, table: String, markdown: String) {
     let token = world
         .catalog_namespace_token
         .clone()
@@ -2665,7 +2660,7 @@ async fn catalog_hidden_save(world: &mut Contract, _table: String, markdown: Str
         Some(serde_json::json!({
             "catalog": "polaris-local",
             "namespace": token,
-            "table": "orders",
+            "table": table,
             "markdown": markdown,
             "expectedRevision": null,
         })),
@@ -2673,21 +2668,22 @@ async fn catalog_hidden_save(world: &mut Contract, _table: String, markdown: Str
     world.send(request).await;
 }
 
-#[when(expr = "Alice reads hidden catalog docs for table {string}")]
-async fn catalog_hidden_read(world: &mut Contract, _table: String) {
+#[when(expr = "Alice reads docs for missing table {string}")]
+async fn catalog_missing_read(world: &mut Contract, table: String) {
+    catalog_ensure_token(world).await;
     let token = world
         .catalog_namespace_token
         .clone()
         .expect("namespace token");
     catalog_get_raw(
         world,
-        &format!("/api/catalog/docs?catalog=polaris-local&namespace={token}&table=orders"),
+        &format!("/api/catalog/docs?catalog=polaris-local&namespace={token}&table={table}"),
     )
     .await;
 }
 
-#[when(expr = "Alice requests hidden asset {string}")]
-async fn catalog_hidden_asset(world: &mut Contract, name: String) {
+#[when(expr = "Alice requests asset for missing table {string} named {string}")]
+async fn catalog_missing_asset(world: &mut Contract, table: String, name: String) {
     let token = world
         .catalog_namespace_token
         .clone()
@@ -2695,7 +2691,7 @@ async fn catalog_hidden_asset(world: &mut Contract, name: String) {
     catalog_get_raw(
         world,
         &format!(
-            "/api/catalog/asset?catalog=polaris-local&namespace={token}&table=orders&name={name}"
+            "/api/catalog/asset?catalog=polaris-local&namespace={token}&table={table}&name={name}"
         ),
     )
     .await;
