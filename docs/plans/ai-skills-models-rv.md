@@ -21,10 +21,10 @@ legacy-token migration is transactional and has no plaintext fallback.
 
 The user answered the endpoint question with “use our litellm”
 (`call_d11ab7276962475db37fe68bed18d8a3`). Owning workload configuration identifies
-`https://litellm.homelab.pastelariadev.com/v1`; its liveliness endpoint returned 200.
+`<approved-litellm-origin>/v1`; its liveliness endpoint returned 200.
 That origin is the sole approved personal/company model destination. Separate
 application encryption keys and the Compose override are retained privately under
-`~/.config/aster/localhost-8081/`, with mode-0600 files. No model token or grant
+`<private-runtime-directory>/`, with mode-0600 files. No model token or grant
 was invented or prefilled.
 
 ## Verified review fixes

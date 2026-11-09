@@ -79,7 +79,7 @@ the first attempt started before server readiness; the second checked the editor
 status instead of the import status. Neither required a product change.
 
 Rollback is retained as `localhost/aster-server:pre-package-validation` and
-`~/.config/aster/localhost-8081/compose.before-package-validation.yaml`. Restore
+`<private-runtime-directory>/compose.before-package-validation.yaml`. Restore
 the prior override and recreate server/controller/Donsetch together; Donsetch
 must first stop because it shares the server network namespace. Database services
 and existing user skills were not recreated or altered.
