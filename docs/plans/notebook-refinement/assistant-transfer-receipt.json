@@ -1,0 +1,12 @@
+{
+  "result": "MOCK_ASSISTANT_E2E_OK",
+  "notebook": "http://localhost:8081/notebooks/mock-assistant-demo-1794234886",
+  "skill": "dc9496e5cefaf21a4c692b9b7a5598d0",
+  "skill_revision": "1",
+  "model": "personal/mock-assistant",
+  "query": "SELECT order_id, customer, region, total, placed_at\nFROM \"mock-local\".aster_demo.orders\nLIMIT 10;",
+  "query_requests": 1,
+  "rows": 6,
+  "javascript_errors": [],
+  "limits": "Deterministic model and synthetic mock-engine rows; no SQL semantics or real inference proved."
+}
