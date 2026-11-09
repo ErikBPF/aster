@@ -80,6 +80,20 @@ def check(page):
       catalog.replaceChildren(new Option('mock','mock'));schema.replaceChildren(new Option('schema','schema'));
       catalog.value='mock';schema.value='schema';catalog.disabled=false;schema.disabled=false;legacyContextMixed=false;dirty=false;
     }""")
+    # Editor accelerators are owned by separate handlers, before navigation dispatch.
+    for shortcut in ['Control+Enter', 'Meta+Enter']:
+        first.locator('.editor').focus()
+        with page.expect_response('**/api/query'):
+            page.keyboard.press(shortcut)
+        expect(first.locator('.editor')).to_be_focused()
+        assert requests == [ids[0]], (shortcut, requests)
+        requests.clear()
+    first.locator('.editor').focus()
+    with page.expect_response('**/api/query'):
+        page.keyboard.press('Shift+Enter')
+    expect(cells.nth(1).locator('.editor')).to_be_focused()
+    assert requests == [ids[0]], requests
+    requests.clear()
     first.focus();expect(first).to_be_focused();page.keyboard.press('ArrowDown');page.keyboard.press('ArrowUp')
     page.keyboard.press('Shift+ArrowDown');page.keyboard.press('Control+Enter')
     page.wait_for_function('!notebookQueue')
@@ -122,4 +136,28 @@ def check(page):
     page.wait_for_timeout(100)
     assert not page.evaluate('completeOpen()'),'stale completion reopened after navigation'
     page.unroute('**/api/sql/complete?*')
+    # Markdown editor accelerators render/advance without dispatching SQL.
+    requests.clear()
+    page.route('**/api/query', result)
+    before = cells.count()
+    page.locator('.add-cell-bottom').click()
+    markdown = cells.last
+    markdown.locator('.editor').fill('%md\n# Shortcut notes')
+    first.locator('.editor').focus()
+    expect(markdown).to_have_attribute('data-kind', 'markdown')
+    for shortcut in ['Control+Enter', 'Meta+Enter']:
+        markdown.locator('[data-action=md-toggle]').click()
+        expect(markdown.locator('.editor')).to_be_focused()
+        page.keyboard.press(shortcut)
+        expect(markdown.locator('.md-preview')).to_be_visible()
+        expect(markdown.locator('.editor')).to_be_hidden()
+    markdown.locator('[data-action=md-toggle]').click()
+    page.keyboard.press('Shift+Enter')
+    expect(cells).to_have_count(before + 2)
+    expect(cells.last).to_have_attribute('data-kind', 'sql')
+    expect(cells.last.locator('.editor')).to_be_focused()
+    assert not requests, requests
+    page.evaluate('undoCellOperation(); undoCellOperation()')
+    expect(cells).to_have_count(before)
+    page.unroute('**/api/query', result)
     print('NOTEBOOK_KEYBOARD_BROWSER_OK')
