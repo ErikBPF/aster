@@ -445,6 +445,15 @@ impl Contract {
         );
         Arc::new(AppState {
             catalog_assets: self.catalog_assets.clone(),
+            skills: Arc::new(aster_core::skills::InMemorySkills::default()),
+            mcp: None,
+            personal_model_policy: Arc::new(
+                aster_core::InMemoryPersonalModelPolicy::with_subjects(&[
+                    "alice", "bob", "admin", "viewer", "editor", "carol",
+                ]),
+            ),
+            personal_model_destinations: None,
+            personal_models_enabled: true,
             conversations: self.conversations.clone(),
             exchanges: self.exchanges.clone(),
             config,
@@ -1665,6 +1674,7 @@ fn notebook_blob(world: &mut Contract, id: &str) -> Option<String> {
 
 fn owner_notebook(id: &str, sql: &str) -> Notebook {
     Notebook {
+        context: None,
         id: id.into(),
         title: "Sales".into(),
         engine: None,
@@ -3015,7 +3025,7 @@ async fn catalog_given_assets(world: &mut Contract, first: String, second: Strin
         world.catalog_repo = Some(dir);
     }
     let repo = world.catalog_repo.clone().expect("asset repo");
-    let dir = repo.join("catalogs/polaris-local/schemas/default/tables/assets");
+    let dir = repo.join("table-assets/polaris-local/default/orders/assets");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join(first), "<svg/>").unwrap();
     std::fs::write(dir.join(second), "not an image").unwrap();

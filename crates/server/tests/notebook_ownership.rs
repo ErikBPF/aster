@@ -19,6 +19,7 @@ struct Fixture {
 
 fn notebook(id: &str, sql: &str) -> Notebook {
     Notebook {
+        context: None,
         id: id.into(),
         title: "Sales".into(),
         engine: None,
@@ -49,6 +50,13 @@ async fn fixture_configured(teams: bool, configure: impl FnOnce(&mut AppState)) 
     let store = GitNotebookStore::open(&dir, "session/alice").unwrap();
     let mut state = AppState {
         catalog_assets: None,
+        skills: Arc::new(aster_core::skills::InMemorySkills::default()),
+        mcp: None,
+        personal_model_policy: Arc::new(aster_core::InMemoryPersonalModelPolicy::with_subjects(&[
+            "alice", "bob", "admin", "viewer", "editor", "carol",
+        ])),
+        personal_model_destinations: None,
+        personal_models_enabled: true,
         config: AppConfig {
             bind: String::new(),
             engines: vec![],
@@ -271,37 +279,44 @@ fn git(dir: &Path, args: &[&str]) -> String {
 
 #[tokio::test]
 async fn benchmark_local_notebooks_are_owner_isolated_across_surfaces() {
+    // A unique notebook identifier distinguishes disclosure from generic UI privacy labels.
     let fixture = fixture().await;
     let created = call(
         &fixture.app,
         "PUT",
-        "/api/notebooks/private",
+        "/api/notebooks/owner-secret-7f2d",
         "alice",
         "editor",
         Some(("if-none-match", "*".into())),
-        json!(notebook("private", "SELECT 17")),
+        json!(notebook("owner-secret-7f2d", "SELECT 17")),
     )
     .await;
     assert_eq!(created.status(), StatusCode::OK);
     for path in [
-        "/api/notebooks/private",
-        "/notebooks/private",
-        "/api/notebooks/private/helper",
+        "/api/notebooks/owner-secret-7f2d",
+        "/notebooks/owner-secret-7f2d",
+        "/api/notebooks/owner-secret-7f2d/helper",
     ] {
         let response = call(&fixture.app, "GET", path, "bob", "editor", None, json!({})).await;
         assert_eq!(response.status(), StatusCode::FORBIDDEN, "{path}");
     }
     for (method, body) in [
-        ("GetNotebook", json!({"id":"private"})),
-        ("GetNotebookHelper", json!({"notebook":"private"})),
-        ("GetConversation", json!({"notebook":"private"})),
+        ("GetNotebook", json!({"id":"owner-secret-7f2d"})),
+        ("GetNotebookHelper", json!({"notebook":"owner-secret-7f2d"})),
+        ("GetConversation", json!({"notebook":"owner-secret-7f2d"})),
         (
             "RunQuery",
-            json!({"notebook":"private","cell":"c1","sql":"SELECT 1"}),
+            json!({"notebook":"owner-secret-7f2d","cell":"c1","sql":"SELECT 1"}),
         ),
-        ("FetchQuery", json!({"notebook":"private","cell":"c1"})),
-        ("FetchResult", json!({"notebook":"private","cell":"c1"})),
-        ("FetchSummary", json!({"notebook":"private"})),
+        (
+            "FetchQuery",
+            json!({"notebook":"owner-secret-7f2d","cell":"c1"}),
+        ),
+        (
+            "FetchResult",
+            json!({"notebook":"owner-secret-7f2d","cell":"c1"}),
+        ),
+        ("FetchSummary", json!({"notebook":"owner-secret-7f2d"})),
     ] {
         let response = call(
             &fixture.app,
@@ -326,7 +341,7 @@ async fn benchmark_local_notebooks_are_owner_isolated_across_surfaces() {
             .await
             .unwrap();
         assert!(
-            !String::from_utf8_lossy(&bytes).contains("private"),
+            !String::from_utf8_lossy(&bytes).contains("owner-secret-7f2d"),
             "{path}"
         );
     }
@@ -914,4 +929,354 @@ async fn corrupt_head_and_missing_blob_are_storage_errors() {
             .await,
         Err(CoreError::Storage(_))
     ));
+}
+
+struct ContextCaptureEngine {
+    info: EngineInfo,
+    calls: Arc<std::sync::Mutex<Vec<QueryRequest>>>,
+}
+#[async_trait::async_trait]
+impl QueryEngine for ContextCaptureEngine {
+    fn info(&self) -> &EngineInfo {
+        &self.info
+    }
+    async fn health(&self) -> Health {
+        Health::Healthy
+    }
+    async fn execute(&self, request: QueryRequest) -> aster_core::Result<QueryResult> {
+        self.calls.lock().unwrap().push(request);
+        Ok(QueryResult {
+            columns: vec![],
+            rows: vec![],
+            truncated: false,
+        })
+    }
+}
+
+async fn response_json(response: Response<Body>) -> serde_json::Value {
+    serde_json::from_slice(
+        &axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .unwrap(),
+    )
+    .unwrap()
+}
+
+#[tokio::test]
+async fn notebook_context_controls_execution_audit_and_legacy_client_saves() {
+    let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let audit = Arc::new(InMemoryAudit::new());
+    let fixture = fixture_configured(false, |state| {
+        state.config.default_engine = Some("compute".into());
+        state.config.catalog_bindings = vec![CatalogBindingConfig {
+            catalog: "warehouse".into(),
+            engine: "compute".into(),
+            native_catalog: "native".into(),
+            policy: BindingPolicy::Unprotected,
+        }];
+        state
+            .catalogs
+            .register(Arc::new(aster_catalogs::MockCatalog::new("warehouse")));
+        state.engines.register(Arc::new(ContextCaptureEngine {
+            info: EngineInfo {
+                id: EngineId::new("compute"),
+                kind: "mock".into(),
+                endpoint: String::new(),
+                routing_group: None,
+            },
+            calls: calls.clone(),
+        }));
+        let grants = InMemoryGrants::new();
+        grants.grant("alice", "compute");
+        state.grants = Arc::new(grants);
+        state.audit = audit.clone();
+    })
+    .await;
+    let mut document = json!(notebook("scope", "SELECT 1"));
+    document["context"] = json!({"catalog_context":"warehouse","schema":"sales.eu"});
+    let created = call(
+        &fixture.app,
+        "PUT",
+        "/api/notebooks/scope",
+        "alice",
+        "editor",
+        Some(("if-none-match", "*".into())),
+        document.clone(),
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::OK);
+    let mut revision = response_json(created).await["content_revision"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    for patch in [
+        json!({"schema":"other"}),
+        json!({"catalog_context":"other"}),
+        json!({"catalog":"other"}),
+    ] {
+        let mut request = json!({"notebook":"scope","cell":"c1","sql":"SELECT 1"});
+        request
+            .as_object_mut()
+            .unwrap()
+            .extend(patch.as_object().unwrap().clone());
+        let response = call(
+            &fixture.app,
+            "POST",
+            "/api/query",
+            "alice",
+            "editor",
+            None,
+            request,
+        )
+        .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "conflicting notebook context must refuse"
+        );
+    }
+    assert!(calls.lock().unwrap().is_empty());
+    for path in ["/api/query", "/aster.v1.Aster/RunQuery"] {
+        let response = call(
+            &fixture.app,
+            "POST",
+            path,
+            "alice",
+            "editor",
+            None,
+            json!({"notebook":"scope","cell":"c1","sql":"SELECT 1"}),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+    assert!(
+        calls
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|r| r.catalog.as_deref() == Some("native")
+                && r.schema.as_deref() == Some("sales.eu"))
+    );
+    let events = audit.events().await.unwrap();
+    assert!(events
+        .iter()
+        .filter(|e| e.ok)
+        .all(|e| e.catalog.as_deref() == Some("warehouse")
+            && e.schema.as_deref() == Some("sales.eu")));
+    for rpc in [false, true] {
+        let mut old = document.clone();
+        old.as_object_mut().unwrap().remove("context");
+        old["title"] = json!(if rpc { "RPC edit" } else { "REST edit" });
+        let response = if rpc {
+            call(
+                &fixture.app,
+                "POST",
+                "/aster.v1.Aster/SaveNotebook",
+                "alice",
+                "editor",
+                None,
+                json!({"id":"scope","notebook":old,"expectedContentRevision":revision}),
+            )
+            .await
+        } else {
+            call(
+                &fixture.app,
+                "PUT",
+                "/api/notebooks/scope",
+                "alice",
+                "editor",
+                Some(("if-match", format!("\"{revision}\""))),
+                old,
+            )
+            .await
+        };
+        assert_eq!(response.status(), StatusCode::OK);
+        let reloaded = call(
+            &fixture.app,
+            "GET",
+            "/api/notebooks/scope",
+            "alice",
+            "editor",
+            None,
+            json!({}),
+        )
+        .await;
+        revision = reloaded.headers()["etag"]
+            .to_str()
+            .unwrap()
+            .trim_matches('"')
+            .to_owned();
+        assert_eq!(
+            response_json(reloaded).await["context"],
+            document["context"]
+        );
+    }
+    let rpc = call(
+        &fixture.app,
+        "POST",
+        "/aster.v1.Aster/GetNotebook",
+        "alice",
+        "editor",
+        None,
+        json!({"id":"scope"}),
+    )
+    .await;
+    assert_eq!(
+        response_json(rpc).await["context"],
+        json!({"catalogContext":"warehouse","schema":"sales.eu"})
+    );
+    document["context"] = json!({});
+    let cleared = call(
+        &fixture.app,
+        "PUT",
+        "/api/notebooks/scope",
+        "alice",
+        "editor",
+        Some(("if-match", format!("\"{revision}\""))),
+        document,
+    )
+    .await;
+    assert_eq!(cleared.status(), StatusCode::OK);
+    let response = call(
+        &fixture.app,
+        "POST",
+        "/api/query",
+        "alice",
+        "editor",
+        None,
+        json!({"notebook":"scope","cell":"c1","sql":"SELECT 1"}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(calls.lock().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn notebook_history_is_owned_and_preserves_historical_metadata() {
+    let fixture = fixture().await;
+    let mut original = notebook("history", "SELECT 1");
+    original.cells[0]
+        .metadata
+        .insert("note".into(), json!("original"));
+    let created = call(
+        &fixture.app,
+        "PUT",
+        "/api/notebooks/history",
+        "alice",
+        "editor",
+        Some(("if-none-match", "*".into())),
+        json!(original),
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::OK);
+    let first = git(&fixture.dir, &["rev-parse", "HEAD"]);
+    let oid = git(&fixture.dir, &["rev-parse", "HEAD:history.aster"]);
+    let mut changed = notebook("history", "SELECT 2");
+    changed.context = Some(NotebookContext {
+        catalog_context: Some("new-context".into()),
+        schema: None,
+    });
+    let updated = call(
+        &fixture.app,
+        "PUT",
+        "/api/notebooks/history",
+        "alice",
+        "editor",
+        Some(("if-match", format!("\"{oid}\""))),
+        json!(changed),
+    )
+    .await;
+    assert_eq!(updated.status(), StatusCode::OK);
+    for actor in ["alice", "bob"] {
+        let response = call(
+            &fixture.app,
+            "POST",
+            "/aster.v1.Aster/ListNotebookRevisions",
+            actor,
+            "editor",
+            None,
+            json!({"id":"history"}),
+        )
+        .await;
+        assert_eq!(
+            response.status(),
+            if actor == "alice" {
+                StatusCode::OK
+            } else {
+                StatusCode::FORBIDDEN
+            }
+        );
+    }
+    let response = call(
+        &fixture.app,
+        "POST",
+        "/aster.v1.Aster/GetNotebookRevision",
+        "alice",
+        "editor",
+        None,
+        json!({"id":"history", "revision":first}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let document: Notebook = serde_json::from_str(value["notebookJson"].as_str().unwrap()).unwrap();
+    assert_eq!(document.cells[0].sql, "SELECT 1");
+    assert_eq!(document.cells[0].metadata["note"], "original");
+    let current = git(&fixture.dir, &["rev-parse", "HEAD:history.aster"]);
+    let denied = call(
+        &fixture.app,
+        "POST",
+        "/aster.v1.Aster/RestoreNotebookRevision",
+        "alice",
+        "viewer",
+        None,
+        json!({"id":"history", "revision":first, "expectedContentRevision":current}),
+    )
+    .await;
+    assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+    let restore = call(
+        &fixture.app,
+        "POST",
+        "/aster.v1.Aster/RestoreNotebookRevision",
+        "alice",
+        "editor",
+        None,
+        json!({"id":"history", "revision":first, "expectedContentRevision":current}),
+    )
+    .await;
+    assert_eq!(restore.status(), StatusCode::OK);
+    let restored = fixture._store.get("history").await.unwrap();
+    assert_eq!(restored.cells[0].metadata["note"], "original");
+    assert!(restored.context.is_none());
+    let stale = call(
+        &fixture.app,
+        "POST",
+        "/aster.v1.Aster/RestoreNotebookRevision",
+        "alice",
+        "editor",
+        None,
+        json!({"id":"history", "revision":first, "expectedContentRevision":current}),
+    )
+    .await;
+    assert_eq!(stale.status(), StatusCode::CONFLICT);
+    for (actor, revision, status) in [
+        ("bob", first.as_str(), StatusCode::FORBIDDEN),
+        ("alice", "HEAD", StatusCode::BAD_REQUEST),
+        ("alice", "--all", StatusCode::BAD_REQUEST),
+    ] {
+        let response = call(
+            &fixture.app,
+            "POST",
+            "/aster.v1.Aster/GetNotebookRevision",
+            actor,
+            "editor",
+            None,
+            json!({"id":"history", "revision":revision}),
+        )
+        .await;
+        assert_eq!(response.status(), status);
+    }
 }

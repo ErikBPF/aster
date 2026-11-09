@@ -7,7 +7,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 
-use crate::{ai, cookie, now, principal, ApiError, AppState};
+use crate::{cookie, now, principal, ApiError, AppState};
 
 // Assets live beside the crate so the markup, the styles and the script stay
 // readable; `include_str!` keeps them in the binary with no extra service.
@@ -315,18 +315,15 @@ fn notebook_body(
     for cell in &notebook.cells {
         let markdown = cell.kind() == aster_core::CellKind::Markdown;
         let class = if markdown { "cell md-cell" } else { "cell" };
-        let run = if markdown {
-            String::new()
-        } else {
-            "<button type=\"button\" class=\"btn btn-run\" data-action=\"run\">▶ Run</button>"
-                .to_string()
-        };
+        let run = format!(
+            "<button type=\"button\" class=\"btn btn-run\" data-action=\"run\"{}>▶ Run</button>",
+            if markdown { " hidden" } else { "" }
+        );
         cells.push_str(&format!(
             "<section class=\"{class}\" data-id=\"{id}\" data-kind=\"{kind}\">\
              <div class=\"cell-gutter\"><span class=\"prompt in\">In&nbsp;[&nbsp;]</span></div>\
              <div class=\"cell-body\">\
              <div class=\"cell-head\"><code class=\"cell-id\">{id}</code>\
-             <div class=\"cell-context\"></div>\
              <div class=\"cell-actions\">{run}\
              <button type=\"button\" class=\"btn\" data-action=\"ai\">AI</button>\
              <button type=\"button\" class=\"btn ghost md-toggle\" data-action=\"md-toggle\"{md_hidden}>Edit</button>\
@@ -405,18 +402,19 @@ fn notebook_body(
          <p class=\"crumb\">{crumb} {id}</p>\
          <h1>{title}</h1></div></div>\
          <div class=\"nb-bar\">\
-         <button type=\"button\" class=\"btn\" data-action=\"add-cell\">+ Cell</button>\
          <button type=\"button\" class=\"btn\" data-action=\"run-all\">▶ Run all</button>\
          <button type=\"button\" class=\"btn primary\" data-action=\"save\">Save</button>\
          {sync_button}\
-         <button type=\"button\" class=\"btn\" id=\"chat-toggle\" aria-controls=\"chat-panel\" aria-expanded=\"false\">Chat</button>\
+         <button type=\"button\" class=\"btn\" id=\"chat-toggle\" aria-controls=\"chat-panel\" aria-expanded=\"false\">AI assistant</button>\
+         <a class=\"btn ghost\" href=\"/settings/llm#ai-models\">Manage models</a>\
          <div class=\"spacer\"></div>\
          <div class=\"nb-settings\">\
-         <label class=\"helper\">engine\
-         <span class=\"select-wrap\"><select id=\"notebook-engine\" data-current=\"{notebook_engine}\" aria-label=\"Notebook engine\"></select></span>\
+         <div id=\"notebook-data\"></div>\
+         <label class=\"helper\">Compute\
+         <span class=\"select-wrap\"><select id=\"notebook-engine\" data-current=\"{notebook_engine}\" aria-label=\"Notebook compute\"></select></span>\
          </label>\
-         <label class=\"helper\">helper\
-         <span class=\"select-wrap\"><select class=\"helper-select\" id=\"helper\"></select></span>\
+         <label class=\"helper model-selector\" hidden>AI model\
+         <span class=\"select-wrap\"><select class=\"helper-select\" id=\"helper\" aria-label=\"AI model\"></select></span>\
          </label>\
          </div>\
          </div>\
@@ -433,7 +431,7 @@ fn notebook_body(
          <button type=\"button\" class=\"btn\" id=\"chat-expand\" aria-pressed=\"false\">Expand</button>\
          <button type=\"button\" class=\"btn\" id=\"chat-close\">Close</button></div>\
          <div class=\"chat-sessions\" id=\"chat-sessions\" role=\"tablist\" aria-label=\"Notebook sessions\"></div>\
-         <p class=\"status\">Private to you and this notebook. Changing helper sends this history to that helper.</p>\
+         <p class=\"status\">Private to you and this notebook. Changing AI model sends this history to that model.</p>\
          <div id=\"chat-history\" class=\"chat-history\" tabindex=\"0\" role=\"log\" aria-label=\"Conversation messages\" aria-live=\"polite\"></div>\
          <p id=\"chat-status\" role=\"status\" class=\"status\"></p>\
          <div class=\"chat-attach\"><span class=\"chat-attach-label\">Attach a cell</span>\
@@ -1018,45 +1016,12 @@ pub async fn llm_settings(
     let Some(principal) = browser_principal(&state, &headers).await else {
         return Ok(sign_in_redirect());
     };
-    let helpers = state.llm.list(&principal.subject).await?;
-
-    let mut list = String::new();
-    for helper in &helpers {
-        list.push_str(&format!(
-            "<li><div><code>{id}</code> <span class=\"muted\">{base_url}</span> \
-             <span class=\"badge\">{model}</span></div>\
-             <form method=\"post\" action=\"/settings/llm/{id}/delete\">\
-             <button class=\"btn ghost danger\">remove</button></form></li>",
-            id = escape(&helper.id),
-            base_url = escape(ai::safe_base_url(&helper.base_url)),
-            model = escape(&helper.model),
-        ));
-    }
-    let registered = if helpers.is_empty() {
-        "<p class=\"status\">no endpoint registered</p>".to_string()
-    } else {
-        format!("<ul class=\"list\">{list}</ul>")
-    };
-
     let body = format!(
-        "<div class=\"page-head\"><div><h1>AI helpers</h1>\
-         <p class=\"status\">each helper is one OpenAI-compatible endpoint; a notebook picks one</p>\
-         </div></div>\
-         {registered}\
-         <form class=\"panel\" method=\"post\" action=\"/settings/llm\">\
-         <div class=\"panel-head\">add or replace a helper</div>\
-         <div class=\"panel-body\">\
-         <p><label>name<br><input name=\"id\" size=\"24\" value=\"\" \
-         placeholder=\"lab-qwen\"></label></p>\
-         <p><label>base url<br><input name=\"base_url\" size=\"48\" value=\"\" \
-         placeholder=\"http://llm.local:4000/v1\"></label></p>\
-         <p><label>model<br><input name=\"model\" size=\"36\" value=\"\"></label></p>\
-         <p><label>token<br><input name=\"api_key\" type=\"password\" size=\"48\"></label></p>\
-         <p><button class=\"btn primary\">Save</button></p>\
-         <p class=\"status\">The token stays on the server; notebooks call it through \
-         <code>/api/ai</code>. Submitting an existing name replaces that helper.</p></div></form>",
+        "<section id=\"ai-registry\" data-subject=\"{}\" aria-label=\"AI workspace\">\
+         <p role=\"status\">Loading skills and models…</p></section>",
+        escape(&principal.subject),
     );
-    Ok(Html(layout("ai", "ai helpers", &principal, &body)).into_response())
+    Ok(Html(layout("ai", "AI workspace", &principal, &body)).into_response())
 }
 
 #[derive(serde::Deserialize)]
@@ -1118,6 +1083,20 @@ mod tests {
         assert_eq!(
             escape("<script>alert(\"x\") & 'y'</script>"),
             "&lt;script&gt;alert(&quot;x&quot;) &amp; 'y'&lt;/script&gt;"
+        );
+    }
+
+    #[test]
+    fn markdown_keeps_run_control_for_sql_conversion() {
+        let notebook: aster_core::Notebook = serde_json::from_value(serde_json::json!({
+            "id":"markdown", "title":"Markdown", "cells":[
+                {"id":"c1","sql":"%md\n# Notes","engine":null}]
+        }))
+        .unwrap();
+        let body = super::notebook_body(&notebook, "revision", None);
+        assert!(
+            body.contains("data-action=\"run\" hidden"),
+            "saved Markdown must retain a hidden Run control that conversion can reveal"
         );
     }
 

@@ -18,6 +18,7 @@ impl NotebookStore for Notebooks {
             return Err(CoreError::NotFound("notebook".into()));
         }
         Ok(Notebook {
+            context: None,
             id: id.into(),
             title: id.into(),
             engine: None,
@@ -120,6 +121,13 @@ async fn setup_with(
     }
     let state = Arc::new(AppState {
         catalog_assets: None,
+        skills: Arc::new(aster_core::skills::InMemorySkills::default()),
+        mcp: None,
+        personal_model_policy: Arc::new(aster_core::InMemoryPersonalModelPolicy::with_subjects(&[
+            "alice", "bob", "admin", "viewer", "editor", "carol",
+        ])),
+        personal_model_destinations: None,
+        personal_models_enabled: true,
         conversations: store,
         exchanges: Arc::new(InMemoryExchanges::default()),
         config: AppConfig {
@@ -548,5 +556,485 @@ async fn cell_conversations_are_scoped_to_their_cell() {
         assert!(request.contains("which orders?"), "{request}");
         assert!(!request.contains("notebook secret"), "{request}");
     }
+    task.abort();
+}
+
+#[tokio::test]
+async fn skill_versions_remain_pinned_until_explicit_upgrade() {
+    let (app, seen, task) = setup().await;
+    let (status, skill) = rpc(
+        &app,
+        "PutSkill",
+        "alice",
+        "editor",
+        json!({
+            "title":"SQL review", "instructions":"SKILL_VERSION_ONE", "expectedRevision":"0",
+            "references":[{"name":"guide.txt","content":"REFERENCE_ONE"}]
+        }),
+    )
+    .await;
+    assert_eq!(status, 200, "{skill}");
+    let pin = json!({"id":skill["id"],"revision":"1"});
+    let (status, first) = rpc(
+        &app,
+        "SendMessage",
+        "alice",
+        "editor",
+        json!({
+            "notebook":"sales","helper":"go","prompt":"review","expectedRevision":"0","skill":pin
+        }),
+    )
+    .await;
+    assert_eq!(status, 200, "{first}");
+    assert_eq!(first["messages"][0]["skills"][0]["revision"], "1");
+    assert!(seen.lock().unwrap()[0]["messages"][0]["content"]
+        .as_str()
+        .unwrap()
+        .contains("SKILL_VERSION_ONE"));
+    let (status, updated) = rpc(&app, "PutSkill", "alice", "editor", json!({
+        "id":skill["id"],"title":"SQL review","instructions":"SKILL_VERSION_TWO","expectedRevision":"1"
+    })).await;
+    assert_eq!(status, 200, "{updated}");
+    let (status, inherited) = rpc(
+        &app,
+        "SendMessage",
+        "alice",
+        "editor",
+        json!({
+            "notebook":"sales","helper":"go","prompt":"again","expectedRevision":"1"
+        }),
+    )
+    .await;
+    assert_eq!(status, 200, "{inherited}");
+    let system = seen.lock().unwrap()[1]["messages"][0]["content"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(system.contains("SKILL_VERSION_ONE"));
+    assert!(system.contains("REFERENCE_ONE"));
+    assert!(!system.contains("SKILL_VERSION_TWO"));
+    let (status, upgraded) = rpc(
+        &app,
+        "SendMessage",
+        "alice",
+        "editor",
+        json!({
+            "notebook":"sales","helper":"go","prompt":"upgrade","expectedRevision":"2",
+            "skill":{"id":skill["id"],"revision":"2"}
+        }),
+    )
+    .await;
+    assert_eq!(status, 200, "{upgraded}");
+    assert!(seen.lock().unwrap()[2]["messages"][0]["content"]
+        .as_str()
+        .unwrap()
+        .contains("SKILL_VERSION_TWO"));
+    let (status, cleared) = rpc(
+        &app,
+        "SendMessage",
+        "alice",
+        "editor",
+        json!({
+            "notebook":"sales","helper":"go","prompt":"clear","expectedRevision":"3",
+            "skill":{"id":"","revision":"0"}
+        }),
+    )
+    .await;
+    assert_eq!(status, 200, "{cleared}");
+    let system = seen.lock().unwrap()[3]["messages"][0]["content"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(!system.contains("SKILL_VERSION_"));
+    let (status, unpinned) = rpc(
+        &app,
+        "SendMessage",
+        "alice",
+        "editor",
+        json!({
+            "notebook":"sales","helper":"go","prompt":"still clear","expectedRevision":"4"
+        }),
+    )
+    .await;
+    assert_eq!(status, 200, "{unpinned}");
+    assert!(!seen.lock().unwrap()[4]["messages"][0]["content"]
+        .as_str()
+        .unwrap()
+        .contains("SKILL_VERSION_"));
+    task.abort();
+}
+
+#[tokio::test]
+async fn revoked_skill_history_blocks_next_upstream_request() {
+    let (app, seen, task) = setup().await;
+    let (status, skill) = rpc(
+        &app,
+        "PutSkill",
+        "admin",
+        "admin",
+        json!({
+            "title":"Shared guidance","instructions":"ORG_SKILL","expectedRevision":"0"
+        }),
+    )
+    .await;
+    assert_eq!(status, 200, "{skill}");
+    let (status, shared) = rpc(&app, "ShareSkill", "admin", "admin", json!({
+        "id":skill["id"],"expectedSharingRevision":skill["sharingRevision"],"audience":"organization"
+    })).await;
+    assert_eq!(status, 200, "{shared}");
+    let (status, first) = rpc(
+        &app,
+        "SendMessage",
+        "alice",
+        "editor",
+        json!({
+            "notebook":"sales","helper":"go","prompt":"review","expectedRevision":"0",
+            "skill":{"id":skill["id"],"revision":"1"}
+        }),
+    )
+    .await;
+    assert_eq!(status, 200, "{first}");
+    assert_eq!(seen.lock().unwrap().len(), 1);
+    let (status, revoked) = rpc(&app, "ShareSkill", "admin", "admin", json!({
+        "id":skill["id"],"expectedSharingRevision":shared["sharingRevision"],"audience":"private"
+    })).await;
+    assert_eq!(status, 200, "{revoked}");
+    let (status, refused) = rpc(
+        &app,
+        "SendMessage",
+        "alice",
+        "editor",
+        json!({
+            "notebook":"sales","helper":"go","prompt":"again","expectedRevision":"1",
+            "skill":{"id":"","revision":"0"}
+        }),
+    )
+    .await;
+    assert_eq!(status, 403, "{refused}");
+    assert_eq!(seen.lock().unwrap().len(), 1);
+    assert!(refused.to_string().contains("new session"));
+    task.abort();
+}
+
+#[tokio::test]
+async fn deleted_skill_history_blocks_replay_but_preserves_messages() {
+    let (app, seen, task) = setup().await;
+    let (status, skill) = rpc(
+        &app,
+        "PutSkill",
+        "admin",
+        "admin",
+        json!({
+            "title":"Shared guidance","instructions":"ORG_SKILL","expectedRevision":"0"
+        }),
+    )
+    .await;
+    assert_eq!(status, 200, "{skill}");
+    let (status, shared) = rpc(&app, "ShareSkill", "admin", "admin", json!({
+        "id":skill["id"],"expectedSharingRevision":skill["sharingRevision"],"audience":"organization"
+    })).await;
+    assert_eq!(status, 200, "{shared}");
+    let (status, first) = rpc(
+        &app,
+        "SendMessage",
+        "alice",
+        "editor",
+        json!({
+            "notebook":"sales","helper":"go","prompt":"review","expectedRevision":"0",
+            "skill":{"id":skill["id"],"revision":"1"}
+        }),
+    )
+    .await;
+    assert_eq!(status, 200, "{first}");
+    assert_eq!(seen.lock().unwrap().len(), 1);
+    let (status, revoked) = rpc(&app, "DeleteSkill", "admin", "admin", json!({
+        "id":skill["id"],"expectedRevision":"1","expectedSharingRevision":shared["sharingRevision"]
+    })).await;
+    assert_eq!(status, 200, "{revoked}");
+    let (status, refused) = rpc(
+        &app,
+        "SendMessage",
+        "alice",
+        "editor",
+        json!({
+            "notebook":"sales","helper":"go","prompt":"again","expectedRevision":"1",
+            "skill":{"id":"","revision":"0"}
+        }),
+    )
+    .await;
+    assert_eq!(status, 403, "{refused}");
+    assert_eq!(seen.lock().unwrap().len(), 1);
+    assert!(refused.to_string().contains("new session"));
+    let (status, retained) = rpc(
+        &app,
+        "GetConversation",
+        "alice",
+        "editor",
+        json!({"notebook":"sales"}),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(retained["messages"], first["messages"]);
+    task.abort();
+}
+
+#[tokio::test]
+async fn personal_defaults_and_multiple_skills_are_explicit_and_isolated() {
+    let (app, seen, task) = setup().await;
+    let mut pins = Vec::new();
+    for text in ["DEFAULT_ALPHA", "DEFAULT_BETA"] {
+        let (status, skill) = rpc(
+            &app,
+            "PutSkill",
+            "alice",
+            "editor",
+            json!({"title":text,"instructions":text,"expectedRevision":"0"}),
+        )
+        .await;
+        assert_eq!(status, 200);
+        pins.push(json!({"id":skill["id"],"revision":"1"}));
+    }
+    let (status, defaults) = rpc(
+        &app,
+        "PutSkillDefaults",
+        "alice",
+        "editor",
+        json!({"expectedRevision":"0","skills":pins}),
+    )
+    .await;
+    assert_eq!(status, 200, "{defaults}");
+    let (_, bob) = rpc(&app, "GetSkillDefaults", "bob", "editor", json!({})).await;
+    assert!(bob["skills"].as_array().is_none_or(Vec::is_empty));
+    let (status, _) = rpc(
+        &app,
+        "PutSkillDefaults",
+        "alice",
+        "editor",
+        json!({"expectedRevision":"0","skills":[]}),
+    )
+    .await;
+    assert_ne!(status, 200, "stale preferences must conflict");
+    let (status, first) = rpc(
+        &app,
+        "SendMessage",
+        "alice",
+        "editor",
+        json!({"notebook":"sales","helper":"go","prompt":"review","expectedRevision":"0"}),
+    )
+    .await;
+    assert_eq!(status, 200, "{first}");
+    assert_eq!(first["messages"][0]["skills"].as_array().unwrap().len(), 2);
+    let system = seen.lock().unwrap()[0]["messages"][0]["content"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(system.contains("DEFAULT_ALPHA") && system.contains("DEFAULT_BETA"));
+    let (status, _) = rpc(
+        &app,
+        "PutSkillDefaults",
+        "alice",
+        "editor",
+        json!({"expectedRevision":defaults["revision"],"skills":[]}),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let (status, inherited) = rpc(
+        &app,
+        "SendMessage",
+        "alice",
+        "editor",
+        json!({"notebook":"sales","helper":"go","prompt":"keep pins","expectedRevision":"1"}),
+    )
+    .await;
+    assert_eq!(status, 200, "{inherited}");
+    assert_eq!(
+        inherited["messages"][2]["skills"].as_array().unwrap().len(),
+        2
+    );
+    let (status, cleared) = rpc(&app,"SendMessage","alice","editor",json!({"notebook":"sales","helper":"go","prompt":"off","expectedRevision":"2","selectedSkills":{"skills":[]}})).await;
+    assert_eq!(status, 200, "{cleared}");
+    assert!(!seen.lock().unwrap()[2]["messages"][0]["content"]
+        .as_str()
+        .unwrap()
+        .contains("DEFAULT_"));
+    let calls = seen.lock().unwrap().len();
+    let (status, _) = rpc(&app,"SendMessage","alice","editor",json!({"notebook":"sales","helper":"go","prompt":"duplicate","expectedRevision":"3","selectedSkills":{"skills":[pins[0],pins[0]]}})).await;
+    assert_eq!(status, 400);
+    assert_eq!(seen.lock().unwrap().len(), calls);
+    task.abort();
+}
+
+#[tokio::test]
+async fn session_deletion_is_owned_revision_checked_and_does_not_resurrect() {
+    let store = Arc::new(InMemoryConversations::default());
+    let (app, seen, task) = setup_store(store.clone()).await;
+    let (status, first) = rpc(
+        &app,
+        "NewConversation",
+        "alice",
+        "editor",
+        json!({"notebook":"sales"}),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let (_, kept) = rpc(
+        &app,
+        "NewConversation",
+        "alice",
+        "editor",
+        json!({"notebook":"sales"}),
+    )
+    .await;
+    let id = first["id"].as_str().unwrap();
+    let (status, _) = rpc(&app, "SendMessage", "alice", "editor", json!({"notebook":"sales","session":id,"helper":"go","prompt":"private question","expectedRevision":"0"})).await;
+    assert_eq!(status, 200);
+    let deletion = json!({"notebook":"sales","session":id,"expectedRevision":"1"});
+    assert_eq!(
+        rpc(&app, "DeleteConversation", "", "", deletion.clone())
+            .await
+            .0,
+        401
+    );
+    assert_eq!(
+        rpc(&app, "DeleteConversation", "bob", "admin", deletion.clone())
+            .await
+            .0,
+        403
+    );
+    for override_fields in [json!({"notebook":"other"}), json!({"cell":"c1"})] {
+        let mut request = deletion.clone();
+        request
+            .as_object_mut()
+            .unwrap()
+            .extend(override_fields.as_object().unwrap().clone());
+        assert_eq!(
+            rpc(&app, "DeleteConversation", "alice", "editor", request)
+                .await
+                .0,
+            404
+        );
+    }
+    assert_eq!(
+        rpc(
+            &app,
+            "DeleteConversation",
+            "alice",
+            "editor",
+            json!({"notebook":"sales","session":id})
+        )
+        .await
+        .0,
+        400
+    );
+    assert_eq!(
+        rpc(
+            &app,
+            "DeleteConversation",
+            "alice",
+            "editor",
+            json!({"notebook":"sales","session":id,"expectedRevision":"0"})
+        )
+        .await
+        .0,
+        409
+    );
+    let mut current = store.get_session("alice", "sales", id).await.unwrap();
+    current.pending=Some(serde_json::from_value(json!({"id":"turn","user":current.messages[0],"messages":[],"tools":[],"call":null,"phase":"executing","calls":0,"expires_at":0})).unwrap());
+    let pending = store.save_turn("alice", "sales", 1, current).await.unwrap();
+    assert_eq!(
+        rpc(
+            &app,
+            "DeleteConversation",
+            "alice",
+            "editor",
+            json!({"notebook":"sales","session":id,"expectedRevision":pending.revision.to_string()})
+        )
+        .await
+        .0,
+        409
+    );
+    let mut cleared = pending.clone();
+    cleared.pending = None;
+    let cleared = store
+        .save_turn("alice", "sales", pending.revision, cleared)
+        .await
+        .unwrap();
+    let request =
+        json!({"notebook":"sales","session":id,"expectedRevision":cleared.revision.to_string()});
+    let (a, b) = tokio::join!(
+        rpc(
+            &app,
+            "DeleteConversation",
+            "alice",
+            "editor",
+            request.clone()
+        ),
+        rpc(&app, "DeleteConversation", "alice", "editor", request)
+    );
+    assert_eq!(
+        [a.0, b.0]
+            .into_iter()
+            .filter(|status| *status == 200)
+            .count(),
+        1
+    );
+    assert!([a.0, b.0].contains(&404));
+    let (_, listed) = rpc(
+        &app,
+        "ListConversations",
+        "alice",
+        "editor",
+        json!({"notebook":"sales"}),
+    )
+    .await;
+    assert_eq!(listed["sessions"].as_array().unwrap().len(), 1);
+    assert_eq!(listed["sessions"][0]["id"], kept["id"]);
+    assert_eq!(
+        rpc(
+            &app,
+            "GetConversation",
+            "alice",
+            "editor",
+            json!({"notebook":"sales","session":id})
+        )
+        .await
+        .0,
+        404
+    );
+    assert_eq!(rpc(&app,"SendMessage","alice","editor",json!({"notebook":"sales","session":id,"helper":"go","prompt":"stale tab","expectedRevision":cleared.revision.to_string()})).await.0,404);
+    assert_eq!(seen.lock().unwrap().len(), 1);
+    assert_eq!(
+        rpc(
+            &app,
+            "DeleteConversation",
+            "alice",
+            "editor",
+            json!({"notebook":"sales","session":kept["id"],"expectedRevision":"0"})
+        )
+        .await
+        .0,
+        200
+    );
+    assert!(store.list("alice", "sales").await.unwrap().is_empty());
+    let (_, cell) = rpc(
+        &app,
+        "NewConversation",
+        "alice",
+        "editor",
+        json!({"notebook":"sales","cell":"c1"}),
+    )
+    .await;
+    assert_eq!(
+        rpc(
+            &app,
+            "DeleteConversation",
+            "alice",
+            "editor",
+            json!({"notebook":"sales","cell":"c1","session":cell["id"],"expectedRevision":"0"})
+        )
+        .await
+        .0,
+        200
+    );
     task.abort();
 }

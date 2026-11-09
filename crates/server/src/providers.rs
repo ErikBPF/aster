@@ -44,6 +44,9 @@ pub struct Metadata {
     pub grants: Arc<dyn Grants>,
     pub audit: Arc<dyn AuditSink>,
     pub llm: Arc<dyn LlmStore>,
+    pub skills: Arc<dyn aster_core::skills::SkillStore>,
+    pub mcp: Arc<dyn aster_core::mcp::McpStore>,
+    pub personal_model_policy: Arc<dyn aster_core::PersonalModelPolicyStore>,
     pub conversations: Arc<dyn aster_core::ConversationStore>,
     pub notebook_owners: Arc<dyn NotebookOwners>,
     pub shared_models: Arc<dyn SharedModelStore>,
@@ -53,6 +56,7 @@ pub async fn metadata(
     kind: &str,
     url: Option<&str>,
     seeds: &[(String, String)],
+    personal_keys: Option<crate::Keyring>,
 ) -> Result<Metadata> {
     match kind {
         "postgres" => {
@@ -73,7 +77,19 @@ pub async fn metadata(
                 shared_models: Arc::new(
                     crate::shared_models_pg::PgSharedModels::new(store.pool.clone()).await?,
                 ),
-                llm: store,
+                skills: Arc::new(crate::skills_pg::PgSkills::new(store.pool.clone()).await?),
+                mcp: Arc::new(crate::mcp_pg::PgMcp::new(store.pool.clone()).await?),
+                personal_model_policy: Arc::new(
+                    crate::personal_models_pg::PgPersonalModelPolicy::new(store.pool.clone())
+                        .await?,
+                ),
+                llm: Arc::new(
+                    crate::personal_models_pg::EncryptedPersonalModels::new(
+                        store.pool.clone(),
+                        personal_keys,
+                    )
+                    .await?,
+                ),
             })
         }
         "memory" => {
@@ -88,6 +104,9 @@ pub async fn metadata(
                 grants: Arc::new(grants),
                 audit: Arc::new(InMemoryAudit::new()),
                 llm: Arc::new(InMemoryLlm::new()),
+                skills: Arc::new(aster_core::skills::InMemorySkills::default()),
+                mcp: Arc::new(aster_core::mcp::InMemoryMcp::default()),
+                personal_model_policy: Arc::new(aster_core::InMemoryPersonalModelPolicy::default()),
                 conversations: Arc::new(aster_core::InMemoryConversations::default()),
                 notebook_owners: Arc::new(InMemoryNotebookOwners::default()),
                 shared_models: Arc::new(InMemorySharedModels::default()),
@@ -217,6 +236,16 @@ pub async fn exchanges(
     }
 }
 
+/// MCP network transport. Unknown providers fail before accepting requests.
+pub fn mcp_transport(kind: &str) -> Result<Arc<dyn aster_core::mcp::McpTransport>> {
+    match kind {
+        "http" => Ok(Arc::new(crate::mcp_http::HttpMcp)),
+        other => Err(CoreError::Invalid(format!(
+            "unknown MCP transport {other}: expected http"
+        ))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -228,7 +257,7 @@ mod tests {
         };
         assert!(secrets.to_string().contains("unknown secret provider"));
 
-        let Err(metadata) = metadata("mysql", None, &[]).await else {
+        let Err(metadata) = metadata("mysql", None, &[], None).await else {
             panic!("expected a refusal");
         };
         assert!(metadata.to_string().contains("unknown metadata provider"));
@@ -251,7 +280,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_real_provider_without_its_endpoint_is_refused_by_name() {
-        let Err(metadata) = metadata("postgres", None, &[]).await else {
+        let Err(metadata) = metadata("postgres", None, &[], None).await else {
             panic!("expected a refusal");
         };
         assert!(metadata

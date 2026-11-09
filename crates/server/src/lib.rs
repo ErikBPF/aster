@@ -30,11 +30,19 @@ mod exchange;
 mod github_app;
 mod gitstore;
 mod identity;
+pub mod mcp;
+mod mcp_http;
+pub mod mcp_pg;
+mod notebook_tools;
 mod notebook_workspaces;
 pub mod odcs_intake;
+pub mod personal_models;
+pub mod personal_models_pg;
 mod providers;
 mod shared_models;
 mod shared_models_pg;
+pub mod skills;
+pub mod skills_pg;
 mod state;
 mod store;
 mod team_git;
@@ -56,6 +64,7 @@ use tracing::Level;
 /// Also exported for integration tests, which build a state with a temporary
 /// checkout.
 pub use gitstore::{GitNotebookStore, NotebookWorkspaceBinding};
+pub use mcp_http::HttpMcp;
 pub use notebook_workspaces::{TeamPolicy, TeamTarget, TeamWorkspaces};
 pub use shared_models::{DestinationPolicy, Keyring, SharedModels};
 pub use team_git::{TeamGitPolicy, TeamGitTargetView, TeamGitTargets, TeamGitVerifier};
@@ -78,6 +87,11 @@ pub struct AppState {
     pub team_workspaces: Option<Arc<TeamWorkspaces>>,
     /// Verified team destination metadata. No workspace or Sync activation yet.
     pub team_git_targets: Option<Arc<TeamGitTargets>>,
+    pub skills: Arc<dyn aster_core::skills::SkillStore>,
+    pub mcp: Option<Arc<crate::mcp::McpRegistry>>,
+    pub personal_model_policy: Arc<dyn aster_core::PersonalModelPolicyStore>,
+    pub personal_model_destinations: Option<DestinationPolicy>,
+    pub personal_models_enabled: bool,
     pub llm: Arc<dyn LlmStore>,
     /// Disabled until the administrator supplies an approved destination and
     /// versioned encryption key. Shared use is a later authorization slice.
@@ -145,7 +159,24 @@ async fn build_state(config: AppConfig) -> anyhow::Result<Arc<AppState>> {
             "memory"
         },
     );
-    let metadata = providers::metadata(&metadata_kind, database_url.as_deref(), &seeds).await?;
+    let personal_keys = match secrets.get("ASTER_PERSONAL_MODEL_KEYS").await? {
+        Some(keys) => Some(Keyring::parse(
+            &std::env::var("ASTER_PERSONAL_MODEL_ACTIVE_KEY")?,
+            &keys,
+        )?),
+        None => None,
+    };
+    let personal_models_enabled = metadata_kind == "memory" || personal_keys.is_some();
+    let mut personal_model_destinations = Some(DestinationPolicy::parse(
+        &std::env::var("ASTER_PERSONAL_MODEL_ALLOWED_ORIGINS").unwrap_or_default(),
+    )?);
+    let metadata = providers::metadata(
+        &metadata_kind,
+        database_url.as_deref(),
+        &seeds,
+        personal_keys,
+    )
+    .await?;
 
     let shared_models = match std::env::var("ASTER_SHARED_MODELS_ENABLED")
         .unwrap_or_else(|_| "0".into())
@@ -249,12 +280,50 @@ async fn build_state(config: AppConfig) -> anyhow::Result<Arc<AppState>> {
     );
     let identity = providers::identity(&identity_kind, OidcConfig::from_env(&*secrets).await)?;
     let dev_login = identity.is_none() || std::env::var("ASTER_DEV_LOGIN").is_ok();
+    match std::env::var("ASTER_MOCK_ASSISTANT").as_deref() {
+        Ok("1") => {
+            personal_model_destinations = Some(
+                personal_model_destinations
+                    .take()
+                    .expect("configured policy")
+                    .with_mock_assistant(identity.is_none() && dev_login)?,
+            );
+        }
+        Ok("0") | Err(_) => {}
+        _ => anyhow::bail!("ASTER_MOCK_ASSISTANT must be 0 or 1"),
+    }
     tracing::info!(identity = %identity_kind, "identity provider selected");
     if identity.is_none() {
         tracing::warn!("ASTER_OIDC_ISSUER unset; using the header/cookie dev identity seam");
     } else if dev_login {
         tracing::warn!("ASTER_DEV_LOGIN set; the dev identity seam is accepted alongside SSO");
     }
+
+    let mcp = match secrets.get("ASTER_MCP_KEYS").await? {
+        Some(keyset) => {
+            let active = std::env::var("ASTER_MCP_ACTIVE_KEY")?;
+            let mut registry = crate::mcp::McpRegistry::new(
+                metadata.mcp.clone(),
+                DestinationPolicy::parse(
+                    &std::env::var("ASTER_MCP_ALLOWED_ORIGINS").unwrap_or_default(),
+                )?,
+                Keyring::parse(&active, &keyset)?,
+                providers::mcp_transport(&providers::kind("ASTER_MCP_TRANSPORT", "http"))?,
+            );
+            if std::env::var("ASTER_MCP_DEMO").as_deref() == Ok("1") {
+                if identity.is_some() || !dev_login {
+                    anyhow::bail!("MCP demo requires isolated development identity");
+                }
+                registry = registry.with_development_endpoint(
+                    std::env::var("ASTER_MCP_DEMO_ENDPOINT")
+                        .unwrap_or_else(|_| "http://127.0.0.1:7777/mcp".into()),
+                )?;
+            }
+            registry.verify_keys().await?;
+            Some(Arc::new(registry))
+        }
+        None => None,
+    };
 
     let authority_enabled = match std::env::var("ASTER_SHARED_MODEL_AUTHORITY_ENABLED")
         .unwrap_or_else(|_| "0".into())
@@ -263,6 +332,14 @@ async fn build_state(config: AppConfig) -> anyhow::Result<Arc<AppState>> {
         "0" => false,
         "1" => true,
         _ => anyhow::bail!("ASTER_SHARED_MODEL_AUTHORITY_ENABLED must be 0 or 1"),
+    };
+    let ai_authority_enabled = match std::env::var("ASTER_AI_AUTHORITY_ENABLED")
+        .unwrap_or_else(|_| "0".into())
+        .as_str()
+    {
+        "0" => false,
+        "1" => true,
+        _ => anyhow::bail!("ASTER_AI_AUTHORITY_ENABLED must be 0 or 1"),
     };
     let team_git_enabled = match std::env::var("ASTER_TEAM_GIT_ENABLED")
         .unwrap_or_else(|_| "0".into())
@@ -288,7 +365,11 @@ async fn build_state(config: AppConfig) -> anyhow::Result<Arc<AppState>> {
         anyhow::bail!("shared-model use requires current identity authority");
     }
     let current_identity: Option<Arc<dyn aster_core::CurrentIdentityProvider>> =
-        match authority_enabled || team_git_enabled || team_policy_file.is_some() {
+        match authority_enabled
+            || ai_authority_enabled
+            || team_git_enabled
+            || team_policy_file.is_some()
+        {
             false => None,
             true => {
                 if authority_enabled && shared_models.is_none() {
@@ -314,7 +395,7 @@ async fn build_state(config: AppConfig) -> anyhow::Result<Arc<AppState>> {
                 };
                 let origin = required("ASTER_AUTHENTIK_API_ORIGIN")?;
                 let token = aster_core::require(&*secrets, "ASTER_AUTHENTIK_READ_TOKEN").await?;
-                let reader = if authority_enabled {
+                let reader = if authority_enabled || ai_authority_enabled {
                     let admin_group = required("ASTER_AUTHENTIK_ADMIN_GROUP_UUID")?;
                     let editor_group = required("ASTER_AUTHENTIK_EDITOR_GROUP_UUID")?;
                     current_identity::AuthentikCurrentIdentity::new(
@@ -423,6 +504,11 @@ async fn build_state(config: AppConfig) -> anyhow::Result<Arc<AppState>> {
         notebook_write: Arc::new(tokio::sync::Mutex::new(())),
         team_workspaces,
         team_git_targets,
+        skills: metadata.skills,
+        mcp,
+        personal_model_policy: metadata.personal_model_policy,
+        personal_model_destinations,
+        personal_models_enabled,
         llm: metadata.llm,
         shared_models,
         current_identity,
@@ -748,7 +834,19 @@ impl AppState {
         actor: &str,
         expected: NotebookPrecondition,
     ) -> aster_core::Result<NotebookSave> {
+        self.save_notebook_owned_context(notebook, actor, expected, true)
+            .await
+    }
+
+    pub(crate) async fn save_notebook_owned_context(
+        &self,
+        notebook: &Notebook,
+        actor: &str,
+        expected: NotebookPrecondition,
+        preserve_omitted_context: bool,
+    ) -> aster_core::Result<NotebookSave> {
         self.require_local_notebooks()?;
+        let mut notebook = notebook.clone();
         let _write = self.notebook_write.lock().await;
         if matches!(expected, NotebookPrecondition::Blob(_)) {
             self.admit_notebook(&notebook.id, actor).await?;
@@ -772,9 +870,20 @@ impl AppState {
             }
             _ => {}
         }
+        if preserve_omitted_context
+            && notebook.context.is_none()
+            && matches!(expected, NotebookPrecondition::Blob(_))
+        {
+            notebook.context = self
+                .notebooks
+                .snapshot(&notebook.id)
+                .await?
+                .notebook
+                .context;
+        }
         let saved = self
             .notebooks
-            .save_if(notebook, actor, expected.clone())
+            .save_if(&notebook, actor, expected.clone())
             .await?;
         if matches!(expected, NotebookPrecondition::Absent) {
             // A failed claim leaves a committed but unassigned read-only file for
@@ -917,7 +1026,7 @@ struct CatalogSummary {
     health: Health,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 pub(crate) struct QueryBody {
     sql: String,
     engine: Option<String>,
@@ -942,11 +1051,21 @@ pub(crate) async fn execute_query(
     verified_session: bool,
     body: &QueryBody,
 ) -> Result<aster_core::QueryResult, CoreError> {
+    let mut body = body.clone();
     let mut engine_id = body.engine.clone().map(EngineId::new);
 
     let started = Instant::now();
     let outcome = match authorize(principal, aster_core::Action::RunQuery) {
-        Ok(()) => run_attempt(state, principal, verified_session, body, &mut engine_id).await,
+        Ok(()) => {
+            run_attempt(
+                state,
+                principal,
+                verified_session,
+                &mut body,
+                &mut engine_id,
+            )
+            .await
+        }
         Err(error) => Err(error),
     };
     let latency_ms = started.elapsed().as_millis() as u64;
@@ -985,7 +1104,7 @@ async fn run_attempt(
     state: &AppState,
     principal: &Principal,
     verified_session: bool,
-    body: &QueryBody,
+    body: &mut QueryBody,
     engine_id: &mut Option<EngineId>,
 ) -> Result<(aster_core::QueryResult, String), CoreError> {
     if let Some(notebook) = body.notebook.as_deref() {
@@ -998,6 +1117,29 @@ async fn run_attempt(
                     ));
                 }
             }
+        }
+        if let Some(context) = document.context.as_ref() {
+            if context.catalog_context.as_deref().is_none_or(str::is_empty) {
+                return Err(CoreError::Invalid(
+                    "select a notebook catalog before running".into(),
+                ));
+            }
+            if body
+                .catalog_context
+                .as_ref()
+                .is_some_and(|value| Some(value) != context.catalog_context.as_ref())
+                || body
+                    .schema
+                    .as_ref()
+                    .is_some_and(|value| Some(value) != context.schema.as_ref())
+            {
+                return Err(CoreError::Invalid(
+                    "the notebook selects its data context; save the notebook before changing it"
+                        .into(),
+                ));
+            }
+            body.catalog_context = context.catalog_context.clone();
+            body.schema = context.schema.clone();
         }
         if let Some(notebook_engine) = document.engine.as_ref() {
             if engine_id
@@ -1506,7 +1648,10 @@ async fn require_entity_visible(
         crate::catalog_assets::Entity::Catalog { .. } => Ok(()),
         crate::catalog_assets::Entity::Schema { namespace, .. } => {
             let available = catalog_inventory::namespaces(state, headers, catalog).await?;
-            if available.iter().any(|entry| entry.segments == *namespace) {
+            if available.iter().any(|entry| {
+                aster_core::catalog::namespace_segments(&entry.name, &entry.segments)
+                    .is_ok_and(|segments| segments == *namespace)
+            }) {
                 Ok(())
             } else {
                 Err(CoreError::Unauthorized(
@@ -1750,10 +1895,29 @@ async fn catalog_detail(
     if let (Some(table_name), Some(bundle)) =
         (query.table.as_deref(), state.compiled_contracts.as_ref())
     {
-        for artifact in &bundle.documents {
-            let Some(object) = artifact.document.projection.schema.iter().find(|object| {
-                object.name == table_name || object.physical_name.as_deref() == Some(table_name)
-            }) else {
+        for binding in bundle
+            .physical_bindings
+            .iter()
+            .flat_map(|config| &config.bindings)
+            .filter(|binding| {
+                binding.catalog == query.catalog
+                    && Some(binding.namespace_segments.as_slice()) == namespace_segments.as_deref()
+                    && binding.physical_name == table_name
+            })
+        {
+            let Some(artifact) = bundle
+                .documents
+                .iter()
+                .find(|artifact| artifact.selection.path == binding.path)
+            else {
+                continue;
+            };
+            let Some(object_name) = artifact
+                .document
+                .raw
+                .pointer(&binding.object)
+                .and_then(|object| object["name"].as_str())
+            else {
                 continue;
             };
             if crate::contract_reads::read_for_principal(
@@ -1768,7 +1932,7 @@ async fn catalog_detail(
                     "id": artifact.selection.id,
                     "version": artifact.selection.version,
                     "path": artifact.selection.path,
-                    "object": object.name,
+                    "object": object_name,
                     "admission": "admitted",
                 }));
                 break;
@@ -2217,8 +2381,8 @@ async fn team_session(
 }
 
 /// The local workspace still uses session path claims to locate its checkout.
-/// Once a current identity reader is configured, only the fresh UUID policy
-/// can grant team access; cached claims are an additional local constraint.
+/// Once a current identity reader is configured, the configured membership policy
+/// must admit that fresh identity; cached claims are an additional local constraint.
 async fn team_member_session(
     state: &AppState,
     headers: &HeaderMap,
@@ -2227,11 +2391,11 @@ async fn team_member_session(
     let (session, sid) = team_session(state, headers).await?;
     if state.current_identity.is_some() || state.team_git_targets.is_some() {
         let fresh = current_identity::current_principal(state, headers, false).await?;
-        state
-            .team_git_targets
-            .as_deref()
-            .ok_or_else(|| CoreError::Unauthorized("current team policy unavailable".into()))?
-            .member(team, &fresh)?;
+        if let Some(targets) = state.team_git_targets.as_deref() {
+            targets.member(team, &fresh)?;
+        } else {
+            team_workspaces(state)?.member(team, &fresh)?;
+        }
     }
     Ok((session, sid))
 }
@@ -2507,10 +2671,12 @@ async fn save_team_notebook(
     let fields = value
         .as_object()
         .ok_or_else(|| CoreError::Invalid("notebook body must be an object".into()))?;
-    if fields
-        .keys()
-        .any(|field| !matches!(field.as_str(), "id" | "title" | "cells" | "engine"))
-    {
+    if fields.keys().any(|field| {
+        !matches!(
+            field.as_str(),
+            "id" | "title" | "cells" | "engine" | "context"
+        )
+    }) {
         return Err(CoreError::Invalid(
             "client workspace or repository fields are not accepted".into(),
         )
@@ -2521,6 +2687,9 @@ async fn save_team_notebook(
     notebook.id = id;
     let expected = notebook_precondition(&headers)?;
     let store = workspaces.workspace(&team, &principal, &sid, personal_workspace(&headers)?)?;
+    if notebook.context.is_none() && matches!(expected, NotebookPrecondition::Blob(_)) {
+        notebook.context = store.snapshot(&notebook.id).await?.notebook.context;
+    }
     let saved = store
         .save_if(&notebook, &principal.subject, expected)
         .await?;

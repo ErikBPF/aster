@@ -43,3 +43,17 @@ Feature: Catalog navigation workspace
   Scenario: Deep links restore the selected entity
     When Alice opens a catalog table URL with catalog, namespace and table
     Then the tree expands to that table and the detail pane selects it
+
+  # Observable cases covered by just catalog-navigation-browser; Gherkin remains unbound.
+  Scenario: Branch controls collapse and recover from discovery failures
+    When Alice toggles an expanded catalog
+    Then its schemas are hidden and the control announces its collapsed state
+    And collapsing and reopening during discovery does not start a second request
+    When schema discovery fails and Alice retries
+    Then the schemas can be loaded without reloading the page
+
+  Scenario: Late responses cannot change a newer selection
+    When Alice selects another table while a detail, history or save request is pending
+    Then the late response does not replace the new table or its selected tab
+    When saving fails because the network is unavailable
+    Then the error is visible and Alice's draft remains in the editor

@@ -900,12 +900,16 @@ impl GitNotebookStore {
     }
 
     fn blob_sync_locked(&self, id: &str) -> Result<Option<String>> {
+        self.blob_at_sync_locked(id, "HEAD")
+    }
+
+    fn blob_at_sync_locked(&self, id: &str, revision: &str) -> Result<Option<String>> {
         let path = self.path_for(id)?;
         let name = path.file_name().unwrap().to_string_lossy();
         if !self.head_exists_locked()? {
             return Ok(None);
         }
-        let entry = self.git(&["ls-tree", "HEAD", "--", &name])?;
+        let entry = self.git(&["ls-tree", revision, "--", &name])?;
         if entry.is_empty() {
             return Ok(None);
         }
@@ -935,6 +939,21 @@ impl GitNotebookStore {
             return Err(CoreError::Invalid("notebook exceeds size limit".into()));
         }
         Ok(Some(oid.to_string()))
+    }
+
+    fn revisions_sync_locked(&self, id: &str) -> Result<Vec<String>> {
+        if self.git(&["symbolic-ref", "HEAD"])?.trim() != format!("refs/heads/{}", self.branch) {
+            return Err(CoreError::Storage("notebook branch changed".into()));
+        }
+        if self.blob_sync_locked(id)?.is_none() {
+            return Err(CoreError::NotFound("notebook not found".into()));
+        }
+        let name = format!("{id}.aster");
+        Ok(self
+            .git(&["log", "-50", "--format=%H", "HEAD", "--", &name])?
+            .lines()
+            .map(str::to_string)
+            .collect())
     }
 
     fn snapshot_sync(&self, id: &str) -> Result<NotebookSnapshot> {
@@ -1062,6 +1081,41 @@ impl NotebookStore for GitNotebookStore {
         .await
     }
 
+    async fn revisions(&self, id: &str) -> Result<Vec<String>> {
+        let store = self.clone();
+        let id = id.to_string();
+        blocking(move || {
+            let _transaction = store.transaction.lock().map_err(poisoned)?;
+            store.revisions_sync_locked(&id)
+        })
+        .await
+    }
+
+    async fn revision(&self, id: &str, revision: &str) -> Result<Notebook> {
+        if !matches!(revision.len(), 40 | 64) || !revision.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(CoreError::Invalid("invalid notebook revision".into()));
+        }
+        let store = self.clone();
+        let id = id.to_string();
+        let revision = revision.to_string();
+        blocking(move || {
+            let _transaction = store.transaction.lock().map_err(poisoned)?;
+            // Only listed revisions of this path on this workspace branch are readable.
+            if !store.revisions_sync_locked(&id)?.contains(&revision) {
+                return Err(CoreError::NotFound(
+                    "notebook revision not found in recent history".into(),
+                ));
+            }
+            let oid = store
+                .blob_at_sync_locked(&id, &revision)?
+                .ok_or_else(|| CoreError::NotFound("notebook revision not found".into()))?;
+            let mut notebook = Notebook::from_text(&store.git(&["cat-file", "blob", &oid])?)?;
+            notebook.id = id;
+            Ok(notebook)
+        })
+        .await
+    }
+
     fn source_key(&self) -> String {
         format!("{}:{}", self.source_id, self.branch)
     }
@@ -1082,6 +1136,7 @@ mod tests {
 
     fn notebook(id: &str) -> Notebook {
         Notebook {
+            context: None,
             id: id.into(),
             title: "T".into(),
             engine: None,
@@ -1283,6 +1338,21 @@ mod tests {
         let store = GitNotebookStore::open(tempdir("traversal"), "session").unwrap();
         assert!(store.save(&notebook("../evil"), "alice").await.is_err());
         assert!(store.get("../evil").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn history_refuses_unrelated_commits_and_changed_workspace_branch() {
+        let store = GitNotebookStore::open(tempdir("history-scope"), "session/alice").unwrap();
+        let first = store.save(&notebook("nb1"), "alice").await.unwrap();
+        let unrelated = store.save(&notebook("nb2"), "alice").await.unwrap();
+        assert!(store.revision("nb1", &unrelated).await.is_err());
+        assert_eq!(store.revisions("nb1").await.unwrap(), vec![first.clone()]);
+        store.git(&["checkout", "-b", "other"]).unwrap();
+        assert!(
+            store.revisions("nb1").await.is_err(),
+            "history must refuse a changed branch"
+        );
+        assert!(store.revision("nb1", &first).await.is_err());
     }
 
     #[tokio::test]

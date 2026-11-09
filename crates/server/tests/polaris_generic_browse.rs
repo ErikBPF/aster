@@ -96,6 +96,13 @@ fn test_app() -> (Router, Arc<AtomicUsize>) {
     }));
     let app = app(Arc::new(AppState {
         catalog_assets: None,
+        skills: Arc::new(aster_core::skills::InMemorySkills::default()),
+        mcp: None,
+        personal_model_policy: Arc::new(aster_core::InMemoryPersonalModelPolicy::with_subjects(&[
+            "alice", "bob", "admin", "viewer", "editor", "carol",
+        ])),
+        personal_model_destinations: None,
+        personal_models_enabled: true,
         config: AppConfig {
             bind: String::new(),
             engines: vec![EngineConfig {
@@ -248,4 +255,18 @@ async fn polaris_generic_browser_links_encode_table_name_as_one_path_segment() {
     assert_eq!(status, StatusCode::OK);
     assert!(page.contains("Schema unavailable"));
     assert_eq!(schema_calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn legacy_namespace_can_open_catalog_details() {
+    let (app, _) = test_app();
+    let (status, detail, _) = call(
+        &app,
+        "/api/catalog/detail?catalog=polaris&namespace=sales",
+        "viewer",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(detail["details"]["namespace"], "sales");
 }

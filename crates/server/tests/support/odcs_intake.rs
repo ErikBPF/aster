@@ -43,6 +43,13 @@ pub async fn namespace_checks(mode: &str) {
     catalogs.register(Arc::new(catalog));
     let app = aster_server::app(Arc::new(aster_server::AppState {
         catalog_assets: None,
+        skills: Arc::new(aster_core::skills::InMemorySkills::default()),
+        mcp: None,
+        personal_model_policy: Arc::new(aster_core::InMemoryPersonalModelPolicy::with_subjects(&[
+            "alice", "bob", "admin", "viewer", "editor", "carol",
+        ])),
+        personal_model_destinations: None,
+        personal_models_enabled: true,
         config: AppConfig {
             bind: String::new(),
             engines: vec![EngineConfig {

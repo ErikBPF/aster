@@ -112,6 +112,7 @@ struct InventoryCatalog(
     Arc<std::sync::atomic::AtomicUsize>,
     Arc<std::sync::atomic::AtomicUsize>,
     Arc<std::sync::atomic::AtomicUsize>,
+    bool,
 );
 #[async_trait::async_trait]
 impl Catalog for InventoryCatalog {
@@ -125,7 +126,8 @@ impl Catalog for InventoryCatalog {
         "fixture"
     }
     async fn health(&self) -> Health {
-        panic!("inventory does not probe health")
+        assert!(self.4, "inventory does not probe health");
+        Health::Healthy
     }
     async fn list_namespaces(&self) -> Result<Vec<Namespace>> {
         panic!("no global scan")
@@ -255,6 +257,20 @@ pub async fn inventory_nested_semantic_annotations_are_detected() {
     }
 }
 
+#[allow(dead_code)]
+pub async fn catalog_detail_uses_exact_contract_binding() {
+    run_case_inner(
+        false,
+        true,
+        true,
+        false,
+        false,
+        false,
+        Some("detail-binding"),
+    )
+    .await;
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_case_inner(
     prepare: bool,
@@ -370,6 +386,19 @@ async fn run_case_inner(
         std::fs::write(dir.path().join("bindings.json"), &bindings).unwrap();
         manifest["bindingsSha256"] = json!(aster_server::odcs_intake::sha256(bindings.as_bytes()));
     }
+    if review == "detail-binding" {
+        let decoy = json!({"apiVersion":"v3.2.0","kind":"DataContract","id":"decoy","version":"1","schema":[{"name":"orders"}]}).to_string();
+        let decoy_digest = aster_server::odcs_intake::sha256(decoy.as_bytes());
+        std::fs::write(dir.path().join("compiled/decoy.json"), decoy).unwrap();
+        manifest["documents"].as_array_mut().unwrap().insert(0, json!({"path":"compiled/decoy.json","sha256":decoy_digest,"id":"decoy","version":"1","target":"other"}));
+        let mut bindings: Value =
+            serde_json::from_slice(&std::fs::read(dir.path().join("bindings.json")).unwrap())
+                .unwrap();
+        bindings["bindings"].as_array_mut().unwrap().insert(0, json!({"path":"compiled/decoy.json","object":"/schema/0","catalog":"other","namespaceSegments":["sales.eu"],"physicalName":"orders"}));
+        let bindings = bindings.to_string();
+        std::fs::write(dir.path().join("bindings.json"), &bindings).unwrap();
+        manifest["bindingsSha256"] = json!(aster_server::odcs_intake::sha256(bindings.as_bytes()));
+    }
     let manifest = manifest.to_string();
     std::fs::write(dir.path().join("manifest.json"), &manifest).unwrap();
     std::fs::write(
@@ -379,6 +408,14 @@ async fn run_case_inner(
         .to_string(),
     )
     .unwrap();
+    if review == "detail-binding" {
+        let mut grants: Value =
+            serde_json::from_slice(&std::fs::read(dir.path().join("grants.json")).unwrap())
+                .unwrap();
+        let manifest_value: Value = serde_json::from_str(&manifest).unwrap();
+        grants["grants"].as_array_mut().unwrap().push(json!({"path":"compiled/decoy.json","sha256":manifest_value["documents"][0]["sha256"],"teams":["alpha"]}));
+        std::fs::write(dir.path().join("grants.json"), grants.to_string()).unwrap();
+    }
     let mut bundle = aster_server::odcs_intake::load_bundle(
         dir.path(),
         &aster_server::odcs_intake::sha256(manifest.as_bytes()),
@@ -513,6 +550,7 @@ async fn run_case_inner(
             calls.clone(),
             inventory_calls.clone(),
             detail_calls.clone(),
+            review == "detail-binding",
         )));
         std::fs::write(
             dir.path().join("schema-owners.json"),
@@ -533,7 +571,7 @@ async fn run_case_inner(
         )
         .unwrap();
     }
-    if preview || inventory {
+    if (preview || inventory) && review != "detail-binding" {
         engines.register(Arc::new(NoExecution(EngineInfo {
             id: EngineId::new("engine"),
             kind: "fixture".into(),
@@ -543,6 +581,13 @@ async fn run_case_inner(
     }
     let router = app(Arc::new(AppState {
         catalog_assets: None,
+        skills: Arc::new(aster_core::skills::InMemorySkills::default()),
+        mcp: None,
+        personal_model_policy: Arc::new(aster_core::InMemoryPersonalModelPolicy::with_subjects(&[
+            "alice", "bob", "admin", "viewer", "editor", "carol",
+        ])),
+        personal_model_destinations: None,
+        personal_models_enabled: true,
         config: AppConfig {
             bind: String::new(),
             engines: vec![],
@@ -592,6 +637,38 @@ async fn run_case_inner(
         metrics: Arc::new(Metrics::new()),
     }));
     let cookie = format!("aster_session={}", session.sid);
+    if review == "detail-binding" {
+        use base64::Engine as _;
+        let token = format!(
+            "~{}",
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(br#"["sales.eu"]"#)
+        );
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/catalog/detail?catalog=warehouse&namespace={token}&table=orders"
+                    ))
+                    .header("cookie", &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let detail: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 1 << 20).await.unwrap())
+                .unwrap();
+        assert_eq!(
+            detail["permissions"]["contract"]["id"], "sales",
+            "same-named tables in another catalog must not supply the contract"
+        );
+        assert_eq!(
+            detail["permissions"]["contract"]["path"],
+            "compiled/sales.json"
+        );
+        return;
+    }
     if review == "mock-table" {
         let grants = mock_grants.unwrap();
         let bindings: Value =

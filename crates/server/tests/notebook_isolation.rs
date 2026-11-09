@@ -25,6 +25,7 @@ struct Fixture {
     workspaces: Arc<TeamWorkspaces>,
     sessions: Arc<InMemorySessions>,
     _legacy: GitNotebookStore,
+    model_identity: Option<Arc<ModelIdentity>>,
 }
 
 async fn fixture() -> Fixture {
@@ -40,6 +41,14 @@ async fn fixture_with_current(
 async fn fixture_with_services(
     current_identity: Option<Arc<dyn CurrentIdentityProvider>>,
     team_git_targets: Option<Arc<TeamGitTargets>>,
+) -> Fixture {
+    fixture_with_model_services(current_identity, team_git_targets, None).await
+}
+
+async fn fixture_with_model_services(
+    current_identity: Option<Arc<dyn CurrentIdentityProvider>>,
+    team_git_targets: Option<Arc<TeamGitTargets>>,
+    model_identity: Option<Arc<ModelIdentity>>,
 ) -> Fixture {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let root = std::env::temp_dir().join(format!(
@@ -89,6 +98,13 @@ async fn fixture_with_services(
     let sessions = Arc::new(InMemorySessions::new(3600));
     let state = AppState {
         catalog_assets: None,
+        skills: Arc::new(aster_core::skills::InMemorySkills::default()),
+        mcp: None,
+        personal_model_policy: Arc::new(aster_core::InMemoryPersonalModelPolicy::with_subjects(&[
+            "alice", "bob", "admin", "viewer", "editor", "carol",
+        ])),
+        personal_model_destinations: None,
+        personal_models_enabled: true,
         config: AppConfig {
             bind: String::new(),
             engines: vec![],
@@ -121,7 +137,9 @@ async fn fixture_with_services(
         user_state: Arc::new(InMemoryUserState::new()),
         secrets: Arc::new(InMemorySecrets::new()),
         identity: None,
-        dev_login: false,
+        // The four model fixtures use an isolated HTTP mock; real identity still
+        // comes from verified sessions and the current provider below.
+        dev_login: model_identity.is_some(),
         metrics: Arc::new(Metrics::new()),
     };
     Fixture {
@@ -132,7 +150,74 @@ async fn fixture_with_services(
         workspaces,
         sessions,
         _legacy: legacy,
+        model_identity,
     }
+}
+
+#[derive(Default)]
+struct ModelIdentity(Mutex<HashMap<String, Vec<String>>>);
+
+#[async_trait::async_trait]
+impl CurrentIdentityProvider for ModelIdentity {
+    async fn current(&self, user_uuid: &str) -> Result<CurrentIdentity> {
+        let groups = self
+            .0
+            .lock()
+            .unwrap()
+            .get(user_uuid)
+            .cloned()
+            .ok_or_else(|| CoreError::Unauthorized("unknown fixture identity".into()))?;
+        Ok(CurrentIdentity {
+            user_uuid: user_uuid.into(),
+            active: true,
+            roles: vec![Role::Editor],
+            groups,
+        })
+    }
+    async fn group_exists(&self, _: &str) -> Result<bool> {
+        Ok(false)
+    }
+}
+
+async fn model_fixture() -> Fixture {
+    let identity = Arc::new(ModelIdentity::default());
+    fixture_with_model_services(Some(identity.clone()), None, Some(identity)).await
+}
+
+async fn model_sid(fixture: &Fixture, subject: &str, groups: &[&str]) -> String {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    let user_uuid = format!(
+        "bbbbbbbb-bbbb-4bbb-8bbb-{:012x}",
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    );
+    let groups: Vec<String> = groups.iter().map(|group| (*group).into()).collect();
+    fixture
+        .model_identity
+        .as_ref()
+        .unwrap()
+        .0
+        .lock()
+        .unwrap()
+        .insert(user_uuid.clone(), groups.clone());
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    fixture
+        .sessions
+        .create_verified(
+            &Identity {
+                subject: subject.into(),
+                roles: vec![Role::Editor],
+                groups,
+                user_uuid: Some(user_uuid),
+            },
+            None,
+            now,
+        )
+        .await
+        .unwrap()
+        .sid
 }
 
 fn git(dir: &Path, args: &[&str]) {
@@ -882,14 +967,14 @@ async fn workspace_private_context_conversations_do_not_cross_teams_or_sessions(
 
 #[tokio::test]
 async fn workspace_private_context_helper_choice_does_not_cross_teams_or_sessions() {
-    let f = fixture().await;
-    let first = sid(
-        &f.sessions,
+    let f = model_fixture().await;
+    let first = model_sid(
+        &f,
         "alice",
         &["/teams/alpha/members", "/teams/beta/members"],
     )
     .await;
-    let second = sid(&f.sessions, "alice", &["/teams/alpha/members"]).await;
+    let second = model_sid(&f, "alice", &["/teams/alpha/members"]).await;
     for helper in ["alpha", "beta"] {
         assert_eq!(
             call(
@@ -1034,6 +1119,7 @@ async fn team_mode_unqualified_notebook_reads_refuse_legacy_checkout() {
     f._legacy
         .save(
             &Notebook {
+                context: None,
                 id: "legacy-secret".into(),
                 title: "Legacy".into(),
                 engine: None,
@@ -1135,8 +1221,8 @@ async fn team_mode_connect_save_refuses_legacy_write() {
 
 #[tokio::test]
 async fn workspace_private_context_connect_reads_same_team_conversation_and_helper() {
-    let f = fixture().await;
-    let alice = sid(&f.sessions, "alice", &["/teams/alpha/members"]).await;
+    let f = model_fixture().await;
+    let alice = model_sid(&f, "alice", &["/teams/alpha/members"]).await;
     let rest = call(
         &f.app,
         "GET",
@@ -1197,9 +1283,9 @@ async fn workspace_private_context_connect_reads_same_team_conversation_and_help
 
 #[tokio::test]
 async fn workspace_private_context_connect_send_appends_only_to_selected_session() {
-    let f = fixture().await;
-    let alice = sid(
-        &f.sessions,
+    let f = model_fixture().await;
+    let alice = model_sid(
+        &f,
         "alice",
         &["/teams/alpha/members", "/teams/beta/members"],
     )
@@ -1270,10 +1356,10 @@ async fn workspace_private_context_connect_send_appends_only_to_selected_session
 
 #[tokio::test]
 async fn workspace_private_context_connect_denials_never_call_helper_or_append() {
-    let f = fixture().await;
-    let alice = sid(&f.sessions, "alice", &["/teams/alpha/members"]).await;
-    let bob = sid(&f.sessions, "bob", &["/teams/beta/members"]).await;
-    let revoked = sid(&f.sessions, "revoked", &["/teams/alpha/members"]).await;
+    let f = model_fixture().await;
+    let alice = model_sid(&f, "alice", &["/teams/alpha/members"]).await;
+    let bob = model_sid(&f, "bob", &["/teams/beta/members"]).await;
+    let revoked = model_sid(&f, "revoked", &["/teams/alpha/members"]).await;
     f.sessions.revoke(&revoked).await.unwrap();
     let calls = Arc::new(AtomicU64::new(0));
     let seen = calls.clone();
@@ -1891,4 +1977,167 @@ async fn expired_session_content_requires_explicit_owner_recovery() {
     )
     .unwrap();
     assert_eq!(bob_rows, json!([]));
+}
+
+#[tokio::test]
+async fn session_deletion_is_bound_to_team_workspace_and_login_session() {
+    let f = fixture().await;
+    let first = sid(
+        &f.sessions,
+        "alice",
+        &["/teams/alpha/members", "/teams/beta/members"],
+    )
+    .await;
+    let second = sid(&f.sessions, "alice", &["/teams/alpha/members"]).await;
+    let headers = &[("connect-protocol-version", "1")];
+    let response = call(
+        &f.app,
+        "POST",
+        "/aster.v1.Aster/NewConversation",
+        Some(&first),
+        json!({"notebook":"base","team":"alpha","workspace":"session"}),
+        headers,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let id = json_body(response).await["id"].as_str().unwrap().to_owned();
+    for (login, team, workspace) in [
+        (&second, "alpha", "session"),
+        (&first, "beta", "session"),
+        (&first, "alpha", "personal"),
+    ] {
+        let response=call(&f.app,"POST","/aster.v1.Aster/DeleteConversation",Some(login),json!({"notebook":"base","team":team,"workspace":workspace,"session":id,"expectedRevision":"0"}),headers).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "foreign scope must not delete the session"
+        );
+    }
+    let response=call(&f.app,"POST","/aster.v1.Aster/DeleteConversation",Some(&first),json!({"notebook":"base","team":"alpha","workspace":"session","session":id,"expectedRevision":"0"}),headers).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let response = call(
+        &f.app,
+        "POST",
+        "/aster.v1.Aster/ListConversations",
+        Some(&first),
+        json!({"notebook":"base","team":"alpha","workspace":"session"}),
+        headers,
+    )
+    .await;
+    assert!(json_body(response)
+        .await
+        .get("sessions")
+        .and_then(|v| v.as_array())
+        .is_none_or(Vec::is_empty));
+}
+
+#[tokio::test]
+async fn team_notebook_context_survives_older_client_save_and_explicit_clear() {
+    let f = fixture().await;
+    let session = sid(&f.sessions, "alice", &["/teams/alpha/members"]).await;
+    let path = "/api/teams/alpha/notebooks/sales";
+    let mut document = notebook("SELECT 1");
+    let context = json!({"catalog_context":"warehouse","schema":"sales.eu"});
+    document["context"] = context.clone();
+    let created = call(
+        &f.app,
+        "PUT",
+        path,
+        Some(&session),
+        document,
+        &[("if-none-match", "*")],
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::OK);
+    for clear in [false, true] {
+        let loaded = call(&f.app, "GET", path, Some(&session), json!({}), &[]).await;
+        let etag = loaded.headers()["etag"].to_str().unwrap().to_owned();
+        assert_eq!(json_body(loaded).await["context"], context);
+        let mut document = notebook("SELECT 2");
+        if clear {
+            document["context"] = json!({});
+        }
+        let saved = call(
+            &f.app,
+            "PUT",
+            path,
+            Some(&session),
+            document,
+            &[("if-match", &etag)],
+        )
+        .await;
+        assert_eq!(saved.status(), StatusCode::OK);
+    }
+    let loaded = call(&f.app, "GET", path, Some(&session), json!({}), &[]).await;
+    assert_eq!(
+        json_body(loaded).await["context"],
+        json!({"catalog_context":null,"schema":null})
+    );
+}
+
+#[tokio::test]
+async fn notebook_history_is_scoped_to_team_workspace_and_session() {
+    let f = fixture().await;
+    let first = sid(
+        &f.sessions,
+        "alice",
+        &["/teams/alpha/members", "/teams/beta/members"],
+    )
+    .await;
+    let second = sid(&f.sessions, "alice", &["/teams/alpha/members"]).await;
+    let created = call(
+        &f.app,
+        "PUT",
+        "/api/teams/alpha/notebooks/sales",
+        Some(&first),
+        notebook("SELECT 'private history'"),
+        &[("if-none-match", "*")],
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::OK);
+    let saved = json_body(created).await;
+    let revision = saved["revision"].as_str().unwrap().to_owned();
+    let current = saved["content_revision"].as_str().unwrap().to_owned();
+    for (session, team, workspace, expected) in [
+        (&first, "alpha", "session", StatusCode::OK),
+        (&second, "alpha", "session", StatusCode::NOT_FOUND),
+        (&first, "beta", "session", StatusCode::NOT_FOUND),
+        (&first, "alpha", "personal", StatusCode::NOT_FOUND),
+        (&second, "beta", "session", StatusCode::FORBIDDEN),
+    ] {
+        for method in [
+            "ListNotebookRevisions",
+            "GetNotebookRevision",
+            "RestoreNotebookRevision",
+        ] {
+            let mut body = json!({"id":"sales", "team":team, "workspace":workspace});
+            if method != "ListNotebookRevisions" {
+                body["revision"] = json!(revision);
+            }
+            if method == "RestoreNotebookRevision" {
+                body["expectedContentRevision"] = json!(current);
+            }
+            let response = call(
+                &f.app,
+                "POST",
+                &format!("/aster.v1.Aster/{method}"),
+                Some(session),
+                body,
+                &[("connect-protocol-version", "1")],
+            )
+            .await;
+            assert_eq!(response.status(), expected, "{method} {team} {workspace}");
+        }
+    }
+    let stale = call(
+        &f.app,
+        "POST",
+        "/aster.v1.Aster/RestoreNotebookRevision",
+        Some(&first),
+        json!({"id":"sales", "team":"alpha", "workspace":"session", "revision":revision,
+            "expectedContentRevision":"0000000000000000000000000000000000000000"}),
+        &[("connect-protocol-version", "1")],
+    )
+    .await;
+    assert_eq!(stale.status(), StatusCode::CONFLICT);
 }

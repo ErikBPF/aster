@@ -61,6 +61,12 @@ impl Cell {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotebookContext {
+    pub catalog_context: Option<String>,
+    pub schema: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Notebook {
     pub id: String,
@@ -69,6 +75,9 @@ pub struct Notebook {
     /// their per-cell engines and the configured default.
     #[serde(default)]
     pub engine: Option<EngineId>,
+    /// Missing means a legacy document; an explicit empty context clears selection.
+    #[serde(default)]
+    pub context: Option<NotebookContext>,
     pub cells: Vec<Cell>,
 }
 
@@ -120,6 +129,12 @@ pub trait NotebookStore: Send + Sync {
         Err(CoreError::Storage(
             "notebook precondition unsupported".into(),
         ))
+    }
+    async fn revisions(&self, _id: &str) -> Result<Vec<String>> {
+        Err(CoreError::Invalid("notebook history unsupported".into()))
+    }
+    async fn revision(&self, _id: &str, _revision: &str) -> Result<Notebook> {
+        Err(CoreError::Invalid("notebook history unsupported".into()))
     }
     fn source_key(&self) -> String {
         "unconfigured".into()
@@ -240,6 +255,8 @@ impl NotebookOwners for InMemoryNotebookOwners {
 /// over `.ipynb` so notebooks diff cleanly in git; the notebook id is the file
 /// name, so it is not stored in the body.
 const HEADER_V1: &str = "# aster notebook v1";
+const HEADER_V3: &str = "# aster notebook v3";
+const CONTEXT_PREFIX: &str = "# context: ";
 const HEADER_V2: &str = "# aster notebook v2";
 const TITLE_PREFIX: &str = "# title: ";
 const ENGINE_PREFIX: &str = "# engine: ";
@@ -248,7 +265,11 @@ const CELL_PREFIX: &str = "-- cell ";
 impl Notebook {
     pub fn to_text(&self) -> String {
         let mut out = String::new();
-        out.push_str(HEADER_V2);
+        out.push_str(if self.context.is_some() {
+            HEADER_V3
+        } else {
+            HEADER_V2
+        });
         out.push('\n');
         out.push_str(TITLE_PREFIX);
         out.push_str(&self.title);
@@ -256,6 +277,11 @@ impl Notebook {
         if let Some(engine) = &self.engine {
             out.push_str(ENGINE_PREFIX);
             out.push_str(&engine.0);
+            out.push('\n');
+        }
+        if let Some(context) = &self.context {
+            out.push_str(CONTEXT_PREFIX);
+            out.push_str(&serde_json::to_string(context).expect("string context serializes"));
             out.push('\n');
         }
         for cell in &self.cells {
@@ -291,12 +317,13 @@ impl Notebook {
             .ok_or_else(|| CoreError::Invalid("empty notebook".into()))?;
         let escaped = match header.trim() {
             HEADER_V1 => false,
-            HEADER_V2 => true,
+            HEADER_V2 | HEADER_V3 => true,
             _ => return Err(CoreError::Invalid("missing aster notebook header".into())),
         };
 
         let mut title = String::from("untitled");
         let mut engine = None;
+        let mut context = None;
         let mut cells: Vec<Cell> = Vec::new();
         let mut current: Option<Cell> = None;
         let mut saw_sql_line = false;
@@ -329,6 +356,11 @@ impl Notebook {
                     metadata,
                 });
                 saw_sql_line = false;
+            } else if current.is_none() && line.starts_with(CONTEXT_PREFIX) {
+                context = Some(
+                    serde_json::from_str(&line[CONTEXT_PREFIX.len()..])
+                        .map_err(|_| CoreError::Invalid("invalid notebook context".into()))?,
+                );
             } else if current.is_none() && line.starts_with(TITLE_PREFIX) {
                 title = line[TITLE_PREFIX.len()..].to_string();
             } else if current.is_none() && line.starts_with(ENGINE_PREFIX) {
@@ -350,6 +382,7 @@ impl Notebook {
         }
 
         Ok(Notebook {
+            context,
             id: String::new(),
             title,
             engine,
@@ -364,6 +397,7 @@ mod tests {
 
     fn sample() -> Notebook {
         Notebook {
+            context: None,
             id: "nb1".into(),
             title: "Sales".into(),
             engine: None,
@@ -382,6 +416,34 @@ mod tests {
                 },
             ],
         }
+    }
+
+    #[test]
+    fn notebook_context_survives_json_and_git_without_changing_cells() {
+        let document = serde_json::json!({"id":"context", "title":"Context",
+            "context":{"catalog_context":"warehouse", "schema":"sales.eu"},
+            "cells":[{"id":"c1","sql":"SELECT 1","engine":null,
+                "metadata":{"other":false}}]});
+        let notebook: Notebook = serde_json::from_value(document.clone()).unwrap();
+        let text = notebook.to_text();
+        let parsed = Notebook::from_text(&text).unwrap();
+        assert_eq!(
+            serde_json::to_value(&parsed).unwrap()["context"],
+            document["context"]
+        );
+        assert!(text.starts_with("# aster notebook v3\n"));
+        assert_eq!(
+            serde_json::to_value(&parsed.cells[0]).unwrap(),
+            document["cells"][0]
+        );
+        let empty: Notebook = serde_json::from_value(serde_json::json!({
+            "id":"empty", "title":"Empty", "context":{}, "cells":[]}))
+        .unwrap();
+        assert!(empty.to_text().contains("# context: "));
+        let legacy =
+            Notebook::from_text("# aster notebook v2\n# title: Old\n-- cell c1\nSELECT 1\n")
+                .unwrap();
+        assert!(serde_json::to_value(&legacy).unwrap()["context"].is_null());
     }
 
     #[test]
