@@ -139,6 +139,7 @@ async fn engine_allowed(world: &mut App) {
 #[given(expr = "a notebook with the title {string}")]
 async fn notebook_with_title(world: &mut App, title: String) {
     world.notebook = Some(Notebook {
+        context: None,
         id: "nb".into(),
         title,
         engine: None,

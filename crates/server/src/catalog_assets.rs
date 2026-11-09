@@ -207,6 +207,20 @@ impl CatalogAssets {
 
     pub fn assets(&self, entity: &Entity) -> Result<Vec<Asset>> {
         let directory = self.root.join(assets_path(entity)?);
+        let directory = match directory.canonicalize() {
+            Ok(directory) if directory.starts_with(&self.root) => directory,
+            Ok(_) => {
+                return Err(CoreError::Invalid(
+                    "catalog asset path escapes the checkout".into(),
+                ))
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(_) => {
+                return Err(CoreError::Invalid(
+                    "catalog asset path is unavailable".into(),
+                ))
+            }
+        };
         let entries = match std::fs::read_dir(&directory) {
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -378,6 +392,19 @@ fn doc_path(entity: &Entity) -> Result<String> {
 }
 
 fn assets_path(entity: &Entity) -> Result<String> {
+    if let Entity::Table {
+        catalog,
+        namespace,
+        table,
+    } = entity
+    {
+        return Ok(format!(
+            "table-assets/{}/{}/{}/assets",
+            component(catalog)?,
+            namespace_path(namespace)?,
+            component(table)?
+        ));
+    }
     let doc = doc_path(entity)?;
     let parent = doc.rsplit_once('/').map(|(parent, _)| parent).unwrap_or("");
     Ok(format!("{parent}/assets"))
@@ -549,6 +576,72 @@ mod tests {
     }
 
     #[test]
+    fn table_assets_are_isolated_from_siblings_and_legacy_shared_assets() {
+        let (dir, store) = repo();
+        let orders = table();
+        let customers = Entity::Table {
+            catalog: "polaris".into(),
+            namespace: vec!["sales".into()],
+            table: "customers".into(),
+        };
+        for (relative, name) in [
+            ("table-assets/polaris/sales/orders/assets", "orders.svg"),
+            (
+                "table-assets/polaris/sales/customers/assets",
+                "customers.svg",
+            ),
+            ("catalogs/polaris/schemas/sales/tables/assets", "legacy.svg"),
+        ] {
+            let assets = dir.join(relative);
+            std::fs::create_dir_all(&assets).unwrap();
+            std::fs::write(assets.join(name), "<svg/>").unwrap();
+        }
+        let listed = store.assets(&orders).unwrap();
+        assert_eq!(
+            listed
+                .iter()
+                .map(|asset| asset.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["orders.svg"]
+        );
+        assert!(store.read_asset(&orders, "customers.svg").is_err());
+        assert!(store.read_asset(&orders, "legacy.svg").is_err());
+        assert_eq!(store.assets(&customers).unwrap()[0].name, "customers.svg");
+        assert!(dir
+            .join("catalogs/polaris/schemas/sales/tables/assets/legacy.svg")
+            .exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn table_assets_do_not_alias_nested_schema_assets() {
+        let schema = Entity::Schema {
+            catalog: "polaris".into(),
+            namespace: vec!["sales".into(), "tables".into(), "orders".into()],
+        };
+        assert_ne!(
+            assets_path(&table()).unwrap(),
+            assets_path(&schema).unwrap()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn asset_listing_refuses_a_directory_outside_the_checkout() {
+        let (dir, store) = repo();
+        let (outside, _) = repo();
+        let entity = table();
+        std::fs::write(outside.join("private.svg"), "<svg/>").unwrap();
+        let assets = dir.join(assets_path(&entity).unwrap());
+        std::fs::create_dir_all(assets.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&outside, &assets).unwrap();
+        assert!(store.assets(&entity).is_err());
+        assert!(store.read_asset(&entity, "private.svg").is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+        std::fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[test]
     fn paths_and_assets_are_bounded() {
         let (dir, store) = repo();
         let entity = table();
@@ -564,7 +657,7 @@ mod tests {
                 "alice"
             )
             .is_err());
-        let assets = dir.join("catalogs/polaris/schemas/sales/tables/assets");
+        let assets = dir.join("table-assets/polaris/sales/orders/assets");
         std::fs::create_dir_all(&assets).unwrap();
         std::fs::write(assets.join("diagram.svg"), "<svg/>").unwrap();
         std::fs::write(assets.join("notes.txt"), "no").unwrap();

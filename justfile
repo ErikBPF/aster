@@ -788,3 +788,45 @@ shared-model-access-validation:
     just shared-model-validation
     just ai-selection-validation
     echo 'shared-model-access-validation OK'
+
+# Browser navigation, retry and stale-response checks against a controlled API.
+catalog-navigation-browser:
+    python3 tests/catalog-navigation-browser.py
+
+# Build a named server/controller image without changing a running stack.
+image-build image="aster-server:local":
+    {{container_engine}} build -t {{quote(image)}} -f docker/Dockerfile.server .
+
+# AI registry forms, ownership controls and credential handling in Chromium.
+ai-registry-browser:
+    python3 tests/ai-registry-browser.py
+
+# Durable AI registries and encrypted personal credential migration in disposable PostgreSQL.
+ai-registry-postgres-test:
+    bash tests/personal-model-postgres.sh
+
+# Real AI registry UI against a disposable PostgreSQL server, including restart.
+ai-registry-live-browser:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo build -p aster-server
+    export ASTER_SERVER_BIN="${ASTER_SERVER_BIN:-${CARGO_TARGET_DIR:-target}/debug/aster-server}"
+    python3 tests/ai-registry-live-browser.py
+
+# AI registry domain/API regressions; browser and PostgreSQL gates are separate.
+ai-registry-test:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo test -p aster-core --lib skills::tests
+    cargo test -p aster-core --lib personal_model_grants
+    cargo test -p aster-server --test ai_skills --test ai_registration --test conversations --test shared_model_access
+    echo 'AI_REGISTRY_TEST_OK'
+
+# Real notebook/cell UI with controlled model and MCP endpoints; no external actions.
+notebook-ai-browser:
+    ASTER_NOTEBOOK_BROWSER=1 cargo test -p aster-server --test ai_skills notebook_mcp_selection_confirmation_and_replay_are_scoped -- --nocapture
+
+# Explicit local demo: registers a mock model/skill and runs synthetic SQL at localhost:8081.
+mock-assistant-e2e:
+    python3 tests/mock-assistant-test.py
+    python3 tests/mock-assistant-e2e.py

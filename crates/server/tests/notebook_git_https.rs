@@ -127,6 +127,7 @@ async fn notebook_git_https_sync_pushes_exact_branch_without_persisting_token() 
     let local = store
         .save(
             &Notebook {
+                context: None,
                 id: "sales".into(),
                 title: "Sales".into(),
                 engine: None,
@@ -157,6 +158,7 @@ async fn notebook_git_https_sync_pushes_exact_branch_without_persisting_token() 
     store
         .save(
             &Notebook {
+                context: None,
                 id: "sales".into(),
                 title: "Sales".into(),
                 engine: None,

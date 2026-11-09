@@ -492,9 +492,11 @@ pub async fn selected_flow(mode: &str) {
         };
         for revision in 0..3 {
             let message = |role: &str| ChatMessage {
+                mcp_connections: vec![],
                 role: role.into(),
                 content: content.clone(),
                 helper: "go".into(),
+                skill_dependencies: Some(vec![]),
                 contract_dependencies: if mode == "legacy-no-bundle" {
                     None
                 } else {

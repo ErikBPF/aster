@@ -1,5 +1,6 @@
 """Disposable real-browser proof for notebook chat; no live provider calls."""
 import json
+import re
 import os
 from pathlib import Path
 import socket
@@ -31,17 +32,18 @@ def unused_port():
         sock.bind(("127.0.0.1", 0))
         return sock.getsockname()[1]
 
-mock = ThreadingHTTPServer(("127.0.0.1", 0), Helper)
+# shortcut: fixed port matches the development-only allowlist; use network isolation for parallel runs.
+mock = ThreadingHTTPServer(("127.0.0.1", 7778), Helper)
 threading.Thread(target=mock.serve_forever, daemon=True).start()
 with tempfile.TemporaryDirectory(prefix="aster-chat-browser-") as work:
     port = unused_port()
     base = f"http://127.0.0.1:{port}"
-    env = os.environ.copy()
+    env = {key: value for key, value in os.environ.items() if not key.startswith("ASTER_")}
     for key in ("DATABASE_URL", "ASTER_STATE_URL", "ASTER_OIDC_ISSUER", "ASTER_CONVERSATION_DATABASE_URL"):
         env.pop(key, None)
     env.update(ASTER_BIND=f"127.0.0.1:{port}", ASTER_METRICS_BIND=f"127.0.0.1:{unused_port()}",
                ASTER_METADATA_STORE="memory", ASTER_STATE_STORE="memory", ASTER_CONVERSATION_STORE="memory",
-               ASTER_IDP_KIND="none", ASTER_DEV_LOGIN="1", ASTER_NOTEBOOK_DIR=work+"/notebooks",
+               ASTER_IDP_KIND="none", ASTER_DEV_LOGIN="1", ASTER_MOCK_ASSISTANT="1", ASTER_NOTEBOOK_DIR=work+"/notebooks",
                ASTER_ENGINES="mock;mock;local", ASTER_CATALOGS="mock;mock;local",
                ASTER_CATALOG_BINDINGS="mock;mock;mock;unprotected")
     binary = os.environ.get("ASTER_SERVER_BIN", "target/debug/aster-server")
@@ -61,7 +63,9 @@ with tempfile.TemporaryDirectory(prefix="aster-chat-browser-") as work:
                 page = browser.new_page(viewport={"width":1440,"height":1000})
                 errors = []
                 page.on("pageerror", lambda error: errors.append(str(error)))
-                page.goto(base+"/dev-login")
+                page.goto(base+"/dev-login?subject=alice&roles=admin")
+                assert page.request.post(base+"/aster.v1.Aster/PutPersonalModelPolicy", data={"expectedRevision":"0","subjects":["alice"]}).ok
+                page.goto(base+"/dev-login?subject=alice&roles=editor")
                 assert page.request.put(base+"/api/notebooks/chat-check", headers={"If-None-Match":"*"}, data={
                     "id":"chat-check","title":"Chat check","cells":[{"id":"c1","sql":"select 1","engine":"mock"}]
                 }).ok
@@ -103,10 +107,11 @@ with tempfile.TemporaryDirectory(prefix="aster-chat-browser-") as work:
                 page.locator(".editor").fill("select 1")
                 expect(page.locator("#helper")).to_have_value("")
                 assert page.request.get(base+"/api/notebooks/chat-check/helper").json()=={"helper":None}
+                page.locator("#chat-toggle").click()
+                page.locator('#chat-panel').get_by_role('button', name=re.compile(r'^AI model:')).click()
                 page.locator("#helper").select_option("personal/test")
+                page.keyboard.press('Escape')
                 expect(page.locator("#helper")).to_have_value("personal/test")
-                page.locator("#chat-toggle").focus()
-                page.keyboard.press("Enter")
                 expect(page.locator("#chat-panel")).to_be_visible()
                 page.locator("#chat-expand").click()
                 expect(page.locator("#chat-expand")).to_have_attribute("aria-pressed","true")
@@ -121,7 +126,7 @@ with tempfile.TemporaryDirectory(prefix="aster-chat-browser-") as work:
                 for prompt in ("Remember revenue", "Explain the earlier answer"):
                     page.locator("#chat-prompt").fill(prompt)
                     page.locator("#chat-send").click()
-                    expect(page.locator("#chat-status")).to_have_text("Saved. Replies do not execute queries.")
+                    expect(page.locator("#chat-status")).to_have_text("Saved.")
                 assert len(received)==2
                 assert selections == [{"path":"fixture.json", "sha256":"fixture", "object":"/schema/0"}] * 2, selections
                 assert any(m["content"]=="Remember revenue" for m in received[1]["messages"])
@@ -157,7 +162,9 @@ with tempfile.TemporaryDirectory(prefix="aster-chat-browser-") as work:
                 page.wait_for_timeout(150)
                 expect(page.locator(".chat-message")).to_have_count(6)
                 page.unroute("**/aster.v1.Aster/GetConversation", delay_first)
-                page.get_by_role("button",name="Insert SQL as new cell").first.click()
+                suggestion = page.locator("#chat-history .suggestion-actions").first
+                suggestion.get_by_role("combobox").select_option("new")
+                suggestion.get_by_role("button",name="Create SQL cell",exact=True).click()
                 expect(page.locator(".cell")).to_have_count(2)
                 expect(page.locator(".editor").last).to_have_value("SELECT 42 AS answer")
                 expect(page.locator(".out-body")).to_have_count(0)
@@ -187,7 +194,7 @@ with tempfile.TemporaryDirectory(prefix="aster-chat-browser-") as work:
                 expect(page.locator("#contract-preparation")).to_contain_text("orders")
                 first.locator(".cell-chat-prompt").fill("Explain this cell")
                 first.locator(".cell-chat-send").click()
-                expect(first.locator(".cell-chat-status")).to_have_text("Saved. Replies do not execute queries.")
+                expect(first.locator(".cell-chat-status")).to_have_text("Saved.")
                 expect(first.locator(".cell-chat-history .chat-message")).to_have_count(2)
                 assert selections[-1] == {"path":"fixture.json", "sha256":"fixture", "object":"/schema/0"}, selections
                 first.locator(".cell-chat-prompt").fill("unsent cell draft")
@@ -202,7 +209,7 @@ with tempfile.TemporaryDirectory(prefix="aster-chat-browser-") as work:
                 cell_body = {"notebook":"chat-check", "cell":"c1"}
                 cell_stored = page.request.post(base+"/aster.v1.Aster/GetConversation",
                     headers={"Connect-Protocol-Version":"1"}, data=cell_body).json()
-                expect(first.get_by_role("button", name="Replace this cell", exact=True)).to_have_count(1)
+                expect(first.get_by_role("button", name="Replace cell SQL", exact=True)).to_have_count(1)
                 pending_cell_read = []
                 def hold_cell_read(route):
                     if route.request.post_data_json.get("cell") == "c1" and not pending_cell_read:
@@ -215,7 +222,7 @@ with tempfile.TemporaryDirectory(prefix="aster-chat-browser-") as work:
                     if pending_cell_read: break
                     page.wait_for_timeout(20)
                 assert pending_cell_read
-                assert page.evaluate("cellChatState('c1').loaded")
+                assert page.evaluate("Boolean(cellChatState('c1').conversation)")
                 helper_before = len(received)
                 editor_before = first.locator(".editor").input_value()
                 page.context.add_cookies([{"name":"aster_roles", "value":"viewer", "url":base}])
@@ -223,14 +230,14 @@ with tempfile.TemporaryDirectory(prefix="aster-chat-browser-") as work:
                     first.locator(".cell-chat-send").click()
                 assert denied_send.value.status == 403
                 expect(first.locator(".cell-chat-status")).to_contain_text("Your draft is unchanged")
-                expect(first.locator(".cell-chat-history")).to_be_empty()
-                expect(first.get_by_role("button", name="Replace this cell", exact=True)).to_have_count(0)
-                assert page.evaluate("!cellChatState('c1').loaded && cellChatState('c1').messages.length === 0")
+                expect(first.locator(".cell-chat-history .chat-message")).to_have_count(0)
+                expect(first.get_by_role("button", name="Replace cell SQL", exact=True)).to_have_count(0)
+                assert page.evaluate("cellChatState('c1').conversation === null")
                 expect(first.locator(".cell-chat-prompt")).to_have_value("unsent cell draft")
                 pending_cell_read[0][0].fulfill(response=pending_cell_read[0][1])
                 page.wait_for_timeout(150)
-                expect(first.locator(".cell-chat-history")).to_be_empty()
-                assert page.evaluate("!cellChatState('c1').loaded && cellChatState('c1').messages.length === 0")
+                expect(first.locator(".cell-chat-history .chat-message")).to_have_count(0)
+                assert page.evaluate("cellChatState('c1').conversation === null")
                 expect(first.locator(".cell-chat-prompt")).to_have_value("unsent cell draft")
                 expect(first.locator(".editor")).to_have_value(editor_before)
                 assert len(received) == helper_before, "revoked send must not call helper"
@@ -260,15 +267,15 @@ with tempfile.TemporaryDirectory(prefix="aster-chat-browser-") as work:
                 page.locator("#chat-close").click()
                 page.locator("#chat-toggle").click()
                 expect(page.locator("#chat-status")).to_contain_text("fresh conversation")
-                expect(page.locator("#chat-history")).to_be_empty()
+                expect(page.locator("#chat-history .chat-message")).to_have_count(0)
                 before_denial[0][0].fulfill(response=before_denial[0][1])
                 page.wait_for_timeout(150)
-                expect(page.locator("#chat-history")).to_be_empty()
+                expect(page.locator("#chat-history .chat-message")).to_have_count(0)
                 expect(page.locator("#chat-status")).to_contain_text("fresh conversation")
                 expect(page.locator("#chat-prompt")).to_have_value("unsent draft")
                 first.locator('[data-action="ai"]').click()
                 expect(first.locator(".cell-chat-status")).to_contain_text("fresh conversation")
-                expect(first.locator(".cell-chat-history")).to_be_empty()
+                expect(first.locator(".cell-chat-history .chat-message")).to_have_count(0)
                 expect(first.locator(".cell-chat-prompt")).to_have_value("unsent cell draft")
                 stored = page.request.post(base+"/aster.v1.Aster/GetConversation", headers={"Connect-Protocol-Version":"1"}, data={"notebook":"chat-check"}).json()
                 assert len(stored["messages"]) == 6, stored

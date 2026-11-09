@@ -24,6 +24,11 @@ pub struct ChatMessage {
     pub role: String,
     pub content: String,
     pub helper: String,
+    #[serde(default)]
+    pub mcp_connections: Vec<String>,
+    /// Exact selected skill revisions; omitted for legacy messages without skills.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skill_dependencies: Option<Vec<crate::skills::SkillSelection>>,
     /// None is legacy, untracked history; Some([]) has no contract dependency.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub contract_dependencies: Option<Vec<ContractDependency>>,
@@ -36,6 +41,13 @@ impl ChatMessage {
     /// Content plus retained source identities share the transcript capacity.
     pub fn context_bytes(&self) -> usize {
         self.content.len()
+            + self.mcp_connections.iter().map(String::len).sum::<usize>()
+            + self
+                .skill_dependencies
+                .iter()
+                .flatten()
+                .map(|skill| skill.id.len() + 8)
+                .sum::<usize>()
             + self
                 .contract_dependencies
                 .iter()
@@ -57,7 +69,48 @@ impl ChatMessage {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NotebookTool {
+    pub name: String,
+    pub connection: String,
+    pub tool: String,
+    pub definition: serde_json::Value,
+}
+#[derive(Clone, Serialize, Deserialize)]
+pub struct NotebookToolCall {
+    pub connection: String,
+    pub tool: String,
+    pub arguments: String,
+    pub call_id: String,
+    pub confirmation: String,
+}
+impl std::fmt::Debug for NotebookToolCall {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NotebookToolCall")
+            .field("connection", &self.connection)
+            .field("tool", &self.tool)
+            .field("call_id", &self.call_id)
+            .field("arguments", &"<redacted>")
+            .field("confirmation", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ToolTurn {
+    pub id: String,
+    pub user: ChatMessage,
+    pub messages: Vec<serde_json::Value>,
+    pub tools: Vec<NotebookTool>,
+    pub call: Option<NotebookToolCall>,
+    pub phase: String,
+    pub calls: usize,
+    pub expires_at: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Conversation {
+    #[serde(default)]
+    pub pending: Option<ToolTurn>,
     pub id: String,
     pub revision: i64,
     pub messages: Vec<ChatMessage>,
@@ -66,6 +119,7 @@ pub struct Conversation {
 impl Conversation {
     pub fn empty() -> Result<Self> {
         Ok(Self {
+            pending: None,
             id: new_sid()?,
             revision: 0,
             messages: vec![],
@@ -78,6 +132,11 @@ impl Conversation {
         user: ChatMessage,
         assistant: ChatMessage,
     ) -> Result<Self> {
+        if self.pending.is_some() {
+            return Err(CoreError::Conflict(
+                "resolve the pending tool turn first".into(),
+            ));
+        }
         if self.revision != expected {
             return Err(CoreError::Conflict(
                 "conversation changed; reload before resending".into(),
@@ -108,6 +167,8 @@ impl Conversation {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConversationSummary {
     pub id: String,
+    #[serde(default)]
+    pub revision: i64,
     pub phrase: String,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
@@ -151,6 +212,31 @@ fn now_ms() -> i64 {
 
 #[async_trait]
 pub trait ConversationStore: Send + Sync {
+    /// Delete one exact idle session without recreating it or another session.
+    async fn delete_session(
+        &self,
+        _subject: &str,
+        _notebook: &str,
+        _session: &str,
+        _expected: i64,
+    ) -> Result<()> {
+        Err(CoreError::Storage(
+            "conversation deletion unsupported".into(),
+        ))
+    }
+
+    /// Atomically reserve or finish a tool turn before any external dispatch.
+    async fn save_turn(
+        &self,
+        _subject: &str,
+        _notebook: &str,
+        _expected: i64,
+        _next: Conversation,
+    ) -> Result<Conversation> {
+        Err(CoreError::Storage(
+            "tool turns unsupported by conversation store".into(),
+        ))
+    }
     async fn get(&self, subject: &str, notebook: &str) -> Result<Conversation>;
     async fn append(
         &self,
@@ -225,6 +311,7 @@ impl StoredConversation {
     fn summary(&self) -> ConversationSummary {
         ConversationSummary {
             id: self.conversation.id.clone(),
+            revision: self.conversation.revision,
             phrase: self.phrase.clone(),
             created_at_ms: self.created_at_ms,
             updated_at_ms: self.updated_at_ms,
@@ -267,6 +354,67 @@ impl InMemoryConversations {
 
 #[async_trait]
 impl ConversationStore for InMemoryConversations {
+    async fn delete_session(
+        &self,
+        subject: &str,
+        notebook: &str,
+        session: &str,
+        expected: i64,
+    ) -> Result<()> {
+        let mut rows = self.conversations.lock().expect("conversation lock");
+        let sessions = rows
+            .get_mut(&(subject.to_string(), notebook.to_string()))
+            .ok_or_else(|| CoreError::NotFound("conversation session".into()))?;
+        let index = sessions
+            .iter()
+            .position(|entry| entry.conversation.id == session)
+            .ok_or_else(|| CoreError::NotFound("conversation session".into()))?;
+        let current = &sessions[index].conversation;
+        if current.revision != expected {
+            return Err(CoreError::Conflict(
+                "conversation changed; reload before deleting".into(),
+            ));
+        }
+        if current.pending.is_some() {
+            return Err(CoreError::Conflict(
+                "resolve the tool turn before deleting this session".into(),
+            ));
+        }
+        sessions.remove(index);
+        Ok(())
+    }
+
+    async fn save_turn(
+        &self,
+        subject: &str,
+        notebook: &str,
+        expected: i64,
+        mut next: Conversation,
+    ) -> Result<Conversation> {
+        let mut rows = self.conversations.lock().expect("conversation lock");
+        let entry = Self::with_scope(&mut rows, subject, notebook)
+            .iter_mut()
+            .find(|s| s.conversation.id == next.id)
+            .ok_or_else(|| CoreError::NotFound("conversation session".into()))?;
+        if entry.conversation.revision != expected {
+            return Err(CoreError::Conflict(
+                "conversation changed; reload before resuming".into(),
+            ));
+        }
+        next.revision = expected
+            .checked_add(1)
+            .ok_or_else(|| CoreError::Conflict("conversation revision exhausted".into()))?;
+        entry.phrase = conversation_phrase(
+            next.messages
+                .first()
+                .map(|m| m.content.as_str())
+                .or_else(|| next.pending.as_ref().map(|p| p.user.content.as_str()))
+                .unwrap_or_default(),
+        );
+        entry.conversation = next.clone();
+        entry.updated_at_ms = now_ms();
+        Ok(next)
+    }
     async fn get(&self, subject: &str, notebook: &str) -> Result<Conversation> {
         let mut rows = self.conversations.lock().expect("conversation lock");
         let sessions = Self::with_scope(&mut rows, subject, notebook);
@@ -388,12 +536,28 @@ impl ConversationStore for InMemoryConversations {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn tool_confirmation_debug_is_redacted() {
+        let call = super::NotebookToolCall {
+            connection: "connection".into(),
+            tool: "tool".into(),
+            arguments: "sensitive-argument".into(),
+            call_id: "call".into(),
+            confirmation: "secret-confirmation".into(),
+        };
+        let debug = format!("{call:?}");
+        assert!(!debug.contains("secret-confirmation"));
+        assert!(!debug.contains("sensitive-argument"));
+    }
+
     use super::*;
     fn message(role: &str, content: String) -> ChatMessage {
         ChatMessage {
+            mcp_connections: vec![],
             role: role.into(),
             content,
             helper: "test".into(),
+            skill_dependencies: Some(vec![]),
             contract_dependencies: Some(vec![]),
             catalog_dependencies: Some(vec![]),
         }

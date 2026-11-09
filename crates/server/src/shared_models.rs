@@ -27,6 +27,7 @@ use aster_core::InMemorySharedModels;
 /// base path, but no unapproved host, scheme, or port may receive a token.
 pub struct DestinationPolicy {
     origins: Vec<String>,
+    mock_assistant: bool,
 }
 
 impl DestinationPolicy {
@@ -55,10 +56,26 @@ impl DestinationPolicy {
         }
         approved.sort();
         approved.dedup();
-        Ok(Self { origins: approved })
+        Ok(Self {
+            origins: approved,
+            mock_assistant: false,
+        })
+    }
+
+    pub(crate) fn with_mock_assistant(mut self, isolated_development: bool) -> Result<Self> {
+        if !isolated_development {
+            return Err(CoreError::Invalid(
+                "mock assistant requires isolated development login".into(),
+            ));
+        }
+        self.mock_assistant = true;
+        Ok(self)
     }
 
     pub fn validate(&self, base_url: &str) -> Result<()> {
+        if self.mock_assistant && base_url == "http://127.0.0.1:7778/v1" {
+            return Ok(());
+        }
         if base_url.len() > 2048 {
             return Err(CoreError::Invalid("invalid shared-model base URL".into()));
         }
@@ -117,7 +134,7 @@ impl Keyring {
         })
     }
 
-    fn encrypt(
+    pub(crate) fn encrypt(
         &self,
         summary: AdminSharedModelSummary,
         token: &str,
@@ -147,7 +164,7 @@ impl Keyring {
         })
     }
 
-    fn decrypt(&self, model: &EncryptedSharedModel) -> Result<String> {
+    pub(crate) fn decrypt(&self, model: &EncryptedSharedModel) -> Result<String> {
         let key = self
             .keys
             .get(&model.key_version)
@@ -529,6 +546,28 @@ mod tests {
             .map(|(version, byte)| ((*version).to_string(), BASE64.encode([*byte; 32])))
             .collect();
         Keyring::parse(active, &serde_json::to_string(&encoded).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn mock_assistant_destination_is_exact_and_development_only() {
+        let policy = DestinationPolicy::parse("https://models.example.invalid").unwrap();
+        assert!(policy.validate("http://127.0.0.1:7778/v1").is_err());
+        let policy = policy.with_mock_assistant(true).unwrap();
+        assert!(policy.validate("http://127.0.0.1:7778/v1").is_ok());
+        assert!(policy.validate("https://models.example.invalid/v1").is_ok());
+        for denied in [
+            "http://localhost:7778/v1",
+            "http://127.0.0.1:7779/v1",
+            "http://127.0.0.1:7778/other",
+            "http://127.0.0.1:7778/v1?token=x",
+            "http://user:x@127.0.0.1:7778/v1",
+        ] {
+            assert!(policy.validate(denied).is_err());
+        }
+        assert!(DestinationPolicy::parse("")
+            .unwrap()
+            .with_mock_assistant(false)
+            .is_err());
     }
 
     #[test]

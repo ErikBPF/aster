@@ -51,6 +51,8 @@ pub(crate) struct TeamGitTargetRecord {
     pub version: i64,
 }
 
+pub(crate) const METADATA_INIT_LOCK: i64 = 0x4153_5445_524d_4554_i64;
+
 impl PgStore {
     pub async fn connect(url: &str) -> Result<Self> {
         let pool = PgPoolOptions::new()
@@ -62,7 +64,7 @@ impl PgStore {
         // empty database. Serialize bootstrap for this metadata schema.
         let mut tx = pool.begin().await.map_err(storage)?;
         sqlx::query("SELECT pg_advisory_xact_lock($1)")
-            .bind(0x4153_5445_524d_4554_i64)
+            .bind(METADATA_INIT_LOCK)
             .execute(&mut *tx)
             .await
             .map_err(storage)?;
@@ -72,6 +74,8 @@ impl PgStore {
             include_str!("../../../migrations/0004_llm_helpers.sql"),
             include_str!("../../../migrations/0005_conversations.sql"),
             include_str!("../../../migrations/0011_conversation_sessions.sql"),
+            include_str!("../../../migrations/0015_skill_defaults.sql"),
+            include_str!("../../../migrations/0016_notebook_tool_turns.sql"),
             include_str!("../../../migrations/0006_notebook_owners.sql"),
             include_str!("../../../migrations/0009_team_git_targets.sql"),
         ))

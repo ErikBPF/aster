@@ -176,6 +176,15 @@ fn to_notebook(notebook: &aster_core::Notebook) -> api::Notebook {
         })
         .collect();
     api::Notebook {
+        context: notebook
+            .context
+            .as_ref()
+            .map(|context| api::NotebookContext {
+                catalog_context: context.catalog_context.clone(),
+                schema: context.schema.clone(),
+                ..Default::default()
+            })
+            .into(),
         id: notebook.id.clone(),
         title: notebook.title.clone(),
         engine: notebook.engine.as_ref().map(|engine| engine.0.clone()),
@@ -193,8 +202,421 @@ fn to_cell(cell: &api::Cell) -> aster_core::Cell {
     }
 }
 
+fn skill_pb(view: crate::skills::SkillView) -> api::Skill {
+    let skill = view.skill;
+    api::Skill {
+        id: skill.id,
+        owner: skill.owner,
+        title: skill.title,
+        description: skill.description,
+        revision: skill.revision,
+        sharing_revision: skill.sharing_revision,
+        audience: match skill.audience {
+            aster_core::skills::SkillAudience::Private => "private",
+            aster_core::skills::SkillAudience::Team => "team",
+            aster_core::skills::SkillAudience::Organization => "organization",
+            _ => "private",
+        }
+        .into(),
+        team: skill.team,
+        instructions: skill.instructions,
+        references: skill
+            .references
+            .into_iter()
+            .map(|r| api::SkillReference {
+                name: r.name,
+                content: r.content,
+                ..Default::default()
+            })
+            .collect(),
+        author: skill.author,
+        created_at_ms: skill.created_at_ms,
+        can_edit: view.can_edit,
+        ..Default::default()
+    }
+}
+
+fn mcp_pb(c: aster_core::mcp::McpConnection) -> api::McpConnection {
+    api::McpConnection {
+        id: c.id,
+        name: c.name,
+        description: c.description,
+        url: c.url,
+        auth: c.auth,
+        enabled: c.enabled,
+        revision: c.revision,
+        subjects: c.subjects,
+        teams: c.teams,
+        ..Default::default()
+    }
+}
+
 #[allow(refining_impl_trait)]
 impl api::Aster for AsterApi {
+    async fn discover_mcp_tools(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, api::DiscoverMcpToolsRequest>,
+    ) -> ServiceResult<api::DiscoverMcpToolsResponse> {
+        let r = request.to_owned_message();
+        let tools = crate::mcp::discover(&self.state, ctx.headers(), &r.id)
+            .await
+            .map_err(connect_error)?;
+        Ok(api::DiscoverMcpToolsResponse {
+            tools: tools
+                .into_iter()
+                .map(|(t, h, a)| api::McpTool {
+                    name: t.name,
+                    description: t.description,
+                    schema_json: t.input_schema.to_string(),
+                    schema_hash: h,
+                    approved_read: a,
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        }
+        .into())
+    }
+    async fn approve_mcp_read(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, api::ApproveMcpReadRequest>,
+    ) -> ServiceResult<api::McpConnection> {
+        let r = request.to_owned_message();
+        Ok(mcp_pb(
+            crate::mcp::approve_read(
+                &self.state,
+                ctx.headers(),
+                &r.id,
+                r.expected_revision,
+                &r.tool,
+                &r.schema_hash,
+                r.approved,
+            )
+            .await
+            .map_err(connect_error)?,
+        )
+        .into())
+    }
+    async fn call_mcp_tool(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, api::CallMcpToolRequest>,
+    ) -> ServiceResult<api::CallMcpToolResponse> {
+        let r = request.to_owned_message();
+        let result = crate::mcp::call(
+            &self.state,
+            ctx.headers(),
+            &r.id,
+            &r.tool,
+            &r.arguments_json,
+            &r.confirmation,
+        )
+        .await
+        .map_err(connect_error)?;
+        Ok(api::CallMcpToolResponse {
+            confirmation: result.confirmation,
+            result_json: result.result,
+            ..Default::default()
+        }
+        .into())
+    }
+
+    async fn list_mcp_connections(
+        &self,
+        ctx: RequestContext,
+        _request: ServiceRequest<'_, api::ListMcpConnectionsRequest>,
+    ) -> ServiceResult<api::ListMcpConnectionsResponse> {
+        let (configured, can_manage, connections) = crate::mcp::list(&self.state, ctx.headers())
+            .await
+            .map_err(connect_error)?;
+        Ok(api::ListMcpConnectionsResponse {
+            configured,
+            can_manage,
+            connections: connections.into_iter().map(mcp_pb).collect(),
+            ..Default::default()
+        }
+        .into())
+    }
+    async fn put_mcp_connection(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, api::PutMcpConnectionRequest>,
+    ) -> ServiceResult<api::McpConnection> {
+        let r = request.to_owned_message();
+        let c = aster_core::mcp::McpConnection {
+            id: r.id,
+            name: r.name,
+            description: r.description,
+            url: r.url,
+            auth: r.auth,
+            enabled: r.enabled,
+            revision: 0,
+            subjects: r.subjects,
+            teams: r.teams,
+            approved_reads: Default::default(),
+        };
+        Ok(mcp_pb(
+            crate::mcp::put(&self.state, ctx.headers(), c, r.expected_revision, r.token)
+                .await
+                .map_err(connect_error)?,
+        )
+        .into())
+    }
+
+    async fn get_skill_defaults(
+        &self,
+        ctx: RequestContext,
+        _request: ServiceRequest<'_, api::GetSkillDefaultsRequest>,
+    ) -> ServiceResult<api::SkillDefaults> {
+        Ok(defaults_pb(
+            crate::skills::defaults(&self.state, ctx.headers())
+                .await
+                .map_err(connect_error)?,
+        )
+        .into())
+    }
+    async fn put_skill_defaults(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, api::PutSkillDefaultsRequest>,
+    ) -> ServiceResult<api::SkillDefaults> {
+        let request = request.to_owned_message();
+        let defaults = aster_core::skills::SkillDefaults {
+            revision: request.expected_revision,
+            skills: request
+                .skills
+                .into_iter()
+                .map(|s| aster_core::skills::SkillSelection {
+                    id: s.id,
+                    revision: s.revision,
+                })
+                .collect(),
+        };
+        Ok(defaults_pb(
+            crate::skills::put_defaults(&self.state, ctx.headers(), defaults)
+                .await
+                .map_err(connect_error)?,
+        )
+        .into())
+    }
+    async fn list_skills(
+        &self,
+        ctx: RequestContext,
+        _request: ServiceRequest<'_, api::ListSkillsRequest>,
+    ) -> ServiceResult<api::ListSkillsResponse> {
+        let skills = crate::skills::list(&self.state, ctx.headers())
+            .await
+            .map_err(connect_error)?
+            .into_iter()
+            .map(skill_pb)
+            .collect();
+        Ok(api::ListSkillsResponse {
+            skills,
+            ..Default::default()
+        }
+        .into())
+    }
+    async fn get_skill(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, api::GetSkillRequest>,
+    ) -> ServiceResult<api::Skill> {
+        let request = request.to_owned_message();
+        Ok(skill_pb(
+            crate::skills::get(&self.state, ctx.headers(), &request.id, request.revision)
+                .await
+                .map_err(connect_error)?,
+        )
+        .into())
+    }
+    async fn list_skill_versions(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, api::ListSkillVersionsRequest>,
+    ) -> ServiceResult<api::ListSkillsResponse> {
+        let request = request.to_owned_message();
+        let skills = crate::skills::versions(&self.state, ctx.headers(), &request.id)
+            .await
+            .map_err(connect_error)?
+            .into_iter()
+            .map(skill_pb)
+            .collect();
+        Ok(api::ListSkillsResponse {
+            skills,
+            ..Default::default()
+        }
+        .into())
+    }
+    async fn put_skill(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, api::PutSkillRequest>,
+    ) -> ServiceResult<api::Skill> {
+        let request = request.to_owned_message();
+        let references = request
+            .references
+            .into_iter()
+            .map(|reference| aster_core::skills::SkillReference {
+                name: reference.name,
+                content: reference.content,
+            })
+            .collect();
+        Ok(skill_pb(
+            crate::skills::put(
+                &self.state,
+                ctx.headers(),
+                request.id,
+                request.expected_revision,
+                request.title,
+                request.description,
+                request.instructions,
+                references,
+            )
+            .await
+            .map_err(connect_error)?,
+        )
+        .into())
+    }
+    async fn delete_skill(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, api::DeleteSkillRequest>,
+    ) -> ServiceResult<api::DeleteSkillResponse> {
+        let request = request.to_owned_message();
+        crate::skills::delete(
+            &self.state,
+            ctx.headers(),
+            &request.id,
+            request.expected_revision,
+            request.expected_sharing_revision,
+        )
+        .await
+        .map_err(connect_error)?;
+        Ok(api::DeleteSkillResponse::default().into())
+    }
+    async fn share_skill(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, api::ShareSkillRequest>,
+    ) -> ServiceResult<api::Skill> {
+        let request = request.to_owned_message();
+        let audience = match request.audience.as_str() {
+            "private" => aster_core::skills::SkillAudience::Private,
+            "team" => aster_core::skills::SkillAudience::Team,
+            "organization" => aster_core::skills::SkillAudience::Organization,
+            _ => return Err(ConnectError::invalid_argument("invalid skill audience")),
+        };
+        Ok(skill_pb(
+            crate::skills::share(
+                &self.state,
+                ctx.headers(),
+                &request.id,
+                request.expected_sharing_revision,
+                audience,
+                request.team,
+            )
+            .await
+            .map_err(connect_error)?,
+        )
+        .into())
+    }
+    async fn get_personal_model_policy(
+        &self,
+        ctx: RequestContext,
+        _request: ServiceRequest<'_, api::GetPersonalModelPolicyRequest>,
+    ) -> ServiceResult<api::PersonalModelPolicyResponse> {
+        let current = crate::personal_models::current(&self.state, ctx.headers())
+            .await
+            .map_err(connect_error)?;
+        let policy = self
+            .state
+            .personal_model_policy
+            .get()
+            .await
+            .map_err(connect_error)?;
+        let is_admin = authorize(&current, aster_core::Action::Administer).is_ok();
+        Ok(api::PersonalModelPolicyResponse {
+            revision: policy.revision,
+            subjects: if is_admin { policy.subjects } else { vec![] },
+            teams: if is_admin { policy.teams } else { vec![] },
+            can_register: crate::personal_models::allowed(&self.state, &current)
+                .await
+                .map_err(connect_error)?,
+            is_admin,
+            ..Default::default()
+        }
+        .into())
+    }
+    async fn put_personal_model_policy(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, api::PutPersonalModelPolicyRequest>,
+    ) -> ServiceResult<api::PersonalModelPolicyResponse> {
+        let request = request.to_owned_message();
+        let policy = crate::personal_models::replace(
+            &self.state,
+            ctx.headers(),
+            request.expected_revision,
+            request.subjects,
+            request.teams,
+        )
+        .await
+        .map_err(connect_error)?;
+        let current = crate::personal_models::current(&self.state, ctx.headers())
+            .await
+            .map_err(connect_error)?;
+        Ok(api::PersonalModelPolicyResponse {
+            revision: policy.revision,
+            subjects: policy.subjects,
+            teams: policy.teams,
+            can_register: crate::personal_models::allowed(&self.state, &current)
+                .await
+                .map_err(connect_error)?,
+            is_admin: true,
+            ..Default::default()
+        }
+        .into())
+    }
+    async fn put_personal_model(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, api::PutPersonalModelRequest>,
+    ) -> ServiceResult<api::PersonalModelResponse> {
+        let request = request.to_owned_message();
+        let config = crate::ai::register_personal(
+            &self.state,
+            ctx.headers(),
+            request.id,
+            request.base_url,
+            request.model,
+            request.token,
+        )
+        .await
+        .map_err(connect_error)?;
+        Ok(api::PersonalModelResponse {
+            r#ref: format!("personal/{}", config.id),
+            id: config.id,
+            base_url: config.base_url,
+            model: config.model,
+            ..Default::default()
+        }
+        .into())
+    }
+    async fn delete_personal_model(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, api::DeletePersonalModelRequest>,
+    ) -> ServiceResult<api::DeletePersonalModelResponse> {
+        let principal = caller(&self.state, &ctx).await?;
+        self.state
+            .llm
+            .remove(&principal.subject, &request.to_owned_message().id)
+            .await
+            .map_err(connect_error)?;
+        Ok(api::DeletePersonalModelResponse::default().into())
+    }
     async fn list_catalog_inventory(
         &self,
         ctx: RequestContext,
@@ -376,6 +798,7 @@ impl api::Aster for AsterApi {
                 .into_iter()
                 .map(|session| api::ConversationSummary {
                     id: session.id,
+                    revision: session.revision,
                     phrase: session.phrase,
                     created_at_ms: session.created_at_ms,
                     updated_at_ms: session.updated_at_ms,
@@ -386,6 +809,55 @@ impl api::Aster for AsterApi {
             ..Default::default()
         }
         .into())
+    }
+
+    async fn delete_conversation(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, api::DeleteConversationRequest>,
+    ) -> ServiceResult<api::DeleteConversationResponse> {
+        let request = request.to_owned_message();
+        let context = notebook_context(
+            &self.state,
+            &ctx,
+            request.team.as_deref(),
+            request.workspace.as_deref(),
+            &request.notebook,
+        )
+        .await?;
+        let expected = request
+            .expected_revision
+            .filter(|revision| *revision >= 0)
+            .ok_or_else(|| {
+                ConnectError::invalid_argument("expected nonnegative revision is required")
+            })?;
+        if !aster_core::llm::valid_id(&request.session) {
+            return Err(ConnectError::invalid_argument("invalid session id"));
+        }
+        if context.is_some() && request.cell.is_some() {
+            return Err(ConnectError::invalid_argument(
+                "cell conversations are not available in team workspaces",
+            ));
+        }
+        if let Some((principal, key, _)) = context {
+            self.state
+                .conversations
+                .delete_session(&principal.subject, &key, &request.session, expected)
+                .await
+        } else {
+            let principal = caller(&self.state, &ctx).await?;
+            crate::conversations::delete(
+                &self.state,
+                &principal,
+                &request.notebook,
+                request.cell.as_deref(),
+                &request.session,
+                expected,
+            )
+            .await
+        }
+        .map_err(connect_error)?;
+        Ok(api::DeleteConversationResponse::default().into())
     }
 
     async fn new_conversation(
@@ -460,6 +932,25 @@ impl api::Aster for AsterApi {
                 object: selection.object.clone(),
             }
         });
+        let skill = request
+            .skill
+            .as_option()
+            .map(|skill| aster_core::skills::SkillSelection {
+                id: skill.id.clone(),
+                revision: skill.revision,
+            });
+        let selected_skills = request.selected_skills.as_option().map(|s| {
+            s.skills
+                .iter()
+                .map(|s| aster_core::skills::SkillSelection {
+                    id: s.id.clone(),
+                    revision: s.revision,
+                })
+                .collect::<Vec<_>>()
+        });
+        if selected_skills.is_some() && skill.is_some() {
+            return Err(ConnectError::invalid_argument("use one skill selector"));
+        }
         let turn = crate::conversations::Turn {
             notebook: &request.notebook,
             cell: request.cell.as_deref(),
@@ -469,6 +960,14 @@ impl api::Aster for AsterApi {
             context: &request.context,
             expected,
             contract_selection: contract_selection.as_ref(),
+            skill: skill.as_ref(),
+            selected_skills: selected_skills.as_deref(),
+            selected_mcp: request
+                .selected_mcp
+                .as_option()
+                .map(|s| s.connections.as_slice()),
+            tool_confirmation: &request.tool_confirmation,
+            cancel_tool_turn: request.cancel_tool_turn,
         };
         let conversation = if let Some((_, key, document)) = context {
             crate::conversations::send_scoped(
@@ -755,6 +1254,141 @@ impl api::Aster for AsterApi {
         Ok(response.into())
     }
 
+    async fn list_notebook_revisions(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, api::GetNotebookRequest>,
+    ) -> ServiceResult<api::NotebookRevisions> {
+        let request = request.to_owned_message();
+        let revisions = if let Some((_, store)) = notebook_workspace(
+            &self.state,
+            &ctx,
+            request.team.as_deref(),
+            request.workspace.as_deref(),
+        )
+        .await?
+        {
+            store.revisions(&request.id).await.map_err(connect_error)?
+        } else {
+            let caller = caller(&self.state, &ctx).await?;
+            authorize(&caller, aster_core::Action::ReadNotebook).map_err(connect_error)?;
+            let _read = self.state.notebook_write.lock().await;
+            self.state
+                .admit_notebook(&request.id, &caller.subject)
+                .await
+                .map_err(connect_error)?;
+            self.state
+                .notebooks
+                .revisions(&request.id)
+                .await
+                .map_err(connect_error)?
+        };
+        Ok(api::NotebookRevisions {
+            revisions,
+            ..Default::default()
+        }
+        .into())
+    }
+
+    async fn get_notebook_revision(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, api::GetNotebookRevisionRequest>,
+    ) -> ServiceResult<api::NotebookRevision> {
+        let request = request.to_owned_message();
+        let notebook = if let Some((_, store)) = notebook_workspace(
+            &self.state,
+            &ctx,
+            request.team.as_deref(),
+            request.workspace.as_deref(),
+        )
+        .await?
+        {
+            store
+                .revision(&request.id, &request.revision)
+                .await
+                .map_err(connect_error)?
+        } else {
+            let caller = caller(&self.state, &ctx).await?;
+            authorize(&caller, aster_core::Action::ReadNotebook).map_err(connect_error)?;
+            let _read = self.state.notebook_write.lock().await;
+            self.state
+                .admit_notebook(&request.id, &caller.subject)
+                .await
+                .map_err(connect_error)?;
+            self.state
+                .notebooks
+                .revision(&request.id, &request.revision)
+                .await
+                .map_err(connect_error)?
+        };
+        let notebook_json = serde_json::to_string(&notebook)
+            .map_err(|_| ConnectError::internal("notebook serialization failed"))?;
+        Ok(api::NotebookRevision {
+            notebook_json,
+            ..Default::default()
+        }
+        .into())
+    }
+
+    async fn restore_notebook_revision(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, api::RestoreNotebookRevisionRequest>,
+    ) -> ServiceResult<api::SaveNotebookResponse> {
+        let request = request.to_owned_message();
+        let caller = caller(&self.state, &ctx).await?;
+        authorize(&caller, aster_core::Action::WriteNotebook).map_err(connect_error)?;
+        let oid = &request.expected_content_revision;
+        if !matches!(oid.len(), 40 | 64) || !oid.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(ConnectError::invalid_argument(
+                "a notebook content precondition is required",
+            ));
+        }
+        let expected = aster_core::NotebookPrecondition::Blob(oid.clone());
+        let saved = if let Some((principal, store)) = notebook_workspace(
+            &self.state,
+            &ctx,
+            request.team.as_deref(),
+            request.workspace.as_deref(),
+        )
+        .await?
+        {
+            let notebook = store
+                .revision(&request.id, &request.revision)
+                .await
+                .map_err(connect_error)?;
+            store
+                .save_if(&notebook, &principal.subject, expected)
+                .await
+                .map_err(connect_error)?
+        } else {
+            let notebook = {
+                let _read = self.state.notebook_write.lock().await;
+                self.state
+                    .admit_notebook(&request.id, &caller.subject)
+                    .await
+                    .map_err(connect_error)?;
+                self.state
+                    .notebooks
+                    .revision(&request.id, &request.revision)
+                    .await
+                    .map_err(connect_error)?
+            };
+            // A restore preserves an absent legacy context exactly; ordinary old-client saves inherit it.
+            self.state
+                .save_notebook_owned_context(&notebook, &caller.subject, expected, false)
+                .await
+                .map_err(connect_error)?
+        };
+        Ok(api::SaveNotebookResponse {
+            revision: saved.revision,
+            content_revision: saved.content_revision,
+            ..Default::default()
+        }
+        .into())
+    }
+
     async fn save_notebook(
         &self,
         ctx: RequestContext,
@@ -765,6 +1399,12 @@ impl api::Aster for AsterApi {
         let requested = request.to_owned_message();
         let message = requested.notebook.clone().into_option().unwrap_or_default();
         let mut notebook = aster_core::Notebook {
+            context: message.context.clone().into_option().map(|context| {
+                aster_core::NotebookContext {
+                    catalog_context: context.catalog_context,
+                    schema: context.schema,
+                }
+            }),
             id: requested.id.clone(),
             title: message.title.clone(),
             engine: message.engine.clone().map(aster_core::EngineId::new),
@@ -1091,16 +1731,74 @@ impl api::Aster for AsterApi {
 }
 
 fn to_conversation(value: aster_core::Conversation) -> api::Conversation {
+    let pending_tool = value.pending.map(|turn| {
+        let call = turn.call;
+        api::PendingNotebookTool {
+            connections: turn.user.mcp_connections,
+            skills: turn
+                .user
+                .skill_dependencies
+                .unwrap_or_default()
+                .into_iter()
+                .map(|s| api::SkillSelection {
+                    id: s.id,
+                    revision: s.revision,
+                    ..Default::default()
+                })
+                .collect(),
+            phase: turn.phase,
+            connection: call
+                .as_ref()
+                .map(|c| c.connection.clone())
+                .unwrap_or_default(),
+            tool: call.as_ref().map(|c| c.tool.clone()).unwrap_or_default(),
+            arguments_json: call
+                .as_ref()
+                .map(|c| c.arguments.clone())
+                .unwrap_or_default(),
+            confirmation: call.map(|c| c.confirmation).unwrap_or_default(),
+            expires_at: turn.expires_at,
+            ..Default::default()
+        }
+    });
     api::Conversation {
+        pending_tool: pending_tool.into(),
         id: value.id,
         revision: value.revision,
         messages: value
             .messages
             .into_iter()
             .map(|m| api::ChatMessage {
+                mcp_connections: m.mcp_connections,
                 role: m.role,
                 content: m.content,
                 helper: m.helper,
+                skills: m
+                    .skill_dependencies
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|skill| api::SkillSelection {
+                        id: skill.id,
+                        revision: skill.revision,
+                        ..Default::default()
+                    })
+                    .collect(),
+                ..Default::default()
+            })
+            .collect(),
+        ..Default::default()
+    }
+}
+
+fn defaults_pb(value: aster_core::skills::SkillDefaults) -> api::SkillDefaults {
+    api::SkillDefaults {
+        revision: value.revision,
+        skills: value
+            .skills
+            .into_iter()
+            .map(|s| api::SkillSelection {
+                id: s.id,
+                revision: s.revision,
                 ..Default::default()
             })
             .collect(),

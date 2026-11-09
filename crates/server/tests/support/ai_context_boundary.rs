@@ -306,6 +306,7 @@ impl NotebookStore for Notebooks {
 }
 fn notebook(id: &str, sentinel: &str) -> Notebook {
     Notebook {
+        context: None,
         id: id.into(),
         title: id.into(),
         engine: None,
@@ -392,6 +393,15 @@ pub async fn state(capture: &Capture) -> AppState {
         .unwrap();
     AppState {
         catalog_assets: None,
+        skills: Arc::new(aster_core::skills::InMemorySkills::default()),
+        mcp: None,
+        personal_model_policy: Arc::new(aster_core::InMemoryPersonalModelPolicy::with_subjects(&[
+            "alice", "bob", "admin", "viewer", "editor", "carol",
+        ])),
+        personal_model_destinations: Some(
+            aster_server::DestinationPolicy::parse(&capture.origin).unwrap(),
+        ),
+        personal_models_enabled: true,
         config: AppConfig {
             bind: String::new(),
             engines: vec![],
@@ -586,6 +596,27 @@ pub async fn mixed_metadata() {
     assert!(seen[0].to_string().contains("ALLOWED_SCHEMA"));
 }
 
+struct WorkspaceAuthority(Mutex<CurrentIdentity>);
+#[async_trait::async_trait]
+impl CurrentIdentityProvider for WorkspaceAuthority {
+    async fn current(&self, user_uuid: &str) -> Result<CurrentIdentity> {
+        let current = self.0.lock().unwrap();
+        if user_uuid != current.user_uuid {
+            return Err(CoreError::Unauthorized("unknown fixture user".into()));
+        }
+        Ok(current.clone())
+    }
+    async fn group_exists(&self, group: &str) -> Result<bool> {
+        Ok(self
+            .0
+            .lock()
+            .unwrap()
+            .groups
+            .iter()
+            .any(|value| value == group))
+    }
+}
+
 pub async fn workspace_index() {
     let cap = capture().await;
     let mut state = state(&cap).await;
@@ -636,21 +667,35 @@ pub async fn workspace_index() {
         .unwrap()
         .as_secs() as i64;
     let groups = vec!["/teams/alpha/members".into(), "/teams/beta/members".into()];
+    let user_uuid = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    let identity = Identity {
+        subject: "alice".into(),
+        roles: vec![Role::Editor],
+        groups: groups.clone(),
+        user_uuid: Some(user_uuid.into()),
+    };
+    let authority = Arc::new(WorkspaceAuthority(Mutex::new(CurrentIdentity {
+        user_uuid: user_uuid.into(),
+        active: true,
+        roles: vec![Role::Editor],
+        groups: groups.clone(),
+    })));
+    state.current_identity = Some(authority.clone());
     let first = state
         .sessions
-        .create("alice", vec![Role::Editor], groups.clone(), None, now)
+        .create_verified(&identity, None, now)
         .await
         .unwrap();
     let second = state
         .sessions
-        .create("alice", vec![Role::Editor], groups.clone(), None, now)
+        .create_verified(&identity, None, now)
         .await
         .unwrap();
     let principal = Principal {
         subject: "alice".into(),
         roles: vec![Role::Editor],
         groups,
-        user_uuid: None,
+        user_uuid: Some(user_uuid.into()),
     };
     let cases = [
         ("alpha", &first.sid, false, "ALPHA_FIRST"),
@@ -703,4 +748,24 @@ pub async fn workspace_index() {
         400
     );
     assert_eq!(cap.seen.lock().unwrap().len(), before);
+    authority
+        .0
+        .lock()
+        .unwrap()
+        .groups
+        .retain(|group| group != "/teams/alpha/members");
+    let mut body = turn();
+    body["team"] = json!("alpha");
+    body["expectedRevision"] = json!("1");
+    let (status, response) =
+        request(&app, SEND, &format!("aster_session={}", first.sid), body).await;
+    assert_eq!(
+        status, 403,
+        "fresh membership removal must override cached groups: {response}"
+    );
+    assert_eq!(
+        cap.seen.lock().unwrap().len(),
+        before,
+        "revoked membership reached the model"
+    );
 }

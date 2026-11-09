@@ -40,8 +40,9 @@ pub use identity::{
 };
 pub use llm::{InMemoryLlm, LlmConfig, LlmStore};
 pub use notebook::{
-    Cell, CellKind, InMemoryNotebookOwners, Notebook, NotebookOwnerChange, NotebookOwnerRecord,
-    NotebookOwners, NotebookPrecondition, NotebookSave, NotebookSnapshot, NotebookStore,
+    Cell, CellKind, InMemoryNotebookOwners, Notebook, NotebookContext, NotebookOwnerChange,
+    NotebookOwnerRecord, NotebookOwners, NotebookPrecondition, NotebookSave, NotebookSnapshot,
+    NotebookStore,
 };
 pub use registry::{CatalogRegistry, EngineRegistry};
 pub use secrets::{require, EnvSecrets, InMemorySecrets, SecretStore};
@@ -62,3 +63,12 @@ pub use conversation::{
 
 pub mod exchange;
 pub use exchange::{CellResult, ExchangeStore, InMemoryExchanges, NotebookExchange};
+
+pub mod personal_model_policy;
+pub use personal_model_policy::{
+    InMemoryPersonalModelPolicy, PersonalModelPolicy, PersonalModelPolicyStore,
+};
+
+pub mod skills;
+
+pub mod mcp;

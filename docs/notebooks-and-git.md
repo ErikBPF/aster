@@ -36,7 +36,13 @@ still pending. A saved
 notebook can be reopened through `GetNotebook`; from the checkout, `git log`
 and `git show <revision>` inspect older committed content. The v2 text format
 escapes SQL lines that resemble cell markers or begin with a backslash; the
-reader still accepts v1 files. The optional `# engine: <id>` header makes one
+reader still accepts v1 files. Notebook-level Data context uses v3 with a JSON
+`# context:` header containing `catalog_context` and `schema`. REST and RPC edits
+that omit context preserve the saved pair; an explicit empty object clears it.
+Notebook queries inherit that pair and refuse conflicting request values.
+Uniform legacy SQL-cell contexts seed the selector; mixed contexts require an
+explicit choice and retain cell metadata until then. Older binaries cannot read
+v3 files, so rolling back requires restoring compatible notebook revisions too. The optional `# engine: <id>` header makes one
 engine authoritative for the notebook; runs that name another engine are
 refused. Legacy per-cell `engine=` markers still parse when the header is
 absent. Back up the repository before replacing its volume or enabling v2
@@ -46,8 +52,8 @@ writes; an older Aster version cannot read v2 files. See
 A cell's first non-empty line selects its kind: `%md` renders sanitized
 Markdown (including Mermaid fenced blocks) and never executes; `%sql` is
 accepted for symmetry and is stripped; anything else is SQL. The browser shows
-edit and preview modes for Markdown, one `+ Cell` control below every cell and
-`+ Add cell` below the cell list. Typing `%md` changes the cell kind; there is no
+edit and preview modes for Markdown, a `+ Cell` control between cells and
+a persistent `+ Cell` below the list. Move arrows stay visible in cell headers. Typing `%md` changes the cell kind; there is no
 separate Markdown creation button.
 
 In the browser, `Ctrl/⌘+Enter` runs the focused cell, `Shift+Enter` runs it
@@ -163,3 +169,55 @@ accurate sync status, failure handling and branch isolation are required. This
 is an `@unautomated` draft; conflict UX and a named disposable GitHub target
 for live validation remain open. No global repository is assumed. Do not label
 a local commit as remotely saved.
+
+
+### Notebook commands and recovery
+
+Notebook overflow exposes Find action (Ctrl/Cmd+Shift+P), outline, source search and revision history. The Shortcuts button explains keyboard navigation. Cell
+checkboxes select multiple cells; Shift-click selects a range. Visible arrows
+still move one cell. Commands duplicate, move, delete or run the selected cells
+in document order. Copies receive new identities and do not copy assistant
+sessions. Split preserves Markdown markers; merge refuses incompatible kinds,
+metadata or legacy engines.
+
+Undo/redo retains the latest 50 cell operations in the current page. Native text
+editor undo remains separate. Reloading clears operation history; Git revision
+history remains available. Undo refuses to overwrite text edited after an
+operation, and it waits for running cells. Deleting all cells is refused.
+
+The outline navigates Markdown headings, excluding fenced code. Find and replace
+searches literal cell source, either throughout the notebook or within the
+selection. Apply requires a current preview; replacement is one undoable action.
+
+Results support bounded scrolling, collapse and CSV download of displayed rows.
+Truncated exports are named accordingly. CSV quotes fields, leaves null values
+empty, and prefixes formula-shaped strings with an apostrophe for spreadsheet
+safety. Clearing output removes browser results and future visible-output
+attachments, not stored exchanges.
+
+Revision history lists the latest 50 notebook-changing commits in the authorized
+workspace branch. The preview compares complete notebook source and metadata.
+Restore reads the selected revision on the server and writes it using the
+previewed current content revision. Concurrent edits cause a conflict; restore
+never retries with a refreshed precondition. Historical legacy context is
+preserved exactly. An unchanged restoration does not create a redundant commit.
+Team restores remain local until the existing explicit Sync action.
+
+
+### Cell navigation and selection
+
+Escape leaves the SQL editor and focuses its cell; Enter edits the active cell.
+Autocomplete consumes Escape first, and dialogs close without activating cell
+shortcuts. The mode hint distinguishes editing from cell navigation. Checkboxes
+and Shift-click select cells; a contextual toolbar shows the count and exposes
+Run selected, movement, duplication, deletion and clear selection. Per-cell
+buttons still act on their own cell.
+
+With a cell or its checkbox focused, arrows select adjacent cells and Shift plus
+arrows extends or shrinks the range. Ctrl/Cmd+Shift+Up/Down moves the selection.
+Ctrl/Cmd+Enter runs selected SQL cells through the shared queue. Shift+Enter runs
+and advances beyond the range only if focus and selection have not changed while
+waiting. A/B inserts SQL above/below; Z/Shift+Z undoes/redoes a cell operation; ?
+opens help. Text fields and assistant inputs retain normal typing and their
+existing shortcuts. Repeated mutation keys are ignored. Markdown remains `%md`;
+there are no Y/M type shortcuts.

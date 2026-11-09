@@ -91,6 +91,13 @@ fn test_app_with_llm(llm: Arc<InMemoryLlm>) -> Router {
 fn test_state_with_llm(llm: Arc<InMemoryLlm>) -> AppState {
     AppState {
         catalog_assets: None,
+        skills: Arc::new(aster_core::skills::InMemorySkills::default()),
+        mcp: None,
+        personal_model_policy: Arc::new(aster_core::InMemoryPersonalModelPolicy::with_subjects(&[
+            "alice", "bob", "admin", "viewer", "editor", "carol",
+        ])),
+        personal_model_destinations: None,
+        personal_models_enabled: true,
         config: AppConfig {
             bind: String::new(),
             engines: vec![],
@@ -960,4 +967,393 @@ async fn personal_helpers_route_by_subject_and_name_without_exposing_tokens() {
 
     first_task.abort();
     second_task.abort();
+}
+
+#[tokio::test]
+async fn personal_registration_without_admin_grant_is_refused() {
+    let response = test_app().oneshot(Request::builder()
+        .method("PUT").uri("/api/llm/private")
+        .header("x-aster-subject", "not-granted")
+        .header("x-aster-roles", "editor")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"base_url":"https://models.example.invalid","model":"sql","api_key":"disposable"}"#)).unwrap()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn personal_capability_revocation_blocks_saved_use_but_allows_owner_cleanup() {
+    let (url, calls, task) = fake_model("SELECT 1").await;
+    let mut state = test_state_with_llm(Arc::new(InMemoryLlm::new()));
+    state.personal_model_policy = Arc::new(InMemoryPersonalModelPolicy::default());
+    state
+        .notebook_owners
+        .change(NotebookOwnerChange {
+            source: state.notebooks.source_key(),
+            id: "sales".into(),
+            expected_owner: None,
+            owner: "alice".into(),
+            source_blob: "fixture".into(),
+            actor: "alice".into(),
+            reason: None,
+        })
+        .await
+        .unwrap();
+    let app = app(Arc::new(state));
+    let grant = json!({"expectedRevision":"0","subjects":["alice"],"teams":[]});
+    let (status, _, _) = call(
+        &app,
+        "POST",
+        "/aster.v1.Aster/PutPersonalModelPolicy",
+        Some("alice"),
+        "editor",
+        Some(grant.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, body, _) = call(
+        &app,
+        "POST",
+        "/aster.v1.Aster/PutPersonalModelPolicy",
+        Some("admin"),
+        "admin",
+        Some(grant),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["revision"], "1");
+    let registration = json!({"id":"private","baseUrl":url,"model":"qwen","token":"fixture-token"});
+    let (status, body, _) = call(
+        &app,
+        "POST",
+        "/aster.v1.Aster/PutPersonalModel",
+        Some("alice"),
+        "editor",
+        Some(registration.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["ref"], "personal/private");
+    assert!(!body.to_string().contains("fixture-token"));
+    let (status, _, _) = call(
+        &app,
+        "PUT",
+        "/api/notebooks/sales/helper",
+        Some("alice"),
+        "editor",
+        Some(json!({"helper":"personal/private"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _, _) = call(
+        &app,
+        "POST",
+        "/aster.v1.Aster/PutPersonalModelPolicy",
+        Some("admin"),
+        "admin",
+        Some(json!({"expectedRevision":"1","subjects":[],"teams":[]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    for (path, body) in [
+        ("/aster.v1.Aster/PutPersonalModel", registration),
+        (
+            "/api/ai",
+            json!({"prompt":"select one","helper":"personal/private"}),
+        ),
+    ] {
+        let (status, _, _) = call(&app, "POST", path, Some("alice"), "editor", Some(body)).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{path}");
+    }
+    let (status, _, _) = call(
+        &app,
+        "PUT",
+        "/api/notebooks/sales/helper",
+        Some("alice"),
+        "editor",
+        Some(json!({"helper":"personal/private"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(calls.lock().unwrap().is_empty());
+    let (status, _, _) = call(
+        &app,
+        "POST",
+        "/aster.v1.Aster/DeletePersonalModel",
+        Some("alice"),
+        "editor",
+        Some(json!({"id":"private"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    task.abort();
+}
+
+#[tokio::test]
+async fn personal_models_require_approved_destinations_and_enabled_credentials() {
+    let mut state = test_state_with_llm(Arc::new(InMemoryLlm::new()));
+    state.personal_model_destinations =
+        Some(aster_server::DestinationPolicy::parse("https://models.example.invalid").unwrap());
+    let app = app(Arc::new(state));
+    for url in [
+        "http://models.example.invalid",
+        "https://unapproved.invalid",
+    ] {
+        let (status, _, _) = call(
+            &app,
+            "PUT",
+            "/api/llm/private",
+            Some("alice"),
+            "editor",
+            Some(json!({"base_url":url,"model":"qwen","api_key":"fixture-token"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+    let mut state = test_state_with_llm(Arc::new(InMemoryLlm::new()));
+    state.personal_models_enabled = false;
+    let app = aster_server::app(Arc::new(state));
+    let (status, _, _) = call(
+        &app,
+        "PUT",
+        "/api/llm/private",
+        Some("alice"),
+        "editor",
+        Some(json!({"base_url":"https://models.example.invalid","model":"qwen"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+struct PersonalAuthority(Mutex<CurrentIdentity>);
+#[async_trait::async_trait]
+impl CurrentIdentityProvider for PersonalAuthority {
+    async fn current(&self, _: &str) -> Result<CurrentIdentity> {
+        Ok(self.0.lock().unwrap().clone())
+    }
+    async fn group_exists(&self, _: &str) -> Result<bool> {
+        Ok(true)
+    }
+}
+
+#[tokio::test]
+async fn personal_team_permission_refreshes_membership_without_shared_registry() {
+    let directory = tempfile::tempdir().unwrap();
+    let authority = Arc::new(PersonalAuthority(Mutex::new(CurrentIdentity {
+        user_uuid: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".into(),
+        active: true,
+        roles: vec![Role::Editor],
+        groups: vec!["analysts".into()],
+    })));
+    let mut state = test_state_with_llm(Arc::new(InMemoryLlm::new()));
+    state.current_identity = Some(authority.clone());
+    state.personal_model_destinations =
+        Some(aster_server::DestinationPolicy::parse("https://models.example.invalid").unwrap());
+    state.personal_model_policy = Arc::new(InMemoryPersonalModelPolicy::default());
+    state
+        .personal_model_policy
+        .replace(0, vec![], vec!["data".into()], "admin")
+        .await
+        .unwrap();
+    state.team_workspaces = Some(Arc::new(
+        aster_server::TeamWorkspaces::new(
+            directory.path(),
+            std::collections::HashMap::from([(
+                "data".into(),
+                aster_server::TeamPolicy {
+                    member_claim: "analysts".into(),
+                    maintainer_claim: "maintainers".into(),
+                    allowed_repositories: std::collections::HashSet::from(["org/repo".into()]),
+                    local_repositories: Default::default(),
+                },
+            )]),
+        )
+        .unwrap(),
+    ));
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let session = state
+        .sessions
+        .create_verified(
+            &Identity {
+                subject: "alice".into(),
+                roles: vec![Role::Editor],
+                groups: vec!["analysts".into()],
+                user_uuid: Some("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".into()),
+            },
+            None,
+            now,
+        )
+        .await
+        .unwrap();
+    let app = app(Arc::new(state));
+    for expected in [StatusCode::OK, StatusCode::FORBIDDEN] {
+        let response=app.clone().oneshot(Request::builder().method("PUT").uri("/api/llm/private")
+            .header("cookie",format!("aster_session={}",session.sid)).header("content-type","application/json")
+            .header("x-aster-groups","analysts")
+            .body(Body::from(json!({"base_url":"https://models.example.invalid","model":"qwen","api_key":"fixture-token"}).to_string())).unwrap()).await.unwrap();
+        assert_eq!(response.status(), expected);
+        authority.0.lock().unwrap().groups.clear();
+    }
+}
+
+#[tokio::test]
+async fn personal_generation_rechecks_current_role_after_session_downgrade() {
+    let authority = Arc::new(PersonalAuthority(Mutex::new(CurrentIdentity {
+        user_uuid: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".into(),
+        active: true,
+        roles: vec![Role::Viewer],
+        groups: vec![],
+    })));
+    let llm = Arc::new(InMemoryLlm::new());
+    let (url, calls, task) = fake_model("SELECT 1").await;
+    llm.put(LlmConfig {
+        subject: "alice".into(),
+        id: "private".into(),
+        base_url: url,
+        model: "qwen".into(),
+        api_key: "fixture-token".into(),
+    })
+    .await
+    .unwrap();
+    let mut state = test_state_with_llm(llm);
+    state.current_identity = Some(authority);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let session = state
+        .sessions
+        .create_verified(
+            &Identity {
+                subject: "alice".into(),
+                roles: vec![Role::Editor],
+                groups: vec![],
+                user_uuid: Some("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".into()),
+            },
+            None,
+            now,
+        )
+        .await
+        .unwrap();
+    let app = app(Arc::new(state));
+    for (method, path, body) in [
+        (
+            "POST",
+            "/api/ai",
+            json!({"prompt":"select one","helper":"personal/private"}),
+        ),
+        (
+            "PUT",
+            "/api/llm/private",
+            json!({"base_url":"https://models.example.invalid","model":"qwen"}),
+        ),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(path)
+                    .header("cookie", format!("aster_session={}", session.sid))
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "{path}");
+    }
+    assert!(calls.lock().unwrap().is_empty());
+    task.abort();
+}
+
+struct NoPersonalGitCalls;
+#[async_trait::async_trait]
+impl aster_server::TeamGitVerifier for NoPersonalGitCalls {
+    async fn verified_default_commit(&self, _: &str, _: u64, _: u64, _: &str) -> Result<String> {
+        panic!("personal capability checks must not call Git")
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn personal_team_capability_does_not_override_git_policy_denial() {
+    let database = std::env::var("ASTER_TEST_PERSONAL_MODEL_URL").unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let user = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    let local_group = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    let git_group = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+    let maintainer = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+    let mut state = test_state_with_llm(Arc::new(InMemoryLlm::new()));
+    state.current_identity = Some(Arc::new(PersonalAuthority(Mutex::new(CurrentIdentity {
+        user_uuid: user.into(),
+        active: true,
+        roles: vec![Role::Editor],
+        groups: vec![local_group.into()],
+    }))));
+    state.personal_model_destinations =
+        Some(aster_server::DestinationPolicy::parse("https://models.example.invalid").unwrap());
+    state.personal_model_policy = Arc::new(InMemoryPersonalModelPolicy::default());
+    state
+        .personal_model_policy
+        .replace(0, vec![], vec!["data".into()], "admin")
+        .await
+        .unwrap();
+    state.team_workspaces = Some(Arc::new(
+        aster_server::TeamWorkspaces::new(
+            directory.path(),
+            std::collections::HashMap::from([(
+                "data".into(),
+                aster_server::TeamPolicy {
+                    member_claim: local_group.into(),
+                    maintainer_claim: maintainer.into(),
+                    allowed_repositories: std::collections::HashSet::from(["org/repo".into()]),
+                    local_repositories: Default::default(),
+                },
+            )]),
+        )
+        .unwrap(),
+    ));
+    state.team_git_targets = Some(Arc::new(
+        aster_server::TeamGitTargets::connect(
+            &database,
+            std::collections::HashMap::from([(
+                "data".into(),
+                aster_server::TeamGitPolicy {
+                    member_group_uuid: git_group.into(),
+                    maintainer_group_uuid: maintainer.into(),
+                    installation_id: 1,
+                    allowed_repositories: std::collections::HashMap::from([("org/repo".into(), 1)]),
+                },
+            )]),
+            Arc::new(NoPersonalGitCalls),
+        )
+        .await
+        .unwrap(),
+    ));
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let session = state
+        .sessions
+        .create_verified(
+            &Identity {
+                subject: "alice".into(),
+                roles: vec![Role::Editor],
+                groups: vec![local_group.into()],
+                user_uuid: Some(user.into()),
+            },
+            None,
+            now,
+        )
+        .await
+        .unwrap();
+    let app = app(Arc::new(state));
+    let response = app.oneshot(Request::builder().method("PUT").uri("/api/llm/private")
+        .header("cookie", format!("aster_session={}", session.sid)).header("content-type", "application/json")
+        .body(Body::from(json!({"base_url":"https://models.example.invalid","model":"qwen","api_key":"fixture-token"}).to_string())).unwrap()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }

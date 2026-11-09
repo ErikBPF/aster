@@ -74,7 +74,10 @@ with tempfile.TemporaryDirectory(prefix="aster-s7-browser-") as work:
                 expect(page.locator("#contract-review")).to_be_empty()
                 page.get_by_role("button", name="Review draft with context", exact=True).click()
                 expect(page.locator("#contract-review")).to_contain_text("SELECT 2 -- edited")
+                # Drain admitted responses before resetting the revocation receipt boundary.
+                page.wait_for_load_state("networkidle")
                 allowed_responses = list(responses)
+                assert any("TEAM_ONLY_MEANING" in response for response in allowed_responses)
                 Path(fixture["bundle"], "grants.json").write_text(json.dumps({"formatVersion": 1, "version": "revoked", "grants": []}))
                 responses.clear()
                 page.get_by_role("button", name="Review draft with context", exact=True).click()

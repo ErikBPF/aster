@@ -15,6 +15,58 @@ package aster.v1;
 import "google/api/annotations.proto";
 
 service Aster {
+  rpc GetSkillDefaults(GetSkillDefaultsRequest) returns (SkillDefaults) {
+    option (google.api.http) = { get: "/v1/ai/skill-defaults" };
+  }
+  rpc PutSkillDefaults(PutSkillDefaultsRequest) returns (SkillDefaults) {
+    option (google.api.http) = { put: "/v1/ai/skill-defaults" body: "*" };
+  }
+  rpc DiscoverMcpTools(DiscoverMcpToolsRequest) returns (DiscoverMcpToolsResponse) {
+    option (google.api.http) = { get: "/v1/ai/mcp-connections/{id}/tools" };
+  }
+  rpc ApproveMcpRead(ApproveMcpReadRequest) returns (McpConnection) {
+    option (google.api.http) = { put: "/v1/ai/mcp-connections/{id}/reads" body: "*" };
+  }
+  rpc CallMcpTool(CallMcpToolRequest) returns (CallMcpToolResponse) {
+    option (google.api.http) = { post: "/v1/ai/mcp-connections/{id}/call" body: "*" };
+  }
+  rpc ListMcpConnections(ListMcpConnectionsRequest) returns (ListMcpConnectionsResponse) {
+    option (google.api.http) = { get: "/v1/ai/mcp-connections" };
+  }
+  rpc PutMcpConnection(PutMcpConnectionRequest) returns (McpConnection) {
+    option (google.api.http) = { put: "/v1/ai/mcp-connections/{id}" body: "*" };
+  }
+  rpc GetPersonalModelPolicy(GetPersonalModelPolicyRequest) returns (PersonalModelPolicyResponse) {
+    option (google.api.http) = { get: "/v1/ai/personal-model-policy" };
+  }
+  rpc PutPersonalModelPolicy(PutPersonalModelPolicyRequest) returns (PersonalModelPolicyResponse) {
+    option (google.api.http) = { put: "/v1/ai/personal-model-policy" body: "*" };
+  }
+  rpc PutPersonalModel(PutPersonalModelRequest) returns (PersonalModelResponse) {
+    option (google.api.http) = { put: "/v1/ai/personal-models/{id}" body: "*" };
+  }
+  rpc DeletePersonalModel(DeletePersonalModelRequest) returns (DeletePersonalModelResponse) {
+    option (google.api.http) = { delete: "/v1/ai/personal-models/{id}" };
+  }
+  rpc ListSkills(ListSkillsRequest) returns (ListSkillsResponse) {
+    option (google.api.http) = { get: "/v1/skills" };
+  }
+  rpc GetSkill(GetSkillRequest) returns (Skill) {
+    option (google.api.http) = { get: "/v1/skills/{id}" };
+  }
+  rpc ListSkillVersions(ListSkillVersionsRequest) returns (ListSkillsResponse) {
+    option (google.api.http) = { get: "/v1/skills/{id}/versions" };
+  }
+  rpc PutSkill(PutSkillRequest) returns (Skill) {
+    option (google.api.http) = { post: "/v1/skills" body: "*" };
+  }
+  rpc DeleteSkill(DeleteSkillRequest) returns (DeleteSkillResponse) {
+    option (google.api.http) = { delete: "/v1/skills/{id}" };
+  }
+  rpc ShareSkill(ShareSkillRequest) returns (Skill) {
+    option (google.api.http) = { put: "/v1/skills/{id}/sharing" body: "*" };
+  }
+
   rpc ListCatalogInventory(ListTablesRequest) returns (ContractReadResponse) {
     option (google.api.http) = { post: "/v1/catalog-inventory" body: "*" };
   }
@@ -35,6 +87,9 @@ service Aster {
   }
   rpc ListConversations(ListConversationsRequest) returns (ListConversationsResponse) {
     option (google.api.http) = { get: "/v1/notebooks/{notebook}/conversations" };
+  }
+  rpc DeleteConversation(DeleteConversationRequest) returns (DeleteConversationResponse) {
+    option (google.api.http) = { delete: "/v1/notebooks/{notebook}/conversations/{session}" };
   }
   rpc NewConversation(NewConversationRequest) returns (Conversation) {
     option (google.api.http) = {
@@ -95,6 +150,10 @@ service Aster {
       get: "/v1/notebooks/{id}"
     };
   }
+
+  rpc ListNotebookRevisions(GetNotebookRequest) returns (NotebookRevisions) {}
+  rpc GetNotebookRevision(GetNotebookRevisionRequest) returns (NotebookRevision) {}
+  rpc RestoreNotebookRevision(RestoreNotebookRevisionRequest) returns (SaveNotebookResponse) {}
 
   rpc SaveNotebook(SaveNotebookRequest) returns (SaveNotebookResponse) {
     option (google.api.http) = {
@@ -259,10 +318,31 @@ message GetNotebookRequest {
   optional string workspace = 3;
 }
 
+message NotebookRevisions { repeated string revisions = 1; }
+message GetNotebookRevisionRequest {
+  string id = 1;
+  string revision = 2;
+  optional string team = 3;
+  optional string workspace = 4;
+}
+message RestoreNotebookRevisionRequest {
+  string id = 1;
+  string revision = 2;
+  string expected_content_revision = 3;
+  optional string team = 4;
+  optional string workspace = 5;
+}
+message NotebookRevision { string notebook_json = 1; }
+
 message Cell {
   string id = 1;
   string sql = 2;
   optional string engine = 3;
+}
+
+message NotebookContext {
+  optional string catalog_context = 1;
+  optional string schema = 2;
 }
 
 message Notebook {
@@ -273,6 +353,7 @@ message Notebook {
   // One engine for the whole notebook. Saving it makes per-cell engines
   // legacy; the server refuses a run that names a different engine.
   optional string engine = 5;
+  NotebookContext context = 6;
 }
 
 message SaveNotebookRequest {
@@ -364,6 +445,11 @@ message SendMessageRequest {
   optional ContractSelection contract_selection = 9;
   // Session to append to. Absent appends to the latest session.
   optional string session = 10;
+  optional SkillSelection skill = 11;
+  optional SkillSelections selected_skills = 12;
+  optional McpSelections selected_mcp = 13;
+  string tool_confirmation = 14;
+  bool cancel_tool_turn = 15;
 }
 message ListConversationsRequest {
   string notebook = 1;
@@ -378,9 +464,19 @@ message ConversationSummary {
   int64 created_at_ms = 3;
   int64 updated_at_ms = 4;
   int32 message_count = 5;
+  int64 revision = 6;
 }
 message ListConversationsResponse {
   repeated ConversationSummary sessions = 1;
+}
+message DeleteConversationResponse {}
+message DeleteConversationRequest {
+  string notebook = 1;
+  string session = 2;
+  optional int64 expected_revision = 3;
+  optional string team = 4;
+  optional string workspace = 5;
+  optional string cell = 6;
 }
 message NewConversationRequest {
   string notebook = 1;
@@ -392,11 +488,14 @@ message ChatMessage {
   string role = 1;
   string content = 2;
   string helper = 3;
+  repeated SkillSelection skills = 4;
+  repeated string mcp_connections = 5;
 }
 message Conversation {
   string id = 1;
   int64 revision = 2;
   repeated ChatMessage messages = 3;
+  optional PendingNotebookTool pending_tool = 4;
 }
 
 message FetchQueryRequest {
@@ -443,4 +542,131 @@ message SendSummaryRequest {
 }
 message SendSummaryResponse {
   string summary = 1;
+}
+
+message SkillSelection {
+  string id = 1;
+  int64 revision = 2;
+}
+message SkillReference {
+  string name = 1;
+  string content = 2;
+}
+message Skill {
+  string id = 1;
+  string owner = 2;
+  string title = 3;
+  int64 revision = 4;
+  int64 sharing_revision = 5;
+  string audience = 6;
+  optional string team = 7;
+  string instructions = 8;
+  repeated SkillReference references = 9;
+  string author = 10;
+  int64 created_at_ms = 11;
+  bool can_edit = 12;
+  string description = 13;
+}
+message ListSkillsRequest {}
+message ListSkillsResponse { repeated Skill skills = 1; }
+message GetSkillRequest { string id = 1; optional int64 revision = 2; }
+message ListSkillVersionsRequest { string id = 1; }
+message PutSkillRequest {
+  string id = 1;
+  int64 expected_revision = 2;
+  string title = 3;
+  string instructions = 4;
+  repeated SkillReference references = 5;
+  string description = 6;
+}
+message ShareSkillRequest {
+  string id = 1;
+  int64 expected_sharing_revision = 2;
+  string audience = 3;
+  optional string team = 4;
+}
+
+message GetPersonalModelPolicyRequest {}
+message PutPersonalModelPolicyRequest {
+  int64 expected_revision = 1;
+  repeated string subjects = 2;
+  repeated string teams = 3;
+}
+message PersonalModelPolicyResponse {
+  int64 revision = 1;
+  repeated string subjects = 2;
+  repeated string teams = 3;
+  bool can_register = 4;
+  bool is_admin = 5;
+}
+message PutPersonalModelRequest {
+  string id = 1;
+  string base_url = 2;
+  string model = 3;
+  string token = 4;
+}
+message PersonalModelResponse {
+  string id = 1;
+  string base_url = 2;
+  string model = 3;
+  string ref = 4;
+}
+message DeletePersonalModelRequest { string id = 1; }
+message DeletePersonalModelResponse {}
+
+message McpConnection {
+  string id = 1;
+  string name = 2;
+  string description = 3;
+  string url = 4;
+  string auth = 5;
+  bool enabled = 6;
+  int64 revision = 7;
+  repeated string subjects = 8;
+  repeated string teams = 9;
+}
+message ListMcpConnectionsRequest {}
+message ListMcpConnectionsResponse {
+  bool configured = 1;
+  bool can_manage = 2;
+  repeated McpConnection connections = 3;
+}
+message PutMcpConnectionRequest {
+  string id = 1;
+  string name = 2;
+  string description = 3;
+  string url = 4;
+  string auth = 5;
+  bool enabled = 6;
+  int64 expected_revision = 7;
+  repeated string subjects = 8;
+  repeated string teams = 9;
+  string token = 10;
+}
+
+message DiscoverMcpToolsRequest { string id = 1; }
+message McpTool { string name = 1; string description = 2; string schema_json = 3; string schema_hash = 4; bool approved_read = 5; }
+message DiscoverMcpToolsResponse { repeated McpTool tools = 1; }
+message ApproveMcpReadRequest { string id = 1; int64 expected_revision = 2; string tool = 3; string schema_hash = 4; bool approved = 5; }
+message CallMcpToolRequest { string id = 1; string tool = 2; string arguments_json = 3; string confirmation = 4; }
+message CallMcpToolResponse { string confirmation = 1; string result_json = 2; }
+
+message DeleteSkillRequest { string id = 1; int64 expected_revision = 2; int64 expected_sharing_revision = 3; }
+message DeleteSkillResponse {}
+
+message SkillSelections { repeated SkillSelection skills = 1; }
+message GetSkillDefaultsRequest {}
+message SkillDefaults { int64 revision = 1; repeated SkillSelection skills = 2; }
+message PutSkillDefaultsRequest { int64 expected_revision = 1; repeated SkillSelection skills = 2; }
+
+message McpSelections { repeated string connections = 1; }
+message PendingNotebookTool {
+  string phase = 1;
+  string connection = 2;
+  string tool = 3;
+  string arguments_json = 4;
+  string confirmation = 5;
+  int64 expires_at = 6;
+  repeated string connections = 7;
+  repeated SkillSelection skills = 8;
 }

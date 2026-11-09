@@ -86,17 +86,15 @@ pub(crate) async fn put_config(
     Path(id): Path<String>,
     Json(body): Json<LlmBody>,
 ) -> Result<Json<LlmSummary>, ApiError> {
-    let principal = principal(&state, &headers).await?;
-    validated_endpoint(&body.base_url)?;
-    state
-        .llm
-        .put(store_config(&principal, id.clone(), body))
-        .await?;
-    let config = state
-        .llm
-        .get(&principal.subject, &id)
-        .await?
-        .ok_or_else(|| CoreError::Storage("llm configuration did not persist".into()))?;
+    let config = register_personal(
+        &state,
+        &headers,
+        id,
+        body.base_url,
+        body.model,
+        body.api_key,
+    )
+    .await?;
     Ok(Json(LlmSummary::of(config)))
 }
 
@@ -116,17 +114,15 @@ pub(crate) async fn put_config_form(
     headers: HeaderMap,
     axum::extract::Form(form): axum::extract::Form<LlmForm>,
 ) -> Result<axum::response::Response, ApiError> {
-    let principal = principal(&state, &headers).await?;
-    let body = LlmBody {
-        base_url: form.base_url,
-        model: form.model,
-        api_key: form.api_key,
-    };
-    validated_endpoint(&body.base_url)?;
-    state
-        .llm
-        .put(store_config(&principal, form.id, body))
-        .await?;
+    register_personal(
+        &state,
+        &headers,
+        form.id,
+        form.base_url,
+        form.model,
+        form.api_key,
+    )
+    .await?;
     Ok(axum::response::Redirect::to("/settings/llm").into_response())
 }
 
@@ -286,10 +282,15 @@ pub(crate) async fn choose_helper_scoped(
         {
             return Err(CoreError::Unauthorized("shared helper unavailable".into()));
         }
-    } else if state.llm.get(subject, id).await?.is_none() {
-        return Err(CoreError::NotFound(
-            "selected helper is not registered".into(),
-        ));
+    } else {
+        let current = crate::personal_models::require(state, headers).await?;
+        authorize(&current, Action::RunQuery)?;
+        let config = state
+            .llm
+            .get(subject, id)
+            .await?
+            .ok_or_else(|| CoreError::NotFound("selected helper is not registered".into()))?;
+        crate::personal_models::destination(state, &config.base_url)?;
     }
     state
         .user_state
@@ -297,14 +298,28 @@ pub(crate) async fn choose_helper_scoped(
         .await
 }
 
-fn store_config(principal: &Principal, id: String, body: LlmBody) -> LlmConfig {
-    LlmConfig {
-        subject: principal.subject.clone(),
+pub(crate) async fn register_personal(
+    state: &AppState,
+    headers: &HeaderMap,
+    id: String,
+    base_url: String,
+    model: String,
+    api_key: String,
+) -> Result<LlmConfig, CoreError> {
+    let principal = crate::personal_models::require(state, headers).await?;
+    authorize(&principal, Action::WriteNotebook)?;
+    validated_endpoint(&base_url).map_err(|error| error.0)?;
+    crate::personal_models::destination(state, &base_url)?;
+    let config = LlmConfig {
+        subject: principal.subject,
         id,
-        base_url: body.base_url,
-        model: body.model,
-        api_key: body.api_key,
-    }
+        base_url,
+        model,
+        api_key,
+    };
+    config.validate()?;
+    state.llm.put(config.clone()).await?;
+    Ok(config)
 }
 
 #[derive(Deserialize)]
@@ -522,7 +537,17 @@ pub(crate) async fn generate(
     }))
 }
 
-pub(crate) async fn read_completion(mut response: reqwest::Response) -> Result<String, CoreError> {
+pub(crate) async fn read_completion(response: reqwest::Response) -> Result<String, CoreError> {
+    let message = read_completion_message(response).await?;
+    message["content"]
+        .as_str()
+        .filter(|text| !text.trim().is_empty() && text.len() <= 32768)
+        .map(str::to_owned)
+        .ok_or_else(|| CoreError::Invalid("helper reply is empty or exceeds 32 KiB".into()))
+}
+pub(crate) async fn read_completion_message(
+    mut response: reqwest::Response,
+) -> Result<serde_json::Value, CoreError> {
     if !response.status().is_success() {
         return Err(CoreError::Storage(format!(
             "helper returned {}",
@@ -542,11 +567,10 @@ pub(crate) async fn read_completion(mut response: reqwest::Response) -> Result<S
     }
     let payload: serde_json::Value =
         serde_json::from_slice(&bytes).map_err(|e| CoreError::Storage(e.to_string()))?;
-    payload["choices"][0]["message"]["content"]
-        .as_str()
-        .filter(|text| !text.trim().is_empty() && text.len() <= 32_768)
-        .map(str::to_owned)
-        .ok_or_else(|| CoreError::Invalid("helper reply is empty or exceeds 32 KiB".into()))
+    payload["choices"][0]["message"]
+        .as_object()
+        .map(|_| payload["choices"][0]["message"].clone())
+        .ok_or_else(|| CoreError::Invalid("invalid helper message".into()))
 }
 
 pub(crate) fn completion_request(
@@ -597,24 +621,29 @@ pub(crate) async fn resolve_helper(
             .ok_or_else(|| CoreError::Unauthorized("shared helper unavailable".into()))?;
         return registry.authorized_config(shared_id, &current).await;
     }
-    if let Some(id) = wanted {
+    let current = crate::personal_models::require(state, headers).await?;
+    authorize(&current, Action::RunQuery)?;
+    let config = if let Some(id) = wanted {
         let id = id.strip_prefix("personal/").unwrap_or(id);
         if !aster_core::llm::valid_id(id) {
             return Err(CoreError::Invalid("invalid helper name".into()));
         }
-        return state
+        state
             .llm
             .get(&principal.subject, id)
             .await?
-            .ok_or_else(|| CoreError::NotFound("selected helper is not registered".into()));
-    }
-    state
-        .llm
-        .list(&principal.subject)
-        .await?
-        .into_iter()
-        .next()
-        .ok_or_else(|| CoreError::NotFound("no llm endpoint registered".into()))
+            .ok_or_else(|| CoreError::NotFound("selected helper is not registered".into()))?
+    } else {
+        state
+            .llm
+            .list(&principal.subject)
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| CoreError::NotFound("no llm endpoint registered".into()))?
+    };
+    crate::personal_models::destination(state, &config.base_url)?;
+    Ok(config)
 }
 
 /// Users register either the host, the `/v1` base, or the full chat URL.

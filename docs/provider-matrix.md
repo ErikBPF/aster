@@ -19,10 +19,12 @@ must exist, and every selection site must refuse unknown names.
 | Team Git verifier | `TeamGitVerifier` (`crates/server/src/team_git.rs`) | GitHub App, disposable fake | `ASTER_TEAM_GIT_ENABLED=1` selects the App-backed team target route with PostgreSQL and a server-owned team policy; workspace activation remains off | `crates/server/features/notebook-isolation.feature` |
 | Secret store | `SecretStore` (`crates/core/src/secrets.rs`) | `env`, `memory` | `providers::secret_store` on `ASTER_SECRET_STORE` | `crates/core/features/secrets.feature` |
 | Identity provider | `IdentityProvider` (`crates/core/src/identity.rs`) | `oidc` (Authentik and Keycloak differ only in configuration), `none` | `providers::identity` on `ASTER_IDP_KIND` | `crates/server/features/sso.feature` (draft; the group/claim mapping is covered by the unit tests in `crates/server/src/identity.rs` and the Keycloak eval in the README) |
-| Current identity | `CurrentIdentityProvider` (`crates/core/src/identity.rs`) | Authentik API adapter, mutable fake in tests | `ASTER_SHARED_MODEL_AUTHORITY_ENABLED=1`, `ASTER_TEAM_GIT_ENABLED=1`, or `ASTER_TEAM_POLICY_FILE` opts into per-request UUID/group reads; default off. Requires an OIDC signed UUID claim, HTTPS API origin and a dedicated Aster read token. Shared-model authority additionally needs stable admin/editor group UUIDs. Team-policy registration needs no GitHub credentials. Live removal/read-after-write proof is deployment-specific. | `crates/server/src/current_identity.rs` fake API tests; `crates/server/features/authentik-catalog-team.feature` startup test; [isolated real Authentik revocation proof](plans/odcs-ai-catalog-rv.md); `crates/server/features/shared-ai-models.feature` remains partly unbound |
+| Current identity | `CurrentIdentityProvider` (`crates/core/src/identity.rs`) | Authentik API adapter, mutable fake in tests | `ASTER_AI_AUTHORITY_ENABLED=1`, `ASTER_SHARED_MODEL_AUTHORITY_ENABLED=1`, `ASTER_TEAM_GIT_ENABLED=1`, or `ASTER_TEAM_POLICY_FILE` opts into per-request UUID/group reads; default off. Requires an OIDC signed UUID claim, HTTPS API origin and a dedicated Aster read token. Shared-model authority additionally needs stable admin/editor group UUIDs. Team-policy registration needs no GitHub credentials. Live removal/read-after-write proof is deployment-specific. | `crates/server/src/current_identity.rs` fake API tests; `crates/server/features/authentik-catalog-team.feature` startup test; [isolated real Authentik revocation proof](plans/odcs-ai-catalog-rv.md); `crates/server/features/shared-ai-models.feature` remains partly unbound |
 | Engine grants | `Grants` (`crates/core/src/grants.rs`) | `postgres`, `memory` | `providers::metadata` on `ASTER_METADATA_STORE` | `crates/core/features/authorization.feature` |
 | Audit sink | `AuditSink` (`crates/core/src/audit.rs`) | `postgres`, `memory` | `providers::metadata` on `ASTER_METADATA_STORE` | `crates/server/features/audit-persistence.feature` |
 | LLM endpoint store | `LlmStore` (`crates/core/src/llm.rs`) | `postgres`, `memory` | `providers::metadata` on `ASTER_METADATA_STORE` | `crates/server/features/ai-assist.feature` |
+| Skill registry and personal defaults | `SkillStore` (`crates/core/src/skills.rs`) | `postgres`, `memory` | `providers::metadata` on `ASTER_METADATA_STORE` | `crates/server/features/ai-skills-models.feature` (draft; API and browser coverage recorded in the implementation plan) |
+| Personal model capability | `PersonalModelPolicyStore` (`crates/core/src/personal_model_policy.rs`) | `postgres`, `memory` | `providers::metadata` on `ASTER_METADATA_STORE`; default deny | `crates/server/features/ai-skills-models.feature` (draft) |
 | Shared model store | `SharedModelStore` (`crates/core/src/shared_models.rs`) | `postgres`, `memory` | `providers::metadata` on `ASTER_METADATA_STORE`; administrator routes additionally require `ASTER_SHARED_MODELS_ENABLED=1`, an approved HTTPS origin and a versioned application key | `crates/server/features/shared-ai-models.feature` |
 | Sessions | `SessionRegistry` (`crates/core/src/state.rs`) | `valkey`, `memory` | `providers::state` on `ASTER_STATE_STORE` | `crates/core/features/session-state.feature` |
 | OIDC handshakes | `HandshakeStore` (`crates/core/src/state.rs`) | `valkey`, `memory` | `providers::state` on `ASTER_STATE_STORE` | `crates/core/features/session-state.feature` |
@@ -70,8 +72,13 @@ instead of implicit.
 ## Notebook conversation memory
 
 `ConversationStore` owns private per-user/per-notebook transcripts. Each scope
-(notebook or notebook+cell) holds one or more sessions keyed by a server-owned
-session id; listing is newest first. Implementations:
+(notebook or notebook+cell) holds zero or more sessions keyed by a server-owned
+session id; listing is newest first. Pending MCP turns use atomic revision
+transitions in the same store, including confirmation and interrupted-operation
+state. Exact-session deletion checks owner, scope and revision atomically and
+refuses pending tool turns. PostgreSQL removes the legacy source row in the
+same transaction, serialized with bootstrap so history cannot be reimported.
+Implementations:
 `InMemoryConversations` and `PgConversations`, selected by
 `providers::conversations`. The default `metadata` reuses the metadata provider's
 store/pool; `postgres` uses `ASTER_CONVERSATION_DATABASE_URL` and installs only
@@ -99,3 +106,11 @@ kept per cell and a summary is limited to 8 KiB.
 Contract: `crates/server/features/notebook-session-exchange.feature`.
 Results and summaries are bookkeeping, not documents: clearing the store loses
 them and never touches a notebook or a stored conversation.
+
+`McpStore`: metadata provider (`memory` → `InMemoryMcp`, `postgres` → `PgMcp`), selected in `providers::metadata`; encrypted registrations and revisioned access metadata. Contract: `crates/server/features/ai-mcp-connections.feature` (unbound).
+
+`McpTransport`: `http` → `HttpMcp`, selected in `providers::mcp_transport`; tests use disposable loopback HTTP fixtures. Contract: `crates/server/features/ai-mcp-connections.feature` (unbound).
+
+`McpCallGuard`: in-process current-identity/revision policy (`CurrentCall`); no configurable external provider. Checked immediately before HTTP tool dispatch.
+
+Notebook Git history uses the existing `NotebookStore` port: bounded revision listing and exact revision reads. Restore reuses conditional saves and owner revision updates; no separate checkpoint provider is introduced.

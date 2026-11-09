@@ -74,9 +74,14 @@ Docs are Markdown files in a separate local Git checkout configured by
 `ASTER_CATALOG_ASSETS_DIR`. The layout is
 `catalogs/<catalog>/README.md`,
 `catalogs/<catalog>/schemas/<segment>/…/README.md` and
-`catalogs/<catalog>/schemas/<segment>/…/tables/<table>.md`; images live beside
-the document under `assets/`. The browser renders Markdown with the same
-sanitized marked/DOMPurify/Mermaid path as notebooks. Saving requires editor
+`catalogs/<catalog>/schemas/<segment>/…/tables/<table>.md`. Catalog and schema
+images live beside their document under `assets/`; table images live under
+`table-assets/<catalog>/<segment>/…/<table>/assets/`, isolated from sibling
+tables and nested schemas. The former shared
+`tables/assets/` directory is not served. Existing files stay untouched; an
+operator must assign each legacy image to its owning table before moving it.
+Asset directories must resolve inside the configured checkout. The browser
+renders Markdown with the same sanitized marked/DOMPurify/Mermaid path as notebooks. Saving requires editor
 permission and the current Git blob OID as `expectedRevision`; a mismatch is a
 409. Each save is a local, hook-free commit authored by the signed-in subject.
 The UI does not push.

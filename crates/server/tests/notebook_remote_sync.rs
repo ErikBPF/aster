@@ -85,6 +85,13 @@ async fn fixture() -> Fixture {
     let sessions = Arc::new(InMemorySessions::new(3600));
     let state = AppState {
         catalog_assets: None,
+        skills: Arc::new(aster_core::skills::InMemorySkills::default()),
+        mcp: None,
+        personal_model_policy: Arc::new(aster_core::InMemoryPersonalModelPolicy::with_subjects(&[
+            "alice", "bob", "admin", "viewer", "editor", "carol",
+        ])),
+        personal_model_destinations: None,
+        personal_models_enabled: true,
         config: AppConfig {
             bind: String::new(),
             engines: vec![],

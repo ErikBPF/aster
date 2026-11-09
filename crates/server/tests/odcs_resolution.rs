@@ -35,3 +35,8 @@ async fn contract_reads_with_denied_observation_make_zero_catalog_calls() {
 async fn contract_revocation_stops_next_request_disclosure() {
     support::whole_contract_team_access_is_default_deny().await;
 }
+
+#[tokio::test]
+async fn catalog_detail_uses_exact_contract_binding() {
+    support::catalog_detail_uses_exact_contract_binding().await;
+}

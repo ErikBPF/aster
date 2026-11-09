@@ -32,6 +32,13 @@ async fn app_with_personal_helpers() -> Router {
         .unwrap();
     app(Arc::new(AppState {
         catalog_assets: None,
+        skills: Arc::new(aster_core::skills::InMemorySkills::default()),
+        mcp: None,
+        personal_model_policy: Arc::new(aster_core::InMemoryPersonalModelPolicy::with_subjects(&[
+            "alice", "bob", "admin", "viewer", "editor", "carol",
+        ])),
+        personal_model_destinations: None,
+        personal_models_enabled: true,
         config: AppConfig {
             bind: String::new(),
             engines: vec![],
@@ -78,6 +85,7 @@ impl NotebookStore for SalesNotebook {
             return Err(CoreError::NotFound("notebook".into()));
         }
         Ok(Notebook {
+            context: None,
             id: id.into(),
             title: "Sales".into(),
             engine: None,

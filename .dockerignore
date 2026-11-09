@@ -1,0 +1,10 @@
+.git
+.devenv
+.direnv
+target
+worktrees
+graphify-out
+data
+.env*
+*.secrets.json
+*.secret.json
