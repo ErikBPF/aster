@@ -330,6 +330,16 @@ pub(crate) async fn refresh_for_shared(
 /// Require a verified OIDC session and a fresh current identity. The isolated
 /// no-IdP development header seam may administer a test registry, but neither
 /// a development-created session nor a production dev header can use it.
+pub(crate) async fn workspace_principal(
+    state: &AppState,
+    headers: &HeaderMap,
+    action: aster_core::Action,
+) -> std::result::Result<Principal, ApiError> {
+    let principal = current_principal(state, headers, false).await?;
+    aster_core::authorize(&principal, action)?;
+    Ok(principal)
+}
+
 pub(crate) async fn current_principal(
     state: &AppState,
     headers: &HeaderMap,

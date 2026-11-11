@@ -7,6 +7,14 @@ const nb = nbNode ? JSON.parse(nbNode.textContent) : null;
 const team = nbNode?.dataset.team || null;
 const workspace = nbNode?.dataset.workspace || 'session';
 let contentRevision = nbNode?.dataset.contentRevision || null;
+const durable = nbNode?.dataset.durableWorkspace ? {
+  workspace: nbNode.dataset.durableWorkspace, checkout: nbNode.dataset.checkout,
+  version: nbNode.dataset.checkoutVersion, branch: nbNode.dataset.branch, head: nbNode.dataset.head,
+  readOnly: true, token: null, epoch: null,
+} : null;
+let durableReady;
+let draftTimer;
+let draftQueue = Promise.resolve();
 const statusLine = document.getElementById('status');
 const cellsRoot = document.getElementById('cells');
 let selectedContract = null;
@@ -204,8 +212,12 @@ function setDirty(value) {
   if (syncButton) syncButton.disabled = dirty;
   if (dirty) {
     status('unsaved changes');
-    scheduleAutosave();
-  } else if (statusLine) statusLine.textContent = '';
+    if (durable) {
+      clearTimeout(draftTimer);
+      draftTimer = setTimeout(() => saveDurable(false).catch(error => status(error.message)), 600);
+    } else scheduleAutosave();
+  }
+  else if (statusLine) statusLine.textContent = '';
 }
 
 window.addEventListener('beforeunload', (event) => {
@@ -259,6 +271,8 @@ async function loadEngines() {
       if (option.value && !choices.some((entry) => entry.id === option.value)) option.disabled = true;
     }
     notebookEngine.disabled = choices.length === 0;
+    delete notebookEngine.dataset.workspaceDisabled;
+    applyDurableAuthority();
   } catch (error) {
     status(error.message);
   } finally { updateComputeLabel(); }
@@ -443,6 +457,8 @@ async function initNotebookContext() {
     }
     catalog.value = current;
     catalog.disabled = catalogs.length === 0;
+    delete catalog.dataset.workspaceDisabled;
+    applyDurableAuthority();
     feedback.textContent = catalogs.length ? '' : 'No catalogs available.';
     if (catalogs.length) await loadNotebookContext(root, saved.schema || '');
   } catch (error) {
@@ -483,6 +499,8 @@ async function loadNotebookContext(root, currentSchema, changed = false) {
     }
     schema.value = currentSchema;
     schema.disabled = schemas.length === 0;
+    delete schema.dataset.workspaceDisabled;
+    applyDurableAuthority();
     feedback.textContent = cleared + (schemas.length ? '' : 'No schemas available.');
     updateDataLabel(root);
   } catch (error) {
@@ -579,6 +597,7 @@ function setCellKind(cell, kind) {
 }
 
 function toggleMarkdownEdit(cell) {
+  if (notebookEditingBlocked()) return;
   if (cell.dataset.kind !== 'markdown') return;
   const editor = cell.querySelector('.editor');
   if (cellKind(editor.value) !== 'markdown') {
@@ -814,6 +833,11 @@ document.addEventListener('click', (event) => {
   const target = event.target.closest && event.target.closest('[data-action]');
   if (!target || !target.dataset.action) return;
   const cell = target.closest('.cell');
+  if (durable && ['commit', 'push', 'pull', 'open-pr', 'switch-branch', 'create-branch', 'takeover', 'reconcile', 'export'].includes(target.dataset.action)) {
+    durableAction(target.dataset.action).catch(error => status(error.message));
+    return;
+  }
+  if (durable?.readOnly && ['add', 'up', 'down', 'delete'].includes(target.dataset.action)) return;
   if (cell) currentCell = cell;
   switch (target.dataset.action) {
     case 'run': run(target); break;
@@ -842,6 +866,7 @@ document.addEventListener('focusin', (event) => {
 });
 
 function addCell(after, insertBefore = false, sql = '') {
+  if (notebookEditingBlocked()) return;
   const before = cellSnapshot();
   const id = 'c' + crypto.randomUUID();
   const section = cellTemplate(id, sql);
@@ -855,6 +880,7 @@ function addCell(after, insertBefore = false, sql = '') {
 }
 
 function removeCell(cell) {
+  if (notebookEditingBlocked()) return;
   const cells = [...document.querySelectorAll('.cell')];
   if (cells.length === 1) {
     status('a notebook keeps at least one cell');
@@ -868,6 +894,7 @@ function removeCell(cell) {
 }
 
 function moveCell(cell, delta) {
+  if (notebookEditingBlocked()) return;
   const sibling = delta < 0 ? cell.previousElementSibling : cell.nextElementSibling;
   if (!sibling) return;
   const before = cellSnapshot();
@@ -1051,12 +1078,22 @@ async function run(btn) {
 
   let response;
   try {
+    if (durable) {
+      await saveDurable(false);
+      const result = await workspaceRpc('RunWorkspaceCell', {
+        workspace:durable.workspace, checkout:durable.checkout, expectedVersion:durable.version,
+        notebook:nb.id, cell:cell.dataset.id,
+      });
+      response = new Response(JSON.stringify({columns:result.columns || [],
+        rows:(result.rowsJson || []).map(row => JSON.parse(row)), truncated:result.truncated}));
+    } else {
     response = await fetch('/api/query', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ sql: cellSource(area.value), engine, notebook: nb.id, cell: cell.dataset.id,
         catalog_context: catalog.value, schema: schema.value || null }),
     });
+    }
   } catch (error) {
     cell.classList.remove('running');
     btn.disabled = false;
@@ -1083,6 +1120,7 @@ async function runAll() {
 }
 
 async function save(silent = false) {
+  if (durable) return saveDurable(!silent).catch(error => status(error.message));
   if (!nb) return;
   if (saving) {
     if (silent) scheduleAutosave();
@@ -1208,7 +1246,7 @@ function initModelChoice(panel) {
 
 /* The selection belongs to this user and notebook, outside the Git file. */
 async function loadHelpers() {
-  if (!helperSelect || !nb) return;
+  if (!helperSelect || !nb || durable) return;
   helperSelect.disabled = true;
   helperSelect.replaceChildren(new Option('Loading AI models…', ''));
   try {
@@ -1314,7 +1352,7 @@ if (helperSelect) {
 /* Where this user is, kept in the shared state plane so the index page and the
  * TUI can resume on any container. Best effort: a failure never blocks a cell. */
 async function recordNotebook() {
-  if (team) return;
+  if (team || durable) return;
   try {
     const response = await fetch('/api/state');
     if (!response.ok) return;
@@ -1326,7 +1364,7 @@ async function recordNotebook() {
 function recordState(cell, engine) {
   // A legacy helper must migrate before an ordinary working-state write can
   // replace the old state row.
-  if (!nb || team) return;
+  if (!nb || team || durable) return;
   if (!helperReady) {
     pendingState = { cell, engine };
     return;
@@ -1359,7 +1397,7 @@ document.addEventListener('keydown', (event) => {
     run(cell.querySelector('.btn-run')).then(() => {
       const next = cell.nextElementSibling;
       if (next) next.querySelector('.editor').focus();
-      else addCell(cell).querySelector('.editor').focus();
+      else if (!notebookEditingBlocked()) addCell(cell)?.querySelector('.editor').focus();
     });
   }
 });
@@ -1482,6 +1520,7 @@ function scheduleComplete(area) {
 }
 
 function acceptComplete(index) {
+  if (notebookEditingBlocked()) return;
   const { area, start, items } = completeState;
   if (!area || !items[index]) return;
   /* `insert` is the label quoted when SQL needs it; plain names are identical. */
@@ -1525,7 +1564,7 @@ function completeKeydown(event, area) {
 
 for (const cell of document.querySelectorAll('.cell')) initCellToolbar(cell);
 for (const area of document.querySelectorAll('.editor')) wireEditor(area);
-loadEngines();
+loadEngines().then(() => { if (durable) durableReady.then(applyDurableAuthority); });
 initNotebookContext().then(() => {
   for (const cell of document.querySelectorAll('.md-cell')) mountMarkdown(cell);
   autosizeAll();
@@ -1546,6 +1585,7 @@ let chatSessions = [];
 let activeChatSession = null;
 
 async function chatRpc(method, body) {
+  if (durable) throw new Error('The assistant is unavailable in recoverable workspaces.');
   if (team) body = { ...body, team, workspace };
   const response = await fetch('/aster.v1.Aster/' + method, {
     method: 'POST',
@@ -1859,6 +1899,7 @@ async function fetchCellMaterial(kind) {
 }
 
 async function openChat() {
+  if (durable) return;
   initModelChoice(chatPanel);
   chatPanel.hidden = false;
   document.body.classList.add('chat-open');
@@ -2168,6 +2209,7 @@ async function loadCellChat(cell) {
 }
 
 async function openCellChat(cell) {
+  if (durable) return;
   const parts = cellChatParts(cell);
   const state = cellChatState(cell.dataset.id);
   parts.panel.hidden = false;
@@ -2292,6 +2334,404 @@ if (cellsRoot) {
     event.preventDefault();
     const cell = event.target.closest('.cell');
     if (cell) sendCellChat(cell);
+  });
+}
+
+
+/* Recoverable drafts and explicit Git publication share one serialized editor queue. */
+async function workspaceRpc(method, body) {
+  const response = await fetch('/aster.v1.Aster/' + method, {
+    method:'POST', headers:{'content-type':'application/json', 'connect-protocol-version':'1'},
+    body:JSON.stringify(body),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.message || data.error || `request failed (${response.status})`);
+  return data;
+}
+
+function workspaceWriter(id) {
+  try { return JSON.parse(sessionStorage.getItem('aster-writer:' + id) || 'null'); }
+  catch (_) { return null; }
+}
+
+function rememberWorkspaceWriter(view) {
+  if (view.writerToken) sessionStorage.setItem('aster-writer:' + view.id,
+    JSON.stringify({token:view.writerToken, epoch:view.epoch}));
+}
+
+function notebookEditingBlocked() { return !!durable && (durable.readOnly || !!durable.busy); }
+
+function applyDurableAuthority() {
+  if (!durable) return;
+  document.querySelectorAll('.editor').forEach(area => { area.readOnly = durable.readOnly || !!durable.busy; });
+  for (const button of document.querySelectorAll('[data-action]')) {
+    if (['save','add','add-cell','up','down','delete','commit','push','pull','open-pr','switch-branch','create-branch'].includes(button.dataset.action)) {
+      button.disabled = durable.readOnly || !!durable.busy;
+    }
+    if (button.dataset.action === 'ai') { button.disabled = true; button.hidden = true; }
+  }
+  for (const select of document.querySelectorAll('.cell select, #notebook-engine, #notebook-data select')) {
+    if (notebookEditingBlocked()) {
+      if (!select.hasAttribute('data-workspace-disabled')) select.dataset.workspaceDisabled = String(select.disabled);
+      select.disabled = true;
+    } else if (select.hasAttribute('data-workspace-disabled')) {
+      select.disabled = select.dataset.workspaceDisabled === 'true';
+      delete select.dataset.workspaceDisabled;
+    }
+  }
+  for (const id of ['helper','chat-toggle']) {
+    const element = document.getElementById(id);
+    if (element) { element.disabled = true; element.hidden = true; }
+  }
+  const branch = document.getElementById('workspace-branch');
+  if (branch) {
+    branch.textContent = durable.branch.replace(/^aster\/[^/]+\/[^/]+\//, '') + (durable.head ? ' · local commit ' + durable.head.slice(0,12) : '') + (durable.readOnly ? ' · read-only' : '');
+    branch.title = durable.branch;
+  }
+  const fullBranch = document.getElementById('workspace-full-branch');
+  if (fullBranch) fullBranch.textContent = durable.branch;
+}
+
+function durableMutation() {
+  if (durable.readOnly || !durable.token) throw new Error('This browser is read-only. Take over to edit.');
+  return {workspace:durable.workspace, checkout:durable.checkout, writerToken:durable.token,
+    epoch:durable.epoch, expectedVersion:durable.version};
+}
+
+function updateDurableCheckout(view) {
+  durable.version = view.version;
+  durable.branch = view.branch;
+  if (view.head) durable.head = view.head;
+  if (view.draftRevision) contentRevision = view.draftRevision;
+  applyDurableAuthority();
+}
+
+function saveDurable(force) {
+  clearTimeout(draftTimer);
+  draftQueue = draftQueue.catch(() => {}).then(async () => {
+    await durableReady;
+    if (!dirty && !force) return;
+    const mutation = durableMutation();
+    const generation = editGeneration;
+    status('saving draft…');
+    const view = await workspaceRpc('SaveWorkspaceDraft', {...mutation,
+      notebookJson:JSON.stringify({...nb, engine:notebookEngineId(), context:notebookContextFromDom(), cells:cellsFromDom()}),
+      ...(contentRevision ? {expectedDraftRevision:contentRevision} : {ifAbsent:true}),
+    });
+    updateDurableCheckout(view);
+    if (generation === editGeneration) {
+      setDirty(false);
+      status('saved draft; commit and push separately');
+    } else status('unsaved changes');
+  });
+  return draftQueue;
+}
+
+async function durableAction(action) {
+  if (durable.busy) return;
+  durable.busy = true;
+  const inputs = [...document.querySelectorAll('.cell select, .nb-bar input, .workspace-git-content input')].map(element => ({element, disabled:element.disabled}));
+  inputs.forEach(({element}) => { element.disabled = true; });
+  applyDurableAuthority();
+  try { await durableActionInner(action); }
+  catch (error) {
+    try {
+      const view = await workspaceRpc('OpenWorkspace', {workspace:durable.workspace, writerToken:durable.token});
+      durable.readOnly = view.readOnly === true;
+    } catch (_) { durable.readOnly = true; }
+    throw error;
+  } finally {
+    durable.busy = false;
+    inputs.forEach(({element, disabled}) => { element.disabled = disabled; });
+    applyDurableAuthority();
+  }
+}
+
+async function downloadWorkspaceCheckout(workspace, checkout) {
+  const result = await workspaceRpc('ExportWorkspaceCheckout', {workspace, checkout});
+  const bytes = Uint8Array.from(atob(result.archive), character => character.charCodeAt(0));
+  const url = URL.createObjectURL(new Blob([bytes], {type:'application/x-tar'}));
+  const link = document.createElement('a'); link.href = url; link.download = 'aster-' + checkout + '.tar';
+  document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function durableActionInner(action) {
+  await durableReady;
+  if (action === 'export') {
+    if (!durable.readOnly) await saveDurable(false);
+    await downloadWorkspaceCheckout(durable.workspace, durable.checkout);
+    status('exported saved Git history and files; extract into an empty directory to resolve externally');
+    return;
+  }
+  if (action === 'reconcile') {
+    const result = await workspaceRpc('ReconcileWorkspaceRemote', {workspace:durable.workspace});
+    if (result.checkout) updateDurableCheckout(result.checkout);
+    const writer = workspaceWriter(durable.workspace);
+    const view = await workspaceRpc('OpenWorkspace', {workspace:durable.workspace, ...(writer ? {writerToken:writer.token} : {})});
+    durable.epoch = view.epoch;
+    durable.readOnly = view.readOnly === true || !writer;
+    durable.token = durable.readOnly ? null : writer.token;
+    status(durable.readOnly ? 'remote outcome checked; take over to edit' : 'remote outcome checked; workspace ready');
+    return;
+  }
+  if (action === 'takeover') {
+    const view = await workspaceRpc('TakeoverWorkspace', {workspace:durable.workspace, expectedEpoch:durable.epoch});
+    rememberWorkspaceWriter(view);
+    location.reload();
+    return;
+  }
+  await saveDurable(false);
+  const mutation = durableMutation();
+  let view;
+  if (action === 'commit') {
+    const message = document.getElementById('workspace-commit-message')?.value.trim();
+    if (!message) throw new Error('Enter a commit message.');
+    view = await workspaceRpc('CommitWorkspaceNotebooks', {...mutation, notebooks:[nb.id], message});
+    status('committed locally; push separately');
+  } else if (action === 'push') {
+    view = await workspaceRpc('PushWorkspaceCheckout', mutation);
+    status('pushed committed changes');
+  } else if (action === 'pull') {
+    view = await workspaceRpc('PullWorkspaceCheckout', mutation);
+    location.reload();
+  } else if (action === 'switch-branch' || action === 'create-branch') {
+    const selected = document.getElementById('workspace-branch-name')?.value.trim();
+    if (!selected) throw new Error('Enter a branch name.');
+    const prefix = durable.branch.split('/').slice(0,3).join('/') + '/';
+    const branch = selected.startsWith('aster/') ? selected : prefix + selected;
+    view = await workspaceRpc('SwitchWorkspaceBranch', {...mutation, branch, create:action === 'create-branch'});
+    location.reload();
+  } else if (action === 'open-pr') {
+    const result = await workspaceRpc('OpenWorkspacePullRequest', {...mutation,
+      title:document.getElementById('workspace-pr-title')?.value.trim() || nb.title});
+    const url = new URL(result.url);
+    if (url.protocol !== 'https:' || url.hostname !== 'github.com' || url.username || url.password) throw new Error('Invalid pull request URL.');
+    const link = document.createElement('a');
+    link.href = url.href; link.textContent = 'Open pull request'; link.target = '_blank'; link.rel = 'noopener noreferrer';
+    statusLine.replaceChildren(link);
+  }
+  if (view) updateDurableCheckout(view);
+}
+
+if (durable) {
+  applyDurableAuthority();
+  durableReady = (async () => {
+    const writer = workspaceWriter(durable.workspace);
+    const view = await workspaceRpc('OpenWorkspace', {workspace:durable.workspace, ...(writer ? {writerToken:writer.token} : {})});
+    durable.epoch = view.epoch;
+    durable.readOnly = view.readOnly === true || !writer;
+    durable.token = durable.readOnly ? null : writer?.token;
+    applyDurableAuthority();
+    status(durable.readOnly ? 'read-only; take over to edit' : 'workspace ready');
+  })();
+  durableReady.catch(error => status(error.message));
+  window.addEventListener('beforeunload', event => {
+    if (dirty) { event.preventDefault(); event.returnValue = ''; }
+  });
+}
+
+function workspaceNotebookPath(workspaceId, checkout, notebook) {
+  return '/workspaces/' + [workspaceId, checkout].map(encodeURIComponent).join('/') + '/notebooks/' + encodeURIComponent(notebook);
+}
+
+function workspaceSubmit(form, operation) {
+  form.addEventListener('submit', async event => {
+    event.preventDefault();
+    if (form.dataset.busy) return;
+    form.dataset.busy = 'true';
+    const button = form.querySelector('[type="submit"], button:last-child');
+    if (button) button.disabled = true;
+    try { await operation(); }
+    catch (error) { status(error.message); }
+    finally { delete form.dataset.busy; if (button) button.disabled = false; }
+  });
+}
+
+async function rememberWorkspaceTab(workspaceId, checkout, notebook, writer, state) {
+  state ||= await workspaceRpc('GetWorkspaceState', {workspace:workspaceId});
+  const layout = JSON.parse(state.layoutJson || '{"tabs":[],"active":null}');
+  const before = JSON.stringify(layout);
+  let active = layout.tabs.findIndex(tab => tab.checkout === checkout && tab.notebook === notebook);
+  if (active < 0) {
+    if (layout.tabs.length >= 32) throw new Error('Close an open notebook tab before opening another.');
+    active = layout.tabs.length;
+    layout.tabs.push({checkout, notebook});
+  }
+  layout.active = active;
+  if (writer && JSON.stringify(layout) !== before) {
+    const saved = await workspaceRpc('SaveWorkspaceLayout', {workspace:workspaceId, writerToken:writer.token,
+      epoch:writer.epoch, expectedVersion:state.layoutVersion || '0', layoutJson:JSON.stringify(layout)});
+    state.layoutVersion = saved.version;
+  }
+  state.layoutJson = JSON.stringify(layout);
+  return state;
+}
+
+function renderWorkspaceTabs(root, workspaceId, state, writer) {
+  if (!root) return;
+  const layout = JSON.parse(state.layoutJson || '{"tabs":[],"active":null}');
+  root.replaceChildren();
+  layout.tabs.forEach((tab, index) => {
+    const item = document.createElement('li');
+    const link = document.createElement('a');
+    link.href = workspaceNotebookPath(workspaceId, tab.checkout, tab.notebook);
+    link.textContent = (layout.active === index ? 'Resume ' : '') + tab.notebook + ' · ' + tab.checkout.slice(0,8);
+    item.append(link);
+    if (writer) {
+      const close = document.createElement('button');
+      close.type = 'button'; close.className = 'btn ghost'; close.textContent = 'Close tab';
+      close.setAttribute('aria-label', 'Close tab ' + tab.notebook);
+      close.addEventListener('click', async () => {
+        close.disabled = true;
+        const tabs = layout.tabs.filter((_, selected) => selected !== index);
+        const activeTab = layout.tabs[layout.active];
+        const active = tabs.indexOf(activeTab);
+        try {
+          if (durable) await saveDurable(false);
+          await workspaceRpc('SaveWorkspaceLayout', {workspace:workspaceId, writerToken:writer.token, epoch:writer.epoch,
+            expectedVersion:state.layoutVersion || '0', layoutJson:JSON.stringify({tabs, active:active < 0 ? null : active})});
+          if (durable && durable.checkout === tab.checkout && nb.id === tab.notebook) {
+            location.assign('/workspaces/' + encodeURIComponent(workspaceId));
+          } else location.reload();
+        } catch (error) { status(error.message); close.disabled = false; }
+      });
+      item.append(close);
+    }
+    root.append(item);
+  });
+}
+
+const workspaceCreate = document.getElementById('workspace-create');
+if (workspaceCreate) workspaceSubmit(workspaceCreate, async () => {
+  const view = await workspaceRpc('CreateWorkspace', {name:workspaceCreate.elements.name.value});
+  rememberWorkspaceWriter(view);
+  location.assign('/workspaces/' + encodeURIComponent(view.id));
+});
+
+const dashboard = document.getElementById('workspace-dashboard');
+if (dashboard) {
+  const workspaceId = dashboard.dataset.workspace;
+  let writer = workspaceWriter(workspaceId);
+  let opened;
+  let state;
+  const cloneForm = document.getElementById('workspace-clone');
+  const authority = () => {
+    if (!writer || opened?.readOnly) throw new Error('This browser is read-only. Take over to edit.');
+    return {workspace:workspaceId, writerToken:writer.token, epoch:opened.epoch};
+  };
+  cloneForm.querySelectorAll('input,select,button').forEach(element => { element.disabled = true; });
+  document.getElementById('workspace-delete').disabled = true;
+  const ready = (async () => {
+    [opened, state] = await Promise.all([
+      workspaceRpc('OpenWorkspace', {workspace:workspaceId, ...(writer ? {writerToken:writer.token} : {})}),
+      workspaceRpc('GetWorkspaceState', {workspace:workspaceId}),
+    ]);
+    const readOnly = opened.readOnly === true || !writer;
+    if (!readOnly) writer.epoch = opened.epoch;
+    const quota = document.getElementById('workspace-quota');
+    quota.textContent = `${state.totalCheckouts || 0} / ${state.maxCheckouts} repositories; ${(Number(state.recoveryBytes || 0) / 1048576).toFixed(1)} MiB recovery data. File limit: ${Number(state.maxCheckoutBytes) / 1048576} MiB per repository.`;
+    cloneForm.querySelectorAll('input,select,button').forEach(element => { element.disabled = readOnly; });
+    document.getElementById('workspace-delete').disabled = readOnly;
+    renderWorkspaceTabs(document.getElementById('workspace-tabs'), workspaceId, state, readOnly ? null : writer);
+    for (const id of state.checkouts || []) {
+      const card = document.createElement('section');
+      document.getElementById('workspace-checkouts').append(card);
+      try {
+        const checkout = await workspaceRpc('GetWorkspaceCheckout', {workspace:workspaceId, checkout:id});
+        const title = document.createElement('h3'); title.textContent = checkout.repository;
+        const branch = document.createElement('p'); branch.textContent = checkout.branch + ' · ' + checkout.head.slice(0,12) + (checkout.dirty ? ' · uncommitted changes' : ' · clean');
+        const list = document.createElement('ul');
+        for (const notebook of checkout.notebooks || []) {
+          const item = document.createElement('li'); const link = document.createElement('a');
+          link.href = workspaceNotebookPath(workspaceId, id, notebook); link.textContent = notebook;
+          item.append(link); list.append(item);
+        }
+        const exportButton = document.createElement('button'); exportButton.className = 'btn'; exportButton.textContent = 'Export checkout';
+        exportButton.addEventListener('click', async () => {
+          exportButton.disabled = true;
+          try { await downloadWorkspaceCheckout(workspaceId, id); status('exported saved Git history and files'); }
+          catch (error) { status(error.message); }
+          finally { exportButton.disabled = false; }
+        });
+        card.append(title, branch, list, exportButton);
+        if (!readOnly) {
+          const form = document.createElement('form');
+          const label = document.createElement('label'); label.textContent = 'New notebook ID ';
+          const input = document.createElement('input'); input.name = 'notebook'; input.required = true; input.maxLength = 64; input.pattern = '[A-Za-z0-9_-]+';
+          label.append(input);
+          const button = document.createElement('button'); button.type = 'submit'; button.className = 'btn'; button.textContent = 'Create notebook';
+          form.append(label, button); card.append(form);
+          workspaceSubmit(form, async () => {
+            const notebook = input.value;
+            await workspaceRpc('SaveWorkspaceDraft', {...authority(), checkout:id, expectedVersion:checkout.version, ifAbsent:true,
+              notebookJson:JSON.stringify({id:notebook, title:notebook, cells:[{id:'c1', sql:'', engine:null, metadata:{}}]})});
+            await rememberWorkspaceTab(workspaceId, id, notebook, writer);
+            location.assign(workspaceNotebookPath(workspaceId, id, notebook));
+          });
+        }
+      } catch (error) { card.textContent = 'Repository unavailable: ' + error.message; }
+    }
+    status(readOnly ? 'read-only; take over to edit' : 'workspace ready');
+  })();
+  ready.catch(error => status(error.message));
+  document.getElementById('workspace-load-repositories').addEventListener('click', async () => {
+    try {
+      await ready;
+      const result = await workspaceRpc('ListWorkspaceRepositories', {team:document.getElementById('workspace-team').value});
+      const select = document.getElementById('workspace-repository'); select.replaceChildren();
+      for (const repository of result.repositories || []) select.add(new Option(repository.repository, repository.repositoryId));
+      if (!select.options.length) status('No approved repositories are available for this team.');
+    } catch (error) { status(error.message); }
+  });
+  workspaceSubmit(cloneForm, async () => {
+    await ready;
+    status('cloning repository…');
+    await workspaceRpc('CloneWorkspaceRepository', {...authority(), team:document.getElementById('workspace-team').value,
+      repositoryId:document.getElementById('workspace-repository').value, branch:document.getElementById('workspace-new-branch').value});
+    location.reload();
+  });
+  document.getElementById('workspace-reconcile').addEventListener('click', async () => {
+    try { await ready; await workspaceRpc('ReconcileWorkspaceRemote', {workspace:workspaceId}); location.reload(); }
+    catch (error) { status(error.message); }
+  });
+  document.getElementById('workspace-takeover').addEventListener('click', async () => {
+    try {
+      await ready;
+      const view = await workspaceRpc('TakeoverWorkspace', {workspace:workspaceId, expectedEpoch:opened.epoch});
+      rememberWorkspaceWriter(view); location.reload();
+    } catch (error) { status(error.message); }
+  });
+  document.getElementById('workspace-delete').addEventListener('click', async () => {
+    if (!confirm('Delete this workspace and its unpublished files and local commits?')) return;
+    try { await ready; await workspaceRpc('DeleteWorkspace', authority()); location.assign('/workspaces'); }
+    catch (error) { status(error.message); }
+  });
+}
+
+if (durable) {
+  durableReady.then(async () => {
+    const writer = durable.readOnly ? null : {token:durable.token, epoch:durable.epoch};
+    const state = await rememberWorkspaceTab(durable.workspace, durable.checkout, nb.id, writer);
+    renderWorkspaceTabs(document.getElementById('workspace-open-tabs'), durable.workspace, state, writer);
+  }).catch(error => status(error.message));
+  document.addEventListener('click', event => {
+    const link = event.target.closest?.('a');
+    if (!link || !dirty || link.target || event.ctrlKey || event.metaKey || link.origin !== location.origin) return;
+    event.preventDefault();
+    saveDurable(false).then(() => location.assign(link.href)).catch(error => status(error.message));
+  });
+}
+
+for (const button of document.querySelectorAll('[data-workspace-delete-retry]')) {
+  button.addEventListener('click', async () => {
+    const workspaceId = button.dataset.workspaceDeleteRetry;
+    const writer = workspaceWriter(workspaceId);
+    if (!writer) { status('Deletion cleanup will retry automatically.'); return; }
+    button.disabled = true;
+    try {
+      await workspaceRpc('DeleteWorkspace', {workspace:workspaceId, writerToken:writer.token, epoch:writer.epoch});
+      location.reload();
+    } catch (error) { status(error.message); button.disabled = false; }
   });
 }
 
@@ -4065,6 +4505,7 @@ function rememberCellOperation(before) {
   syncCellSelection();
 }
 function undoCellOperation(redo = false) {
+  if (notebookEditingBlocked()) return;
   if (notebookCells().some(c => c.classList.contains('running'))) return status('Wait for running cells before undo.');
   const source = redo ? cellRedo : cellUndo, target = redo ? cellUndo : cellRedo;
   const entry = source.at(-1);
@@ -4087,6 +4528,7 @@ function undoCellOperation(redo = false) {
   if (cellNavigation && currentCell) currentCell.focus();
 }
 function editSelectedCells(action) {
+  if (notebookEditingBlocked()) return;
   const cells = selectedCells();
   if (!cells.length) return;
   if (cells.some(c => c.classList.contains('running'))) return status('Wait for selected queries to finish.');
@@ -4118,6 +4560,7 @@ function editSelectedCells(action) {
   rememberCellOperation(before);
 }
 function splitCell() {
+  if (notebookEditingBlocked()) return;
   const cell = selectedCells()[0];
   if (!cell || cell.classList.contains('running')) return;
   const area = cell.querySelector('.editor'), sql = area.value, index = area.selectionStart;
@@ -4133,6 +4576,7 @@ function splitCell() {
   selectCell(next); rememberCellOperation(before); autosizeAll();
 }
 function mergeCell() {
+  if (notebookEditingBlocked()) return;
   const cell = selectedCells()[0], next = cell?.nextElementSibling;
   if (!next || cell.classList.contains('running') || next.classList.contains('running')) return;
   const area = cell.querySelector('.editor'), other = next.querySelector('.editor');
@@ -4209,7 +4653,7 @@ function showNotebookSearch() {
     apply.disabled = !pending.changes.length;
   });
   apply.addEventListener('click', () => {
-    if (!pending) return;
+    if (!pending || notebookEditingBlocked()) return;
     const current = cellSnapshot();
     if (current.length !== pending.snapshot.length || current.some((item,i) => item.node !== pending.snapshot[i].node || item.sql !== pending.snapshot[i].sql)) {
       invalidate(); preview.textContent = 'Source changed; preview again.'; return;
@@ -4259,6 +4703,7 @@ function outputControls(out, result) {
   meta.append(toggle,clear,download);
 }
 async function showNotebookHistory() {
+  if (durable) return status('Use Export checkout to inspect workspace Git history.');
   if (dirty || saving) return status('Save your edits before opening revision history.');
   const expected = contentRevision, generation = editGeneration;
   const dialog = notebookDialog('Notebook revision history');
@@ -4312,7 +4757,7 @@ function showNotebookCommands() {
   const search = dialogField(dialog,'Search commands'); search.type='search';
   const actions = [
     ['Undo cell operation',()=>undoCellOperation()],['Redo cell operation',()=>undoCellOperation(true)],
-    ['Notebook outline',showOutline],['Find and replace',showNotebookSearch],['Revision history',showNotebookHistory],
+    ['Notebook outline',showOutline],['Find and replace',showNotebookSearch],...(!durable ? [['Revision history',showNotebookHistory]] : []),
     ['Duplicate selected cells',()=>editSelectedCells('copy')],['Split cell at cursor',splitCell],['Merge with next cell',mergeCell],
     ['Move selected cells up',()=>editSelectedCells('up')],['Move selected cells down',()=>editSelectedCells('down')],
     ['Delete selected cells',()=>editSelectedCells('delete')],['Run selected cells',runSelectedCells],
@@ -4427,7 +4872,7 @@ if (nb) {
   const more = cellButton('⋯','btn ghost',''); more.id = 'notebook-actions'; more.setAttribute('aria-label','Notebook actions');
   bar.append(help,more);
   const popup = notebookPopover(more,'Notebook actions');
-  for (const [label, action] of [['Find action',showNotebookCommands],['Notebook outline',showOutline],['Find and replace',showNotebookSearch],['Revision history',showNotebookHistory]]) {
+  for (const [label, action] of [['Find action',showNotebookCommands],['Notebook outline',showOutline],['Find and replace',showNotebookSearch],...(!durable ? [['Revision history',showNotebookHistory]] : [])]) {
     const button = cellButton(label,'btn ghost','');
     button.addEventListener('click',()=>{popup.hidePopover(); action();}); popup.append(button);
   }

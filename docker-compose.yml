@@ -56,6 +56,8 @@ services:
       dockerfile: docker/Dockerfile.server
     image: aster-server:local
     environment:
+      # A verified-identity override must supply team policy, App and S3 configuration.
+      ASTER_WORKSPACES_ENABLED: ${ASTER_WORKSPACES_ENABLED:-0}
       ASTER_BIND: 0.0.0.0:8080
       DATABASE_URL: postgres://${POSTGRES_USER:-aster}:${POSTGRES_PASSWORD:-aster}@postgres:5432/${POSTGRES_DB:-aster}
       ASTER_ENGINES: ${ASTER_ENGINES:-mock-local;mock;local}

@@ -465,6 +465,7 @@ impl Contract {
             notebook_owners: self.notebook_owners.clone(),
             notebook_write: self.notebook_write.clone(),
             team_workspaces: None,
+            durable_workspaces: None,
             team_git_targets: None,
             llm: Arc::new(InMemoryLlm::new()),
             shared_models: None,

@@ -234,6 +234,16 @@ impl GithubApp {
         installation_id: u64,
         repository_id: u64,
     ) -> Result<InstallationToken> {
+        self.scoped_token(installation_id, repository_id, json!({"contents":"write"}))
+            .await
+    }
+
+    async fn scoped_token(
+        &self,
+        installation_id: u64,
+        repository_id: u64,
+        permissions: serde_json::Value,
+    ) -> Result<InstallationToken> {
         if installation_id == 0 || repository_id == 0 {
             return Err(unavailable());
         }
@@ -253,7 +263,7 @@ impl GithubApp {
             .bearer_auth(jwt)
             .json(&json!({
                 "repository_ids": [repository_id],
-                "permissions": {"contents": "write"}
+                "permissions": permissions
             }))
             .send()
             .await
@@ -358,4 +368,205 @@ fn sign_jwt(pem: &str, app_id: u64) -> Result<String> {
     .map_err(|_| unavailable())?;
     let signature = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(signature);
     Ok(format!("{message}.{signature}"))
+}
+
+#[derive(Deserialize)]
+struct PullRequest {
+    number: u64,
+    state: String,
+    html_url: String,
+    head: PullRequestRef,
+    base: PullRequestRef,
+}
+
+#[derive(Deserialize)]
+struct PullRequestRef {
+    r#ref: String,
+    repo: PullRequestRepository,
+}
+
+#[derive(Deserialize)]
+struct PullRequestRepository {
+    id: u64,
+}
+
+impl PullRequest {
+    fn checked_url(
+        self,
+        repository: &str,
+        repository_id: u64,
+        branch: &str,
+        base: &str,
+    ) -> Result<String> {
+        if self.number == 0
+            || self.state != "open"
+            || self.head.r#ref != branch
+            || self.base.r#ref != base
+            || self.head.repo.id != repository_id
+            || self.base.repo.id != repository_id
+            || self.html_url != format!("https://github.com/{repository}/pull/{}", self.number)
+        {
+            return Err(unavailable());
+        }
+        Ok(self.html_url)
+    }
+}
+
+#[async_trait::async_trait]
+impl aster_core::workspace::WorkspaceHosting for GithubApp {
+    async fn credential(
+        &self,
+        repository: &str,
+        installation_id: u64,
+        repository_id: u64,
+    ) -> Result<aster_core::workspace::WorkspaceGitCredential> {
+        self.verify_repository(repository, installation_id, repository_id)
+            .await?;
+        let token = self
+            .installation_token(installation_id, repository_id)
+            .await?;
+        Ok(aster_core::workspace::WorkspaceGitCredential {
+            remote_url: format!("https://github.com/{repository}.git"),
+            token: token.0,
+            ca_bundle: None,
+        })
+    }
+    async fn find_pull_request(
+        &self,
+        repository: &str,
+        installation_id: u64,
+        repository_id: u64,
+        branch: &str,
+        base: &str,
+    ) -> Result<Option<String>> {
+        self.workspace_pull_request(
+            repository,
+            installation_id,
+            repository_id,
+            branch,
+            base,
+            None,
+        )
+        .await
+    }
+    async fn open_pull_request(
+        &self,
+        repository: &str,
+        installation_id: u64,
+        repository_id: u64,
+        branch: &str,
+        base: &str,
+        title: &str,
+    ) -> std::result::Result<String, aster_core::workspace::WorkspacePullRequestFailure> {
+        let mut may_have_written = false;
+        self.workspace_pull_request(
+            repository,
+            installation_id,
+            repository_id,
+            branch,
+            base,
+            Some(PullRequestCreation {
+                title,
+                may_have_written: &mut may_have_written,
+            }),
+        )
+        .await
+        .and_then(|url| url.ok_or_else(unavailable))
+        .map_err(|error| aster_core::workspace::WorkspacePullRequestFailure {
+            error,
+            may_have_written,
+        })
+    }
+}
+
+struct PullRequestCreation<'a> {
+    title: &'a str,
+    may_have_written: &'a mut bool,
+}
+
+impl GithubApp {
+    async fn workspace_pull_request(
+        &self,
+        repository: &str,
+        installation_id: u64,
+        repository_id: u64,
+        branch: &str,
+        base: &str,
+        creation: Option<PullRequestCreation<'_>>,
+    ) -> Result<Option<String>> {
+        let title = creation.as_ref().map(|creation| creation.title);
+        if !safe_branch(branch)
+            || !safe_branch(base)
+            || branch == base
+            || title.is_some_and(|title| {
+                title.trim().is_empty() || title.len() > 256 || title.chars().any(char::is_control)
+            })
+        {
+            return Err(CoreError::Invalid("invalid pull request".into()));
+        }
+        self.verify_repository(repository, installation_id, repository_id)
+            .await?;
+        let permission = if title.is_some() { "write" } else { "read" };
+        let token = self
+            .scoped_token(
+                installation_id,
+                repository_id,
+                json!({"pull_requests":permission}),
+            )
+            .await?;
+        let owner = repository.split_once('/').ok_or_else(unavailable)?.0;
+        let url = self
+            .origin
+            .join(&format!("repos/{repository}/pulls"))
+            .map_err(|_| unavailable())?;
+        let existing: Vec<PullRequest> = read_json(
+            self.http
+                .get(url.clone())
+                .header("User-Agent", "aster-notebooks")
+                .header("Accept", "application/vnd.github+json")
+                .bearer_auth(token.as_str())
+                .query(&[
+                    ("state", "open"),
+                    ("head", &format!("{owner}:{branch}")),
+                    ("base", base),
+                    ("per_page", "2"),
+                ])
+                .send()
+                .await
+                .map_err(|_| unavailable())?,
+        )
+        .await?;
+        if existing.len() > 1 {
+            return Err(unavailable());
+        }
+        if let Some(pr) = existing.into_iter().next() {
+            return pr
+                .checked_url(repository, repository_id, branch, base)
+                .map(Some);
+        }
+        let Some(creation) = creation else {
+            return Ok(None);
+        };
+        *creation.may_have_written = true;
+        let response = self
+            .http
+            .post(url)
+            .header("User-Agent", "aster-notebooks")
+            .header("Accept", "application/vnd.github+json")
+            .bearer_auth(token.as_str())
+            .json(&json!({"head":branch,"base":base,"title":creation.title}))
+            .send()
+            .await
+            .map_err(|_| unavailable())?;
+        if response.status() == reqwest::StatusCode::UNPROCESSABLE_ENTITY {
+            *creation.may_have_written = false;
+            return Err(CoreError::Conflict(
+                "GitHub rejected the pull request; check that the branch differs from its base"
+                    .into(),
+            ));
+        }
+        let pr: PullRequest = read_json(response).await?;
+        pr.checked_url(repository, repository_id, branch, base)
+            .map(Some)
+    }
 }

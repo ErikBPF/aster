@@ -72,6 +72,7 @@ async fn fixture_configured(teams: bool, configure: impl FnOnce(&mut AppState)) 
         notebooks: Arc::new(store.clone()),
         notebook_owners: Arc::new(InMemoryNotebookOwners::default()),
         notebook_write: Arc::new(tokio::sync::Mutex::new(())),
+        durable_workspaces: None,
         team_workspaces: teams.then(|| {
             Arc::new(
                 aster_server::TeamWorkspaces::new(

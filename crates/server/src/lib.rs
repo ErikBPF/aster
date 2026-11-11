@@ -48,6 +48,11 @@ mod store;
 mod team_git;
 mod telemetry;
 mod web;
+pub mod workspace;
+#[cfg(test)]
+mod workspace_boot_tests;
+mod workspace_recovery;
+mod workspace_snapshot;
 
 use axum::{
     extract::{Path, Query, State},
@@ -85,6 +90,7 @@ pub struct AppState {
     pub notebook_write: Arc<tokio::sync::Mutex<()>>,
     /// Opt-in team workspaces; absent during the V2a legacy migration.
     pub team_workspaces: Option<Arc<TeamWorkspaces>>,
+    pub durable_workspaces: Option<Arc<workspace::Workspaces>>,
     /// Verified team destination metadata. No workspace or Sync activation yet.
     pub team_git_targets: Option<Arc<TeamGitTargets>>,
     pub skills: Arc<dyn aster_core::skills::SkillStore>,
@@ -349,6 +355,17 @@ async fn build_state(config: AppConfig) -> anyhow::Result<Arc<AppState>> {
         "1" => true,
         _ => anyhow::bail!("ASTER_TEAM_GIT_ENABLED must be 0 or 1"),
     };
+    let workspaces_enabled = match std::env::var("ASTER_WORKSPACES_ENABLED")
+        .unwrap_or_else(|_| "0".into())
+        .as_str()
+    {
+        "0" => false,
+        "1" => true,
+        _ => anyhow::bail!("ASTER_WORKSPACES_ENABLED must be 0 or 1"),
+    };
+    if workspaces_enabled && (!team_git_enabled || dev_login) {
+        anyhow::bail!("durable workspaces require team Git and verified OIDC without dev login");
+    }
     let team_policy_file = std::env::var("ASTER_TEAM_POLICY_FILE").ok();
     if team_policy_file.is_some() && team_git_enabled {
         anyhow::bail!("choose team policy or team Git registration, not both");
@@ -395,7 +412,7 @@ async fn build_state(config: AppConfig) -> anyhow::Result<Arc<AppState>> {
                 };
                 let origin = required("ASTER_AUTHENTIK_API_ORIGIN")?;
                 let token = aster_core::require(&*secrets, "ASTER_AUTHENTIK_READ_TOKEN").await?;
-                let reader = if authority_enabled || ai_authority_enabled {
+                let reader = if authority_enabled || ai_authority_enabled || workspaces_enabled {
                     let admin_group = required("ASTER_AUTHENTIK_ADMIN_GROUP_UUID")?;
                     let editor_group = required("ASTER_AUTHENTIK_EDITOR_GROUP_UUID")?;
                     current_identity::AuthentikCurrentIdentity::new(
@@ -420,6 +437,7 @@ async fn build_state(config: AppConfig) -> anyhow::Result<Arc<AppState>> {
             }
         };
 
+    let mut workspace_hosting = None;
     let team_git_targets = if team_git_enabled {
         if metadata_kind != "postgres" {
             anyhow::bail!("team Git requires PostgreSQL metadata storage");
@@ -449,6 +467,12 @@ async fn build_state(config: AppConfig) -> anyhow::Result<Arc<AppState>> {
             &key_name,
             secrets.clone(),
         )?);
+        if workspaces_enabled {
+            workspace_hosting = Some(providers::workspace_hosting(
+                &providers::kind("ASTER_WORKSPACE_HOSTING", "github-app"),
+                app.clone(),
+            )?);
+        }
         Some(Arc::new(
             TeamGitTargets::connect(
                 database_url
@@ -490,6 +514,46 @@ async fn build_state(config: AppConfig) -> anyhow::Result<Arc<AppState>> {
     } else {
         None
     };
+    let durable_workspaces = if workspaces_enabled {
+        let required = |name| {
+            std::env::var(name)
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| anyhow::anyhow!("{name} is required for durable workspaces"))
+        };
+        let recovery = providers::workspace_recovery(
+            &providers::kind("ASTER_WORKSPACE_RECOVERY", "s3"),
+            &required("ASTER_WORKSPACE_S3_ENDPOINT")?,
+            &required("ASTER_WORKSPACE_S3_BUCKET")?,
+            &required("ASTER_WORKSPACE_S3_REGION")?,
+            &*secrets,
+        )
+        .await?;
+        let service = Arc::new(
+            workspace::Workspaces::connect(
+                database_url
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("durable workspaces require DATABASE_URL"))?,
+            )
+            .await?
+            .with_recovery(recovery)
+            .with_checkout_provider(providers::workspace_checkouts(&providers::kind(
+                "ASTER_WORKSPACE_CHECKOUTS",
+                "git",
+            ))?)
+            .with_git(
+                team_git_targets
+                    .clone()
+                    .ok_or_else(|| anyhow::anyhow!("durable workspaces require team Git"))?,
+                workspace_hosting
+                    .ok_or_else(|| anyhow::anyhow!("durable workspaces require hosting"))?,
+            ),
+        );
+        service.start_maintenance();
+        Some(service)
+    } else {
+        None
+    };
     let metrics = Arc::new(Metrics::new());
     let catalog_assets = crate::catalog_assets::CatalogAssets::from_env()?.map(Arc::new);
     Ok(Arc::new(AppState {
@@ -503,6 +567,7 @@ async fn build_state(config: AppConfig) -> anyhow::Result<Arc<AppState>> {
         notebook_owners: metadata.notebook_owners,
         notebook_write: Arc::new(tokio::sync::Mutex::new(())),
         team_workspaces,
+        durable_workspaces,
         team_git_targets,
         skills: metadata.skills,
         mcp,
@@ -770,8 +835,9 @@ impl IntoResponse for ApiError {
 impl AppState {
     /// Contract team membership remains active when local notebooks are selected.
     pub(crate) fn local_notebooks_enabled(&self) -> bool {
-        self.team_workspaces.is_none()
-            || std::env::var("ASTER_NOTEBOOK_MODE").as_deref() == Ok("local")
+        self.durable_workspaces.is_none()
+            && (self.team_workspaces.is_none()
+                || std::env::var("ASTER_NOTEBOOK_MODE").as_deref() == Ok("local"))
     }
 
     fn require_local_notebooks(&self) -> aster_core::Result<()> {
@@ -2759,6 +2825,12 @@ pub fn app(state: Arc<AppState>) -> Router {
     let rpc = api::router(Arc::clone(&state)).into_axum_service();
     Router::new()
         .route("/", get(web::index))
+        .route("/workspaces", get(web::workspace_index))
+        .route("/workspaces/{workspace}", get(web::workspace_view))
+        .route(
+            "/workspaces/{workspace}/{checkout}/notebooks/{notebook}",
+            get(web::workspace_notebook_view),
+        )
         .route("/dev-login", get(web::dev_login))
         .route("/login", get(web::login))
         .route("/callback", get(web::callback))

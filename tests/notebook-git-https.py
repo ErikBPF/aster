@@ -10,6 +10,7 @@ import ssl
 import subprocess
 import tempfile
 import threading
+import time
 from urllib.parse import urlsplit
 
 
@@ -26,6 +27,8 @@ def run(*args, cwd=None, env=None):
 
 with tempfile.TemporaryDirectory(prefix="aster-git-https-test-") as temp:
     root = pathlib.Path(temp)
+    pause_push = root / "pause-push"
+    push_started = root / "push-started"
     cert = root / "cert.pem"
     key = root / "key.pem"
     run("openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
@@ -38,6 +41,11 @@ with tempfile.TemporaryDirectory(prefix="aster-git-https-test-") as temp:
     (work / "a.aster").write_text("-- notebook test\n")
     run("git", "add", "a.aster", cwd=work)
     run("git", "-c", "user.name=aster", "-c", "user.email=aster@localhost", "commit", "-q", "-m", "seed", cwd=work)
+    for index in range(4):
+        (work / "history.txt").write_text(f"revision {index}\n")
+        run("git", "add", "history.txt", cwd=work)
+        run("git", "-c", "user.name=aster", "-c", "user.email=aster@localhost",
+            "commit", "-q", "-m", f"history {index}", cwd=work)
     run("git", "push", str(bare), "HEAD:refs/heads/main", cwd=work)
     seed_oid = run("git", "rev-parse", "refs/heads/main", cwd=bare)
     run("git", "config", "http.receivepack", "true", cwd=bare)
@@ -90,6 +98,13 @@ with tempfile.TemporaryDirectory(prefix="aster-git-https-test-") as temp:
                 "CONTENT_LENGTH": str(length),
                 "REMOTE_USER": "aster-test",
             })
+            if self.command == "POST" and "git-receive-pack" in self.path and pause_push.exists():
+                push_started.touch()
+                deadline = time.monotonic() + 45
+                while pause_push.exists() and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                if pause_push.exists():
+                    raise RuntimeError("paused Push fixture was not released")
             result = subprocess.run(["git", "http-backend"], input=body, env=env, capture_output=True)
             if result.returncode:
                 raise RuntimeError(result.stderr.decode(errors="replace"))
@@ -137,13 +152,15 @@ with tempfile.TemporaryDirectory(prefix="aster-git-https-test-") as temp:
     common_git = pathlib.Path(run("git", "-C", str(PROJECT_ROOT), "rev-parse",
                                   "--path-format=absolute", "--git-common-dir"))
     env.setdefault("CARGO_TARGET_DIR", str(common_git.parent / "target"))
-    env["PROTOC"] = f"{PROJECT_ROOT}/.devenv/profile/bin/protoc"
+    env.setdefault("PROTOC", shutil.which("protoc") or "protoc")
     env["ASTER_TEST_HTTPS_CHECKOUT"] = str(checkout)
     env["ASTER_TEST_HTTPS_BARE"] = str(bare)
     env["ASTER_TEST_HTTPS_URL"] = url
     env["ASTER_TEST_HTTPS_CA"] = str(cert)
     env["ASTER_TEST_HTTPS_TOKEN"] = TOKEN
     env["ASTER_TEST_HTTPS_SEED_OID"] = seed_oid
+    env["ASTER_TEST_HTTPS_PAUSE_PUSH"] = str(pause_push)
+    env["ASTER_TEST_HTTPS_PUSH_STARTED"] = str(push_started)
     env["ASTER_TEST_HTTPS_DENY_PUSH_FILE"] = str(deny_push)
     env["ASTER_TEST_GIT_ARGV_LOG"] = str(argv_log)
     selected = subprocess.run(
@@ -151,6 +168,7 @@ with tempfile.TemporaryDirectory(prefix="aster-git-https-test-") as temp:
         cwd=PROJECT_ROOT, env=env, text=True, capture_output=True,
     )
     selected_names = (
+        "notebook_git_https_a_clone_has_shallow_history: test",
         "notebook_git_https_sync_pushes_exact_branch_without_persisting_token: test",
         "notebook_git_https_z_clone_pins_moved_default_without_persisting_token: test",
     )
@@ -166,6 +184,41 @@ with tempfile.TemporaryDirectory(prefix="aster-git-https-test-") as temp:
     print(output, end="")
     if result.returncode:
         raise RuntimeError("HTTPS Git test failed")
+    if env.get("ASTER_TEST_WORKSPACE_GIT") == "1":
+        # Earlier pinning tests advance main; this scenario approves its current tip.
+        env["ASTER_TEST_HTTPS_SEED_OID"] = run("git", "rev-parse", "refs/heads/main", cwd=bare)
+        selected = subprocess.run(
+            ["cargo", "test", "-p", "aster-server", "--lib", "workspace_https_", "--", "--ignored", "--list"],
+            cwd=PROJECT_ROOT, env=env, text=True, capture_output=True,
+        )
+        if selected.returncode or "workspace::checkout_tests::workspace_https_two_approved_repositories_have_independent_recoverable_checkouts: test" not in selected.stdout:
+            raise RuntimeError("workspace HTTPS test selection failed")
+        result = subprocess.run(
+            ["cargo", "test", "-p", "aster-server", "--lib", "workspace_https_", "--", "--ignored", "--nocapture"],
+            cwd=PROJECT_ROOT, env=env, text=True, capture_output=True,
+        )
+        output = result.stdout + result.stderr
+        if TOKEN in output:
+            raise RuntimeError("workspace Git test exposed its disposable token")
+        print(output, end="")
+        workspace_git_failed = result.returncode != 0
+    if env.get("ASTER_TEST_WORKSPACE_GIT") == "1":
+        selected = subprocess.run(
+            ["cargo", "test", "-p", "aster-server", "--test", "notebook_isolation", "workspace_https_rpc_", "--", "--ignored", "--list"],
+            cwd=PROJECT_ROOT, env=env, text=True, capture_output=True,
+        )
+        if selected.returncode or "workspace_https_rpc_clone_draft_commit_and_owner_boundary: test" not in selected.stdout:
+            raise RuntimeError("workspace RPC test selection failed")
+        result = subprocess.run(
+            ["cargo", "test", "-p", "aster-server", "--test", "notebook_isolation", "workspace_https_rpc_", "--", "--ignored", "--nocapture"],
+            cwd=PROJECT_ROOT, env=env, text=True, capture_output=True,
+        )
+        output = result.stdout + result.stderr
+        if TOKEN in output:
+            raise RuntimeError("workspace RPC test exposed its disposable token")
+        print(output, end="")
+        if result.returncode or workspace_git_failed:
+            raise RuntimeError("workspace Git or RPC test failed")
     assert argv_log.read_text().splitlines()
     assert set(argv_log.read_text().splitlines()) == {"0"}, "Git argv contained token"
     assert any(valid and "git-upload-pack" in path for path, valid in seen)

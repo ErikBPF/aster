@@ -170,6 +170,61 @@ is an `@unautomated` draft; conflict UX and a named disposable GitHub target
 for live validation remain open. No global repository is assumed. Do not label
 a local commit as remotely saved.
 
+## Recoverable web workspaces (opt-in)
+
+With `ASTER_WORKSPACES_ENABLED=1`, `/workspaces` replaces the legacy notebook
+entry point. Each owner can create up to ten workspaces, each containing up to
+eight approved repository checkouts. One active branch belongs to each checkout;
+its notebooks share that branch. Initial clones use shallow history with bounded
+deepening to the registered base commit. Repository approval remains a maintainer
+operation through `ConfigureWorkspaceRepository` and the scoped GitHub App.
+
+Autosave stores a draft without committing. “Saved draft” acknowledges both the
+immutable object and its PostgreSQL pointer. Commit records the selected notebook;
+Push publishes committed changes. Pull only fast-forwards a clean checkout.
+Branch switching requires committed drafts. Open PR verifies the current commit
+is published and returns the exact repository/head/base request, reusing an
+existing matching request. The notebook shows its repository, branch and commit.
+Publication, branch and recovery controls are grouped under the collapsed
+**Git & branch** panel. The header shows the readable branch suffix; the panel
+retains its full Git ref. Notebook-level Data and Compute selections are saved
+with drafts and govern execution, with legacy per-cell fallback when absent.
+
+A second browser opens read-only. Take over editing rotates the writer capability
+and rejects stale writes. A remote operation with an uncertain outcome blocks
+mutation and takeover. Check remote operation verifies an uncertain Push against
+the exact intended commit or looks up an uncertain PR without creating another.
+It does not clear an operation that may still be running. See the recovery
+procedure in [operations](operations.md).
+
+Workspace recovery includes Git objects, refs, index, shallow metadata, local
+commits, working files, and open notebook tabs. It excludes executable Git
+configuration, hooks, credentials, query results, running queries and assistant
+conversations. Workspace query execution uses the saved, admitted cell and its
+checkout version. Assistant controls are unavailable in this delivery. The first
+delivery accepts regular files and directories; symlinks, external Git object
+stores and special files are rejected instead of silently omitted. A checkout
+has a 64 MiB content limit and a 10,000-entry limit. The dashboard shows quota
+usage. Incomplete deletion remains visible and charged until cleanup succeeds.
+
+Existing legacy files are not reassigned or moved automatically. An explicitly
+owned legacy notebook can be copied as a new draft with
+`ImportWorkspaceNotebook`: provide the destination workspace/checkout, current
+writer capability and checkout version, notebook ID, and exact legacy content
+revision. The ownership record and current legacy blob must agree. Unassigned,
+other-owner, stale or existing destination notebooks are refused. Obtain the
+legacy revision before enabling workspace mode; retain the original checkout and
+ownership records for rollback. Import never creates a commit or remote write.
+
+Export checkout downloads a portable tar archive of the last durable Git history
+and files, including unpublished commits and drafts. Extract it into a new empty
+directory, inspect `git status` and `git log`, then resolve divergence using your
+own Git credentials. The export contains no Aster transport credentials or
+executable repository hooks. It does not upload an externally resolved checkout
+back into Aster; publish the resolved branch externally and use fast-forward Pull
+when its history contains the local head. An uncertain remote operation stays
+read-only until its exact outcome is resolved.
+
 
 ### Notebook commands and recovery
 
