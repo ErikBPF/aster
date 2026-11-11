@@ -185,6 +185,70 @@ impl TeamGitTargets {
         view(record)
     }
 
+    pub(crate) async fn configure_repository(
+        &self,
+        team: &str,
+        principal: &Principal,
+        repository: &str,
+        default_branch: &str,
+        expected: Option<u64>,
+    ) -> Result<TeamGitTargetRecord> {
+        let rule = self.maintainer_policy(team, principal)?;
+        if !crate::github_app::safe_branch(default_branch) {
+            return Err(CoreError::Invalid("invalid default branch".into()));
+        }
+        let repository_id = *rule
+            .allowed_repositories
+            .get(repository)
+            .ok_or_else(|| CoreError::Unauthorized("team repository not allowed".into()))?;
+        let expected = expected
+            .map(i64::try_from)
+            .transpose()
+            .map_err(|_| CoreError::Invalid("invalid repository version".into()))?;
+        if expected.is_some_and(|v| v < 1) {
+            return Err(CoreError::Invalid("invalid repository version".into()));
+        }
+        let commit = self
+            .verifier
+            .verified_default_commit(
+                repository,
+                rule.installation_id,
+                repository_id,
+                default_branch,
+            )
+            .await?;
+        let change = TeamGitTargetChange {
+            team: team.into(),
+            repository: repository.into(),
+            repository_id: i64::try_from(repository_id)
+                .map_err(|_| CoreError::Invalid("invalid repository ID".into()))?,
+            installation_id: i64::try_from(rule.installation_id)
+                .map_err(|_| CoreError::Invalid("invalid installation ID".into()))?,
+            default_branch: default_branch.into(),
+            default_commit: commit,
+        };
+        self.store
+            .change_workspace_repository(&change, expected, &principal.subject)
+            .await
+    }
+
+    pub(crate) async fn repositories(
+        &self,
+        team: &str,
+        principal: &Principal,
+    ) -> Result<Vec<TeamGitTargetRecord>> {
+        let rule = self.member_policy(team, principal)?;
+        let records = self.store.workspace_repositories(team).await?;
+        Ok(records
+            .into_iter()
+            .filter(|record| {
+                u64::try_from(record.installation_id).ok() == Some(rule.installation_id)
+                    && rule.allowed_repositories.get(&record.repository).copied()
+                        == u64::try_from(record.repository_id).ok()
+            })
+            .collect())
+    }
+
     pub fn maintainer(&self, team: &str, principal: &Principal) -> Result<()> {
         self.maintainer_policy(team, principal).map(|_| ())
     }

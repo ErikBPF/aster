@@ -57,6 +57,12 @@ catalogs:
     catalog: quickstart_catalog
 
 server:
+  # Existing Secret supplies GitHub App, fresh authority and S3 settings/credentials.
+  # The policy ConfigMap contains teams.json; no credentials belong in values.
+  workspaces:
+    enabled: false
+    secretName: ""
+    policyConfigMap: ""
   # Browse catalog ID;engine ID;engine-native SQL catalog;policy, comma-separated.
   catalogBindings: polaris;trino-local;polaris;protected
   replicas: 1

@@ -1,3 +1,7 @@
+{{- if .Values.server.workspaces.enabled }}
+{{- if or (ne .Values.server.identity.kind "oidc") (not .Values.server.identity.issuer) (not .Values.server.identity.userUuidClaim) }}{{ fail "workspaces require OIDC and a signed user UUID claim" }}{{ end }}
+{{- if or (not .Values.server.workspaces.secretName) (not .Values.server.workspaces.policyConfigMap) }}{{ fail "workspaces require an existing settings Secret and policy ConfigMap" }}{{ end }}
+{{- end }}
 {{- if and .Values.ingress.enabled (or (ne .Values.server.identity.kind "oidc") (not .Values.server.identity.issuer)) }}
 {{- fail "ingress requires server.identity.kind=oidc and a configured issuer" }}
 {{- end }}
@@ -66,7 +70,20 @@ spec:
               containerPort: 8080
             - name: metrics
               containerPort: {{ .Values.server.metricsPort }}
+          {{- if .Values.server.workspaces.enabled }}
+          envFrom:
+            - secretRef:
+                name: {{ .Values.server.workspaces.secretName | quote }}
+          {{- end }}
           env:
+            - name: ASTER_WORKSPACES_ENABLED
+              value: {{ ternary "1" "0" .Values.server.workspaces.enabled | quote }}
+            {{- if .Values.server.workspaces.enabled }}
+            - name: ASTER_TEAM_GIT_ENABLED
+              value: "1"
+            - name: ASTER_TEAM_GIT_POLICY_FILE
+              value: /etc/aster/workspaces/teams.json
+            {{- end }}
             - name: ASTER_BIND
               value: {{ .Values.server.bind | quote }}
             - name: ASTER_NOTEBOOK_DIR
@@ -178,6 +195,13 @@ spec:
             periodSeconds: 20
           resources: {{ toYaml .Values.server.resources | nindent 12 }}
           volumeMounts:
+            {{- if .Values.server.workspaces.enabled }}
+            - name: workspace-temporary
+              mountPath: /tmp
+            - name: workspace-policy
+              mountPath: /etc/aster/workspaces
+              readOnly: true
+            {{- end }}
             - name: notebooks
               mountPath: {{ .Values.server.notebookDir }}
             - name: contracts
@@ -188,6 +212,14 @@ spec:
               mountPath: {{ .Values.server.catalogAssetsDir }}
             {{- end }}
       volumes:
+        {{- if .Values.server.workspaces.enabled }}
+        - name: workspace-temporary
+          emptyDir:
+            sizeLimit: 1Gi
+        - name: workspace-policy
+          configMap:
+            name: {{ .Values.server.workspaces.policyConfigMap | quote }}
+        {{- end }}
         - name: notebooks
           {{- if .Values.persistence.enabled }}
           persistentVolumeClaim:

@@ -15,6 +15,73 @@ package aster.v1;
 import "google/api/annotations.proto";
 
 service Aster {
+  rpc ExportWorkspaceCheckout(GetWorkspaceCheckoutRequest) returns (WorkspaceExport) {
+    option (google.api.http) = { post: "/v1/workspaces/export" body: "*" };
+  }
+  rpc ImportWorkspaceNotebook(ImportWorkspaceNotebookRequest) returns (WorkspaceCheckout) {
+    option (google.api.http) = { post: "/v1/workspaces/import-notebook" body: "*" };
+  }
+  rpc ReconcileWorkspaceRemote(GetWorkspaceStateRequest) returns (WorkspaceRemoteOutcome) {
+    option (google.api.http) = { post: "/v1/workspaces/reconcile" body: "*" };
+  }
+  rpc RunWorkspaceCell(RunWorkspaceCellRequest) returns (QueryResult) {
+    option (google.api.http) = { post: "/v1/workspaces/run-cell" body: "*" };
+  }
+  rpc OpenWorkspacePullRequest(OpenWorkspacePullRequestRequest) returns (WorkspacePullRequest) {
+    option (google.api.http) = { post: "/v1/workspaces/open-pr" body: "*" };
+  }
+  rpc GetWorkspaceState(GetWorkspaceStateRequest) returns (WorkspaceState) {
+    option (google.api.http) = { post: "/v1/workspaces/state" body: "*" };
+  }
+  rpc SaveWorkspaceLayout(SaveWorkspaceLayoutRequest) returns (WorkspaceLayoutVersion) {
+    option (google.api.http) = { post: "/v1/workspaces/layout" body: "*" };
+  }
+  rpc PushWorkspaceCheckout(GetWorkspaceMutationRequest) returns (WorkspaceCheckout) {
+    option (google.api.http) = { post: "/v1/workspaces/push-workspace-checkout" body: "*" };
+  }
+  rpc ListWorkspaces(ListWorkspacesRequest) returns (ListWorkspacesResponse) {
+    option (google.api.http) = { post: "/v1/workspaces/list-workspaces" body: "*" };
+  }
+  rpc DeleteWorkspace(DeleteWorkspaceRequest) returns (DeleteWorkspaceResponse) {
+    option (google.api.http) = { post: "/v1/workspaces/delete-workspace" body: "*" };
+  }
+  rpc CloneWorkspaceRepository(CloneWorkspaceRepositoryRequest) returns (WorkspaceCheckout) {
+    option (google.api.http) = { post: "/v1/workspaces/clone-workspace-repository" body: "*" };
+  }
+  rpc GetWorkspaceCheckout(GetWorkspaceCheckoutRequest) returns (WorkspaceCheckout) {
+    option (google.api.http) = { post: "/v1/workspaces/get-workspace-checkout" body: "*" };
+  }
+  rpc GetWorkspaceDraft(GetWorkspaceDraftRequest) returns (WorkspaceDraft) {
+    option (google.api.http) = { post: "/v1/workspaces/get-workspace-draft" body: "*" };
+  }
+  rpc SaveWorkspaceDraft(SaveWorkspaceDraftRequest) returns (WorkspaceCheckout) {
+    option (google.api.http) = { post: "/v1/workspaces/save-workspace-draft" body: "*" };
+  }
+  rpc PullWorkspaceCheckout(GetWorkspaceMutationRequest) returns (WorkspaceCheckout) {
+    option (google.api.http) = { post: "/v1/workspaces/pull-workspace-checkout" body: "*" };
+  }
+  rpc SwitchWorkspaceBranch(SwitchWorkspaceBranchRequest) returns (WorkspaceCheckout) {
+    option (google.api.http) = { post: "/v1/workspaces/switch-workspace-branch" body: "*" };
+  }
+  rpc CommitWorkspaceNotebooks(CommitWorkspaceNotebooksRequest) returns (WorkspaceCheckout) {
+    option (google.api.http) = { post: "/v1/workspaces/commit-workspace-notebooks" body: "*" };
+  }
+  rpc CreateWorkspace(CreateWorkspaceRequest) returns (Workspace) {
+    option (google.api.http) = { post: "/v1/workspaces" body: "*" };
+  }
+  rpc TakeoverWorkspace(TakeoverWorkspaceRequest) returns (Workspace) {
+    option (google.api.http) = { post: "/v1/workspaces/takeover" body: "*" };
+  }
+  rpc OpenWorkspace(OpenWorkspaceRequest) returns (Workspace) {
+    option (google.api.http) = { post: "/v1/workspaces/open" body: "*" };
+  }
+  rpc ConfigureWorkspaceRepository(ConfigureWorkspaceRepositoryRequest) returns (WorkspaceRepository) {
+    option (google.api.http) = { post: "/v1/workspace-repositories/configure" body: "*" };
+  }
+  rpc ListWorkspaceRepositories(ListWorkspaceRepositoriesRequest) returns (ListWorkspaceRepositoriesResponse) {
+    option (google.api.http) = { post: "/v1/workspace-repositories/list" body: "*" };
+  }
+
   rpc GetSkillDefaults(GetSkillDefaultsRequest) returns (SkillDefaults) {
     option (google.api.http) = { get: "/v1/ai/skill-defaults" };
   }
@@ -543,6 +610,163 @@ message SendSummaryRequest {
 message SendSummaryResponse {
   string summary = 1;
 }
+
+// Registration does not activate a checkout. Authority comes from current team policy.
+message ConfigureWorkspaceRepositoryRequest {
+  string team = 1;
+  string repository = 2;
+  string default_branch = 3;
+  optional uint64 expected_version = 4;
+  bool if_absent = 5;
+}
+message ListWorkspaceRepositoriesRequest { string team = 1; }
+message WorkspaceRepository {
+  string team = 1;
+  string repository = 2;
+  uint64 repository_id = 3;
+  string default_branch = 4;
+  string default_commit = 5;
+  uint64 version = 6;
+}
+message ListWorkspaceRepositoriesResponse { repeated WorkspaceRepository repositories = 1; }
+
+message CreateWorkspaceRequest { string name = 1; }
+message OpenWorkspaceRequest { string workspace = 1; optional string writer_token = 2; }
+message Workspace {
+  string id = 1;
+  string name = 2;
+  uint64 epoch = 3;
+  bool read_only = 4;
+  optional string writer_token = 5;
+  bool deleting = 6;
+}
+
+message TakeoverWorkspaceRequest { string workspace = 1; uint64 expected_epoch = 2; }
+
+message CloneWorkspaceRepositoryRequest {
+  string workspace = 1;
+  string writer_token = 2;
+  uint64 epoch = 3;
+  string team = 4;
+  uint64 repository_id = 5;
+  string branch = 6;
+}
+message GetWorkspaceCheckoutRequest { string workspace = 1; string checkout = 2; }
+message GetWorkspaceDraftRequest { string workspace = 1; string checkout = 2; string notebook = 3; }
+message WorkspaceDraft {
+  string notebook_json = 1;
+  string revision = 2;
+  uint64 checkout_version = 3;
+  string branch = 4;
+}
+message WorkspaceCheckout {
+  string id = 1;
+  string workspace = 2;
+  string team = 3;
+  string repository = 4;
+  string branch = 5;
+  uint64 version = 6;
+  string head = 7;
+  bool dirty = 8;
+  repeated string notebooks = 9;
+  optional string draft_revision = 10;
+}
+message SaveWorkspaceDraftRequest {
+  string workspace = 1;
+  string checkout = 2;
+  string writer_token = 3;
+  uint64 epoch = 4;
+  uint64 expected_version = 5;
+  string notebook_json = 6;
+  optional string expected_draft_revision = 7;
+  bool if_absent = 8;
+}
+message CommitWorkspaceNotebooksRequest {
+  string workspace = 1;
+  string checkout = 2;
+  string writer_token = 3;
+  uint64 epoch = 4;
+  uint64 expected_version = 5;
+  repeated string notebooks = 6;
+  string message = 7;
+}
+
+message SwitchWorkspaceBranchRequest {
+  string workspace = 1;
+  string checkout = 2;
+  string writer_token = 3;
+  uint64 epoch = 4;
+  uint64 expected_version = 5;
+  string branch = 6;
+  bool create = 7;
+}
+
+message GetWorkspaceMutationRequest {
+  string workspace = 1;
+  string checkout = 2;
+  string writer_token = 3;
+  uint64 epoch = 4;
+  uint64 expected_version = 5;
+}
+
+message ListWorkspacesResponse { repeated Workspace workspaces = 1; uint64 max_workspaces = 2; }
+message DeleteWorkspaceRequest { string workspace = 1; string writer_token = 2; uint64 epoch = 3; }
+
+message ListWorkspacesRequest {}
+message DeleteWorkspaceResponse {}
+
+message GetWorkspaceStateRequest { string workspace = 1; }
+message WorkspaceState {
+  repeated string checkouts = 1;
+  string layout_json = 2;
+  uint64 layout_version = 3;
+  uint64 recovery_bytes = 4;
+  uint64 total_checkouts = 5;
+  uint64 max_checkouts = 6;
+  uint64 max_checkout_bytes = 7;
+}
+message SaveWorkspaceLayoutRequest {
+  string workspace = 1;
+  string writer_token = 2;
+  uint64 epoch = 3;
+  uint64 expected_version = 4;
+  string layout_json = 5;
+}
+message WorkspaceLayoutVersion { uint64 version = 1; }
+
+message RunWorkspaceCellRequest {
+  string workspace = 1;
+  string checkout = 2;
+  string notebook = 3;
+  string cell = 4;
+  uint64 expected_version = 5;
+}
+message OpenWorkspacePullRequestRequest {
+  string workspace = 1;
+  string checkout = 2;
+  string writer_token = 3;
+  uint64 epoch = 4;
+  uint64 expected_version = 5;
+  string title = 6;
+}
+message WorkspacePullRequest { string url = 1; }
+
+message WorkspaceRemoteOutcome {
+  WorkspaceCheckout checkout = 1;
+  optional string pull_request = 2;
+}
+
+message ImportWorkspaceNotebookRequest {
+  string workspace = 1;
+  string checkout = 2;
+  string writer_token = 3;
+  uint64 epoch = 4;
+  uint64 expected_version = 5;
+  string notebook = 6;
+  string expected_legacy_revision = 7;
+}
+
+message WorkspaceExport { bytes archive = 1; }
 
 message SkillSelection {
   string id = 1;

@@ -17,6 +17,70 @@ use axum::Router;
 use serde_json::json;
 use tower::ServiceExt;
 
+struct WorkspaceQueryEngine(EngineInfo);
+#[async_trait::async_trait]
+impl QueryEngine for WorkspaceQueryEngine {
+    fn info(&self) -> &EngineInfo {
+        &self.0
+    }
+    async fn health(&self) -> Health {
+        Health::Healthy
+    }
+    async fn execute(&self, request: QueryRequest) -> Result<QueryResult> {
+        Ok(QueryResult {
+            columns: vec![Column {
+                name: "sql".into(),
+                data_type: "varchar".into(),
+            }],
+            rows: vec![vec![json!(request.sql)]],
+            truncated: false,
+        })
+    }
+}
+struct WorkspaceCatalog(CatalogId);
+#[async_trait::async_trait]
+impl Catalog for WorkspaceCatalog {
+    fn id(&self) -> &CatalogId {
+        &self.0
+    }
+    fn kind(&self) -> &str {
+        "fixture"
+    }
+    async fn health(&self) -> Health {
+        Health::Healthy
+    }
+    async fn list_namespaces(&self) -> Result<Vec<Namespace>> {
+        Ok(vec![Namespace {
+            name: "default".into(),
+            segments: vec![],
+        }])
+    }
+    async fn list_tables(&self, namespace: &str) -> Result<Vec<TableRef>> {
+        Ok(vec![TableRef {
+            namespace: namespace.into(),
+            namespace_segments: vec![namespace.into()],
+            name: "sample_orders".into(),
+        }])
+    }
+    async fn table_schema(&self, table: &TableRef) -> Result<TableSchema> {
+        Ok(TableSchema {
+            table: table.clone(),
+            columns: vec![
+                aster_core::ColumnSchema {
+                    nullable: false,
+                    name: "order_id".into(),
+                    data_type: "bigint".into(),
+                },
+                aster_core::ColumnSchema {
+                    nullable: true,
+                    name: "total".into(),
+                    data_type: "double".into(),
+                },
+            ],
+        })
+    }
+}
+
 struct Fixture {
     app: Router,
     dir: PathBuf,
@@ -25,6 +89,7 @@ struct Fixture {
     workspaces: Arc<TeamWorkspaces>,
     sessions: Arc<InMemorySessions>,
     _legacy: GitNotebookStore,
+    owners: Arc<InMemoryNotebookOwners>,
     model_identity: Option<Arc<ModelIdentity>>,
 }
 
@@ -42,12 +107,30 @@ async fn fixture_with_services(
     current_identity: Option<Arc<dyn CurrentIdentityProvider>>,
     team_git_targets: Option<Arc<TeamGitTargets>>,
 ) -> Fixture {
-    fixture_with_model_services(current_identity, team_git_targets, None).await
+    fixture_with_combined_services(current_identity, team_git_targets, None, None).await
+}
+
+async fn fixture_with_all_services(
+    current_identity: Option<Arc<dyn CurrentIdentityProvider>>,
+    team_git_targets: Option<Arc<TeamGitTargets>>,
+    durable_workspaces: Option<Arc<aster_server::workspace::Workspaces>>,
+) -> Fixture {
+    fixture_with_combined_services(current_identity, team_git_targets, durable_workspaces, None)
+        .await
 }
 
 async fn fixture_with_model_services(
     current_identity: Option<Arc<dyn CurrentIdentityProvider>>,
     team_git_targets: Option<Arc<TeamGitTargets>>,
+    model_identity: Option<Arc<ModelIdentity>>,
+) -> Fixture {
+    fixture_with_combined_services(current_identity, team_git_targets, None, model_identity).await
+}
+
+async fn fixture_with_combined_services(
+    current_identity: Option<Arc<dyn CurrentIdentityProvider>>,
+    team_git_targets: Option<Arc<TeamGitTargets>>,
+    durable_workspaces: Option<Arc<aster_server::workspace::Workspaces>>,
     model_identity: Option<Arc<ModelIdentity>>,
 ) -> Fixture {
     static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -96,6 +179,21 @@ async fn fixture_with_model_services(
         .configure("beta", "example/beta", "stable", None, "fixture")
         .unwrap();
     let sessions = Arc::new(InMemorySessions::new(3600));
+    let durable = durable_workspaces.is_some();
+    let mut engines = EngineRegistry::new();
+    let mut catalogs = CatalogRegistry::new();
+    let grants = Arc::new(InMemoryGrants::new());
+    if durable {
+        engines.register(Arc::new(WorkspaceQueryEngine(EngineInfo {
+            id: EngineId::new("fixture"),
+            kind: "fixture".into(),
+            endpoint: "http://fixture.invalid".into(),
+            routing_group: None,
+        })));
+        catalogs.register(Arc::new(WorkspaceCatalog(CatalogId::new("fixture"))));
+        grants.grant("rpc-alice", "fixture");
+    }
+    let owners = Arc::new(InMemoryNotebookOwners::default());
     let state = AppState {
         catalog_assets: None,
         skills: Arc::new(aster_core::skills::InMemorySkills::default()),
@@ -109,18 +207,28 @@ async fn fixture_with_model_services(
             bind: String::new(),
             engines: vec![],
             catalogs: vec![],
-            catalog_bindings: vec![],
-            default_engine: None,
-            default_catalog: None,
+            catalog_bindings: if durable {
+                vec![CatalogBindingConfig {
+                    catalog: "fixture".into(),
+                    engine: "fixture".into(),
+                    native_catalog: "fixture".into(),
+                    policy: BindingPolicy::Unprotected,
+                }]
+            } else {
+                vec![]
+            },
+            default_engine: durable.then(|| "fixture".into()),
+            default_catalog: durable.then(|| "fixture".into()),
         },
-        engines: EngineRegistry::new(),
-        catalogs: CatalogRegistry::new(),
-        grants: Arc::new(InMemoryGrants::new()),
+        engines,
+        catalogs,
+        grants,
         audit: Arc::new(InMemoryAudit::new()),
         notebooks: Arc::new(legacy.clone()),
-        notebook_owners: Arc::new(InMemoryNotebookOwners::default()),
+        notebook_owners: owners.clone(),
         notebook_write: Arc::new(tokio::sync::Mutex::new(())),
         team_workspaces: Some(workspaces.clone()),
+        durable_workspaces,
         team_git_targets,
         llm: Arc::new(InMemoryLlm::new()),
         shared_models: None,
@@ -150,6 +258,7 @@ async fn fixture_with_model_services(
         workspaces,
         sessions,
         _legacy: legacy,
+        owners,
         model_identity,
     }
 }
@@ -1980,6 +2089,278 @@ async fn expired_session_content_requires_explicit_owner_recovery() {
 }
 
 #[tokio::test]
+#[ignore = "requires disposable PostgreSQL from notebook-team-target-postgres.sh"]
+async fn postgres_team_target_route_multi_repository_registry_is_scoped_and_versioned() {
+    const MEMBER: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const MAINTAINER: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    struct Verify;
+    #[async_trait::async_trait]
+    impl TeamGitVerifier for Verify {
+        async fn verified_default_commit(
+            &self,
+            name: &str,
+            installation: u64,
+            repository: u64,
+            branch: &str,
+        ) -> Result<String> {
+            assert_eq!(installation, 41);
+            assert_eq!(branch, "main");
+            assert!(matches!(
+                (name, repository),
+                ("example/analytics", 73) | ("example/reports", 74)
+            ));
+            Ok("a".repeat(40))
+        }
+    }
+    let team = format!("multi-route-{}", new_sid().unwrap());
+    let targets = Arc::new(
+        TeamGitTargets::connect(
+            &std::env::var("ASTER_TEST_METADATA_URL").unwrap(),
+            HashMap::from([(
+                team.clone(),
+                TeamGitPolicy {
+                    member_group_uuid: MEMBER.into(),
+                    maintainer_group_uuid: MAINTAINER.into(),
+                    installation_id: 41,
+                    allowed_repositories: HashMap::from([
+                        ("example/analytics".into(), 73),
+                        ("example/reports".into(), 74),
+                    ]),
+                },
+            )]),
+            Arc::new(Verify),
+        )
+        .await
+        .unwrap(),
+    );
+    let current = Arc::new(CurrentGroups(Mutex::new(vec![
+        MEMBER.into(),
+        MAINTAINER.into(),
+    ])));
+    let f = fixture_with_services(Some(current.clone()), Some(targets)).await;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let sid = f
+        .sessions
+        .create_verified(
+            &Identity {
+                subject: "alice".into(),
+                roles: vec![Role::Viewer],
+                groups: vec![],
+                user_uuid: Some("cccccccc-cccc-4ccc-8ccc-cccccccccccc".into()),
+            },
+            None,
+            now,
+        )
+        .await
+        .unwrap()
+        .sid;
+    let configure = "/aster.v1.Aster/ConfigureWorkspaceRepository";
+    let list = "/aster.v1.Aster/ListWorkspaceRepositories";
+    let headers = [("connect-protocol-version", "1")];
+    for repository in ["example/analytics", "example/reports"] {
+        let response = call(
+            &f.app,
+            "POST",
+            configure,
+            Some(&sid),
+            json!({"team":team,"repository":repository,"defaultBranch":"main","ifAbsent":true}),
+            &headers,
+        )
+        .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "approved repositories must coexist"
+        );
+        assert_eq!(json_body(response).await["version"], "1");
+    }
+    let response = call(
+        &f.app,
+        "POST",
+        list,
+        Some(&sid),
+        json!({"team":team}),
+        &headers,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        json_body(response).await["repositories"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    for body in [
+        json!({"team":team,"repository":"example/analytics","defaultBranch":"main","ifAbsent":true}),
+        json!({"team":team,"repository":"example/analytics","defaultBranch":"main","expectedVersion":"99"}),
+    ] {
+        let response = call(&f.app, "POST", configure, Some(&sid), body, &headers).await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
+    let updated = call(&f.app, "POST", configure, Some(&sid),
+        json!({"team":team,"repository":"example/analytics","defaultBranch":"main","expectedVersion":"1"}), &headers).await;
+    assert_eq!(updated.status(), StatusCode::OK);
+    assert_eq!(json_body(updated).await["version"], "2");
+    let response = call(
+        &f.app,
+        "POST",
+        list,
+        Some(&sid),
+        json!({"team":team}),
+        &headers,
+    )
+    .await;
+    let value = json_body(response).await;
+    let rows = value["repositories"].as_array().unwrap();
+    assert_eq!(
+        rows.iter()
+            .find(|r| r["repository"] == "example/reports")
+            .unwrap()["version"],
+        "1"
+    );
+    for (body, status) in [
+        (
+            json!({"team":team,"repository":"example/unapproved","defaultBranch":"main","ifAbsent":true}),
+            StatusCode::FORBIDDEN,
+        ),
+        (
+            json!({"team":team,"repository":"example/analytics","defaultBranch":"main"}),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            json!({"team":team,"repository":"example/analytics","defaultBranch":"main","ifAbsent":true,"expectedVersion":"2"}),
+            StatusCode::BAD_REQUEST,
+        ),
+    ] {
+        assert_eq!(
+            call(&f.app, "POST", configure, Some(&sid), body, &headers)
+                .await
+                .status(),
+            status
+        );
+    }
+    *current.0.lock().unwrap() = vec![MEMBER.into()];
+    let response = call(&f.app, "POST", configure, Some(&sid),
+        json!({"team":team,"repository":"example/analytics","defaultBranch":"main","expectedVersion":"1"}), &headers).await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        call(
+            &f.app,
+            "POST",
+            list,
+            Some(&sid),
+            json!({"team":team}),
+            &headers
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    *current.0.lock().unwrap() = vec![];
+    assert_eq!(
+        call(
+            &f.app,
+            "POST",
+            list,
+            Some(&sid),
+            json!({"team":team}),
+            &headers
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+}
+
+#[tokio::test]
+async fn durable_workspace_creation_requires_a_new_session_independent_identity() {
+    let f = fixture().await;
+    let alice = sid(&f.sessions, "alice", &["/teams/alpha/members"]).await;
+    let response = call(
+        &f.app,
+        "POST",
+        "/aster.v1.Aster/CreateWorkspace",
+        Some(&alice),
+        json!({"name":"Analysis"}),
+        &[("connect-protocol-version", "1")],
+    )
+    .await;
+    // The configured fixture has no durable workspace backend. The route must
+    // exist and fail closed rather than silently falling back to session Git.
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL from notebook-team-target-postgres.sh"]
+async fn postgres_workspace_route_durable_workspace_survives_login_and_is_owner_only() {
+    let service = Arc::new(
+        aster_server::workspace::Workspaces::connect(
+            &std::env::var("ASTER_TEST_METADATA_URL").unwrap(),
+        )
+        .await
+        .unwrap(),
+    );
+    let f = fixture_with_all_services(
+        Some(Arc::new(WorkspaceIdentity(Mutex::new(vec![Role::Editor])))),
+        None,
+        Some(service),
+    )
+    .await;
+    let alice = workspace_sid(&f.sessions, "alice").await;
+    let response = call(
+        &f.app,
+        "POST",
+        "/aster.v1.Aster/CreateWorkspace",
+        Some(&alice),
+        json!({"name":"Analysis"}),
+        &[("connect-protocol-version", "1")],
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "durable workspace creation must be available with its backend"
+    );
+    let workspace = json_body(response).await;
+    let id = workspace["id"].as_str().unwrap();
+    assert_ne!(id, alice, "workspace identity is not the login credential");
+    let next = workspace_sid(&f.sessions, "alice").await;
+    let body = json!({"workspace":id});
+    let headers = [("connect-protocol-version", "1")];
+    assert_eq!(
+        call(
+            &f.app,
+            "POST",
+            "/aster.v1.Aster/OpenWorkspace",
+            Some(&next),
+            body.clone(),
+            &headers
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    let bob = workspace_sid(&f.sessions, "bob").await;
+    assert_eq!(
+        call(
+            &f.app,
+            "POST",
+            "/aster.v1.Aster/OpenWorkspace",
+            Some(&bob),
+            body,
+            &headers
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+}
+
+#[tokio::test]
 async fn session_deletion_is_bound_to_team_workspace_and_login_session() {
     let f = fixture().await;
     let first = sid(
@@ -2073,6 +2454,647 @@ async fn team_notebook_context_survives_older_client_save_and_explicit_clear() {
         json_body(loaded).await["context"],
         json!({"catalog_context":null,"schema":null})
     );
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL from workspace-postgres.sh"]
+async fn postgres_workspace_route_takeover_fences_previous_browser() {
+    let service = Arc::new(
+        aster_server::workspace::Workspaces::connect(
+            &std::env::var("ASTER_TEST_METADATA_URL").unwrap(),
+        )
+        .await
+        .unwrap(),
+    );
+    let f = fixture_with_all_services(
+        Some(Arc::new(WorkspaceIdentity(Mutex::new(vec![Role::Editor])))),
+        None,
+        Some(service),
+    )
+    .await;
+    let alice = workspace_sid(&f.sessions, "takeover-alice").await;
+    let headers = [("connect-protocol-version", "1")];
+    let created = json_body(
+        call(
+            &f.app,
+            "POST",
+            "/aster.v1.Aster/CreateWorkspace",
+            Some(&alice),
+            json!({"name":"Takeover"}),
+            &headers,
+        )
+        .await,
+    )
+    .await;
+    let id = created["id"].as_str().unwrap();
+    let token = created["writerToken"].as_str().unwrap();
+    let read_only = json_body(
+        call(
+            &f.app,
+            "POST",
+            "/aster.v1.Aster/OpenWorkspace",
+            Some(&alice),
+            json!({"workspace":id}),
+            &headers,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(read_only["readOnly"], true);
+    let response = call(
+        &f.app,
+        "POST",
+        "/aster.v1.Aster/TakeoverWorkspace",
+        Some(&alice),
+        json!({"workspace":id,"expectedEpoch":"1"}),
+        &headers,
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "explicit takeover must issue a new writer"
+    );
+    let replacement = json_body(response).await;
+    assert_eq!(replacement["epoch"], "2");
+    assert_ne!(replacement["writerToken"].as_str().unwrap(), token);
+    let stale = json_body(
+        call(
+            &f.app,
+            "POST",
+            "/aster.v1.Aster/OpenWorkspace",
+            Some(&alice),
+            json!({"workspace":id,"writerToken":token}),
+            &headers,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(stale["readOnly"], true);
+    let retry = call(
+        &f.app,
+        "POST",
+        "/aster.v1.Aster/TakeoverWorkspace",
+        Some(&alice),
+        json!({"workspace":id,"expectedEpoch":"1"}),
+        &headers,
+    )
+    .await;
+    assert_eq!(retry.status(), StatusCode::CONFLICT);
+    let bob = workspace_sid(&f.sessions, "takeover-bob").await;
+    assert_eq!(
+        call(
+            &f.app,
+            "POST",
+            "/aster.v1.Aster/TakeoverWorkspace",
+            Some(&bob),
+            json!({"workspace":id,"expectedEpoch":"2"}),
+            &headers
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+}
+
+struct WorkspaceIdentity(Mutex<Vec<Role>>);
+#[async_trait::async_trait]
+impl CurrentIdentityProvider for WorkspaceIdentity {
+    async fn current(&self, user_uuid: &str) -> Result<CurrentIdentity> {
+        Ok(CurrentIdentity {
+            user_uuid: user_uuid.into(),
+            active: true,
+            roles: self.0.lock().unwrap().clone(),
+            groups: vec![],
+        })
+    }
+    async fn group_exists(&self, _: &str) -> Result<bool> {
+        Ok(false)
+    }
+}
+
+async fn workspace_sid(sessions: &InMemorySessions, subject: &str) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    sessions
+        .create_verified(
+            &Identity {
+                subject: subject.into(),
+                roles: vec![Role::Editor],
+                groups: vec![],
+                user_uuid: Some("cccccccc-cccc-4ccc-8ccc-cccccccccccc".into()),
+            },
+            None,
+            now,
+        )
+        .await
+        .unwrap()
+        .sid
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL from workspace-postgres.sh"]
+async fn postgres_workspace_route_requires_current_editor_authority() {
+    for current in [
+        None,
+        Some(Arc::new(WorkspaceIdentity(Mutex::new(vec![Role::Viewer])))
+            as Arc<dyn CurrentIdentityProvider>),
+    ] {
+        let service = Arc::new(
+            aster_server::workspace::Workspaces::connect(
+                &std::env::var("ASTER_TEST_METADATA_URL").unwrap(),
+            )
+            .await
+            .unwrap(),
+        );
+        let f = fixture_with_all_services(current, None, Some(service)).await;
+        let alice = workspace_sid(&f.sessions, "authority-alice").await;
+        let response = call(
+            &f.app,
+            "POST",
+            "/aster.v1.Aster/CreateWorkspace",
+            Some(&alice),
+            json!({"name":"Denied"}),
+            &[("connect-protocol-version", "1")],
+        )
+        .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::FORBIDDEN,
+            "cached Editor must not grant current workspace writes"
+        );
+    }
+}
+
+struct WorkspaceRecoveryFixture(Mutex<HashMap<String, Vec<u8>>>);
+#[async_trait::async_trait]
+impl aster_core::WorkspaceRecovery for WorkspaceRecoveryFixture {
+    async fn list(&self, prefix: &str) -> Result<Vec<String>> {
+        Ok(self
+            .0
+            .lock()
+            .unwrap()
+            .keys()
+            .filter(|key| key.starts_with(&format!("{prefix}/")))
+            .cloned()
+            .collect())
+    }
+
+    async fn put(&self, key: &str, bytes: Vec<u8>) -> Result<()> {
+        use std::collections::hash_map::Entry;
+        match self.0.lock().unwrap().entry(key.into()) {
+            Entry::Vacant(entry) => {
+                entry.insert(bytes);
+                Ok(())
+            }
+            Entry::Occupied(_) => Err(aster_core::CoreError::Conflict(
+                "immutable object exists".into(),
+            )),
+        }
+    }
+    async fn get(&self, key: &str, limit: usize) -> Result<Vec<u8>> {
+        self.0
+            .lock()
+            .unwrap()
+            .get(key)
+            .filter(|bytes| bytes.len() <= limit)
+            .cloned()
+            .ok_or_else(|| aster_core::CoreError::Storage("fixture object unavailable".into()))
+    }
+    async fn delete(&self, key: &str) -> Result<()> {
+        self.0.lock().unwrap().remove(key);
+        Ok(())
+    }
+}
+
+struct WorkspaceGitFixture;
+#[async_trait::async_trait]
+impl TeamGitVerifier for WorkspaceGitFixture {
+    async fn verified_default_commit(&self, _: &str, _: u64, _: u64, _: &str) -> Result<String> {
+        Ok(std::env::var("ASTER_TEST_HTTPS_SEED_OID").unwrap())
+    }
+}
+#[async_trait::async_trait]
+impl aster_core::workspace::WorkspaceHosting for WorkspaceGitFixture {
+    async fn credential(
+        &self,
+        repository: &str,
+        installation: u64,
+        repository_id: u64,
+    ) -> Result<aster_core::workspace::WorkspaceGitCredential> {
+        assert_eq!(installation, 73);
+        assert!([("acme/rpc", 101), ("acme/rpc-two", 102)].contains(&(repository, repository_id)));
+        Ok(aster_core::workspace::WorkspaceGitCredential {
+            remote_url: std::env::var("ASTER_TEST_HTTPS_URL").unwrap(),
+            token: std::env::var("ASTER_TEST_HTTPS_TOKEN").unwrap(),
+            ca_bundle: Some(std::env::var("ASTER_TEST_HTTPS_CA").unwrap().into()),
+        })
+    }
+    async fn find_pull_request(
+        &self,
+        _: &str,
+        _: u64,
+        _: u64,
+        _: &str,
+        _: &str,
+    ) -> Result<Option<String>> {
+        Ok(None)
+    }
+    async fn open_pull_request(
+        &self,
+        repository: &str,
+        _: u64,
+        _: u64,
+        _: &str,
+        _: &str,
+        _: &str,
+    ) -> std::result::Result<String, aster_core::workspace::WorkspacePullRequestFailure> {
+        Ok(format!("https://github.com/{repository}/pull/1"))
+    }
+}
+
+struct WorkspaceTeamIdentity;
+#[async_trait::async_trait]
+impl CurrentIdentityProvider for WorkspaceTeamIdentity {
+    async fn current(&self, user_uuid: &str) -> Result<CurrentIdentity> {
+        Ok(CurrentIdentity {
+            user_uuid: user_uuid.into(),
+            active: true,
+            roles: vec![Role::Editor],
+            groups: vec![
+                "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".into(),
+                "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".into(),
+            ],
+        })
+    }
+    async fn group_exists(&self, _: &str) -> Result<bool> {
+        Ok(false)
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires workspace-recovery.py with HTTPS Git fixture"]
+async fn workspace_https_rpc_clone_draft_commit_and_owner_boundary() {
+    let database = std::env::var("ASTER_TEST_METADATA_URL").unwrap();
+    let team = format!("rpc-{}", aster_core::new_sid().unwrap());
+    let targets = Arc::new(
+        TeamGitTargets::connect(
+            &database,
+            HashMap::from([(
+                team.clone(),
+                TeamGitPolicy {
+                    member_group_uuid: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".into(),
+                    maintainer_group_uuid: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".into(),
+                    installation_id: 73,
+                    allowed_repositories: HashMap::from([
+                        ("acme/rpc".into(), 101),
+                        ("acme/rpc-two".into(), 102),
+                    ]),
+                },
+            )]),
+            Arc::new(WorkspaceGitFixture),
+        )
+        .await
+        .unwrap(),
+    );
+    let service = Arc::new(
+        aster_server::workspace::Workspaces::connect(&database)
+            .await
+            .unwrap()
+            .with_recovery(Arc::new(WorkspaceRecoveryFixture(Mutex::new(
+                HashMap::new(),
+            ))))
+            .with_git(targets.clone(), Arc::new(WorkspaceGitFixture)),
+    );
+    let f = fixture_with_all_services(
+        Some(Arc::new(WorkspaceTeamIdentity)),
+        Some(targets),
+        Some(service),
+    )
+    .await;
+    let alice = workspace_sid(&f.sessions, "rpc-alice").await;
+    let headers = [("connect-protocol-version", "1")];
+    assert_eq!(
+        call(
+            &f.app,
+            "POST",
+            "/aster.v1.Aster/ConfigureWorkspaceRepository",
+            Some(&alice),
+            json!({"team":team,"repository":"acme/rpc","defaultBranch":"main","ifAbsent":true}),
+            &headers
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    let created = json_body(
+        call(
+            &f.app,
+            "POST",
+            "/aster.v1.Aster/CreateWorkspace",
+            Some(&alice),
+            json!({"name":"RPC analysis"}),
+            &headers,
+        )
+        .await,
+    )
+    .await;
+    let workspace = created["id"].as_str().unwrap();
+    let writer = created["writerToken"].as_str().unwrap();
+    assert_eq!(
+        call(
+            &f.app,
+            "GET",
+            &format!("/workspaces/{workspace}"),
+            Some(&alice),
+            json!(null),
+            &[]
+        )
+        .await
+        .status(),
+        StatusCode::OK,
+        "workspace dashboard must be available"
+    );
+    let response = call(&f.app, "POST", "/aster.v1.Aster/CloneWorkspaceRepository", Some(&alice),
+        json!({"workspace":workspace,"writerToken":writer,"epoch":"1","team":team,"repositoryId":"101","branch":"analysis"}), &headers).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "workspace clone RPC must be available"
+    );
+    let checkout = json_body(response).await;
+    let id = checkout["id"].as_str().unwrap();
+    let inspected = call(
+        &f.app,
+        "POST",
+        "/aster.v1.Aster/GetWorkspaceCheckout",
+        Some(&alice),
+        json!({"workspace":workspace,"checkout":id}),
+        &headers,
+    )
+    .await;
+    assert_eq!(inspected.status(), StatusCode::OK);
+    assert_eq!(json_body(inspected).await["branch"], checkout["branch"]);
+    let notebook = json!({"id":"rpc-notebook","title":"RPC draft","engine":"fixture","context":{"catalog_context":"fixture","schema":"default"},"cells":[{"id":"c1","sql":"%sql\nSELECT 42","engine":"old-engine","metadata":{"catalog_context":"old-catalog"}},{"id":"notes","sql":"%md\n# Notes","engine":null,"metadata":{}}]});
+    let save = json!({"workspace":workspace,"checkout":id,"writerToken":writer,"epoch":"1","expectedVersion":"1","notebookJson":notebook.to_string(),"ifAbsent":true});
+    let saved = call(
+        &f.app,
+        "POST",
+        "/aster.v1.Aster/SaveWorkspaceDraft",
+        Some(&alice),
+        save.clone(),
+        &headers,
+    )
+    .await;
+    assert_eq!(saved.status(), StatusCode::OK);
+    let saved = json_body(saved).await;
+    assert_eq!(saved["head"], checkout["head"]);
+    assert_eq!(saved["version"], "2");
+    let page = call(
+        &f.app,
+        "GET",
+        &format!("/workspaces/{workspace}/{id}/notebooks/rpc-notebook"),
+        Some(&alice),
+        json!(null),
+        &[],
+    )
+    .await;
+    assert_eq!(page.status(), StatusCode::OK);
+    let html = String::from_utf8(
+        axum::body::to_bytes(page.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .to_vec(),
+    )
+    .unwrap();
+    assert!(html.contains("data-durable-workspace"));
+    assert!(html.contains(checkout["branch"].as_str().unwrap()));
+    assert!(html.contains("Save draft") && html.contains("Open PR"));
+    let read = json!({"workspace":workspace,"checkout":id,"notebook":"rpc-notebook"});
+    let document = call(
+        &f.app,
+        "POST",
+        "/aster.v1.Aster/GetWorkspaceDraft",
+        Some(&alice),
+        read.clone(),
+        &headers,
+    )
+    .await;
+    assert_eq!(document.status(), StatusCode::OK);
+    let document = json_body(document).await;
+    assert_eq!(document["checkoutVersion"], "2");
+    assert_eq!(document["branch"], checkout["branch"]);
+    let decoded: serde_json::Value =
+        serde_json::from_str(document["notebookJson"].as_str().unwrap()).unwrap();
+    assert_eq!(decoded, notebook);
+    assert_eq!(call(&f.app, "POST", "/aster.v1.Aster/RunWorkspaceCell", Some(&alice),
+        json!({"workspace":workspace,"checkout":id,"notebook":"rpc-notebook","cell":"notes","expectedVersion":"2"}), &headers).await.status(), StatusCode::BAD_REQUEST, "Markdown must not reach the query engine");
+    let executed = call(&f.app, "POST", "/aster.v1.Aster/RunWorkspaceCell", Some(&alice),
+        json!({"workspace":workspace,"checkout":id,"notebook":"rpc-notebook","cell":"c1","expectedVersion":"2"}), &headers).await;
+    assert_eq!(
+        executed.status(),
+        StatusCode::OK,
+        "workspace cells must execute without legacy notebook admission"
+    );
+    assert_eq!(
+        json_body(executed).await["rowsJson"],
+        json!(["[\"SELECT 42\"]"])
+    );
+    assert_eq!(call(&f.app, "POST", "/aster.v1.Aster/RunWorkspaceCell", Some(&alice),
+        json!({"workspace":workspace,"checkout":id,"notebook":"rpc-notebook","cell":"c1","expectedVersion":"1"}), &headers).await.status(), StatusCode::CONFLICT);
+    let committed = call(&f.app, "POST", "/aster.v1.Aster/CommitWorkspaceNotebooks", Some(&alice),
+        json!({"workspace":workspace,"checkout":id,"writerToken":writer,"epoch":"1","expectedVersion":"2","notebooks":["rpc-notebook"],"message":"Analysis"}), &headers).await;
+    assert_eq!(committed.status(), StatusCode::OK);
+    assert_ne!(json_body(committed).await["head"], checkout["head"]);
+    let pushed = call(&f.app, "POST", "/aster.v1.Aster/PushWorkspaceCheckout", Some(&alice),
+        json!({"workspace":workspace,"checkout":id,"writerToken":writer,"epoch":"1","expectedVersion":"3"}), &headers).await;
+    assert_eq!(
+        pushed.status(),
+        StatusCode::OK,
+        "workspace Push RPC must publish the committed branch"
+    );
+    assert_eq!(json_body(pushed).await["version"], "4");
+    let pr = call(&f.app, "POST", "/aster.v1.Aster/OpenWorkspacePullRequest", Some(&alice),
+        json!({"workspace":workspace,"checkout":id,"writerToken":writer,"epoch":"1","expectedVersion":"4","title":"Analysis"}), &headers).await;
+    assert_eq!(pr.status(), StatusCode::OK);
+    assert_eq!(
+        json_body(pr).await["url"],
+        "https://github.com/acme/rpc/pull/1"
+    );
+    let pulled = call(&f.app, "POST", "/aster.v1.Aster/PullWorkspaceCheckout", Some(&alice),
+        json!({"workspace":workspace,"checkout":id,"writerToken":writer,"epoch":"1","expectedVersion":"4"}), &headers).await;
+    assert_eq!(pulled.status(), StatusCode::OK);
+    assert_eq!(
+        call(
+            &f.app,
+            "POST",
+            "/aster.v1.Aster/SaveWorkspaceDraft",
+            Some(&alice),
+            save,
+            &headers
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        call(
+            &f.app,
+            "POST",
+            "/aster.v1.Aster/ReconcileWorkspaceRemote",
+            Some(&alice),
+            json!({"workspace":workspace}),
+            &headers
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    let legacy = Notebook {
+        engine: None,
+        context: None,
+        id: "legacy-import".into(),
+        title: "Legacy owned document".into(),
+        cells: vec![],
+    };
+    f._legacy.save(&legacy, "rpc-alice").await.unwrap();
+    let snapshot = f._legacy.snapshot(&legacy.id).await.unwrap();
+    f.owners
+        .change(NotebookOwnerChange {
+            source: f._legacy.source_key(),
+            id: legacy.id.clone(),
+            expected_owner: None,
+            owner: "rpc-alice".into(),
+            actor: "fixture".into(),
+            source_blob: snapshot.content_revision.clone(),
+            reason: Some("fixture".into()),
+        })
+        .await
+        .unwrap();
+    let import = json!({"workspace":workspace,"checkout":id,"writerToken":writer,"epoch":"1","expectedVersion":"5",
+        "notebook":legacy.id,"expectedLegacyRevision":snapshot.content_revision});
+    let mut stale_import = import.clone();
+    stale_import["expectedLegacyRevision"] = json!("stale");
+    assert_eq!(
+        call(
+            &f.app,
+            "POST",
+            "/aster.v1.Aster/ImportWorkspaceNotebook",
+            Some(&alice),
+            stale_import,
+            &headers
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+    let imported = call(
+        &f.app,
+        "POST",
+        "/aster.v1.Aster/ImportWorkspaceNotebook",
+        Some(&alice),
+        import.clone(),
+        &headers,
+    )
+    .await;
+    assert_eq!(
+        imported.status(),
+        StatusCode::OK,
+        "explicit owned legacy import must create a draft on the selected branch"
+    );
+    let imported = json_body(imported).await;
+    assert_eq!(imported["version"], "6");
+    assert_eq!(imported["dirty"], true);
+    let mut duplicate = import.clone();
+    duplicate["expectedVersion"] = json!("6");
+    assert_eq!(
+        call(
+            &f.app,
+            "POST",
+            "/aster.v1.Aster/ImportWorkspaceNotebook",
+            Some(&alice),
+            duplicate,
+            &headers
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+
+    assert_eq!(
+        f._legacy
+            .snapshot(&legacy.id)
+            .await
+            .unwrap()
+            .content_revision,
+        snapshot.content_revision
+    );
+    let bob = workspace_sid(&f.sessions, "rpc-bob").await;
+    assert_eq!(
+        call(
+            &f.app,
+            "POST",
+            "/aster.v1.Aster/ImportWorkspaceNotebook",
+            Some(&bob),
+            import,
+            &headers
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        call(
+            &f.app,
+            "POST",
+            "/aster.v1.Aster/ReconcileWorkspaceRemote",
+            Some(&bob),
+            json!({"workspace":workspace}),
+            &headers
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        call(
+            &f.app,
+            "POST",
+            "/aster.v1.Aster/GetWorkspaceDraft",
+            Some(&bob),
+            read,
+            &headers
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    if std::env::var("ASTER_TEST_WORKSPACE_BROWSER").as_deref() == Ok("1") {
+        assert_eq!(call(&f.app, "POST", "/aster.v1.Aster/ConfigureWorkspaceRepository", Some(&alice),
+            json!({"team":team,"repository":"acme/rpc-two","defaultBranch":"main","ifAbsent":true}), &headers).await.status(), StatusCode::OK);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let app = f.app.clone();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let status = tokio::task::spawn_blocking(move || {
+            std::process::Command::new("python3")
+                .arg("tests/workspace-live-browser.py")
+                .current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
+                .env("ASTER_BROWSER_ORIGIN", origin)
+                .env("ASTER_BROWSER_TEAM", team)
+                .env("ASTER_BROWSER_SESSION", alice)
+                .status()
+                .unwrap()
+        })
+        .await
+        .unwrap();
+        server.abort();
+        assert!(status.success(), "real workspace browser flow must pass");
+    }
 }
 
 #[tokio::test]

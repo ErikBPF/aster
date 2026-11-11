@@ -298,3 +298,125 @@ mod tests {
         assert!(identity.to_string().contains("oidc needs an issuer"));
     }
 }
+
+pub async fn workspace_recovery(
+    kind: &str,
+    endpoint: &str,
+    bucket: &str,
+    region: &str,
+    secrets: &dyn SecretStore,
+) -> Result<Arc<dyn aster_core::WorkspaceRecovery>> {
+    match kind {
+        "s3" => {
+            let origin = reqwest::Url::parse(endpoint)
+                .map_err(|_| CoreError::Invalid("invalid recovery endpoint".into()))?;
+            if origin.scheme() != "https"
+                || origin.host_str().is_none()
+                || !origin.username().is_empty()
+                || origin.password().is_some()
+                || origin.query().is_some()
+                || origin.fragment().is_some()
+                || origin.path() != "/"
+                || bucket.is_empty()
+                || region.is_empty()
+            {
+                return Err(CoreError::Invalid(
+                    "workspace recovery requires an HTTPS origin, bucket and region".into(),
+                ));
+            }
+            let access = aster_core::require(secrets, "ASTER_WORKSPACE_S3_ACCESS_KEY").await?;
+            let secret = aster_core::require(secrets, "ASTER_WORKSPACE_S3_SECRET_KEY").await?;
+            let store = object_store::aws::AmazonS3Builder::new()
+                .with_endpoint(endpoint)
+                .with_bucket_name(bucket)
+                .with_region(region)
+                .with_access_key_id(access)
+                .with_secret_access_key(secret)
+                .with_client_options(
+                    object_store::ClientOptions::new()
+                        .with_connect_timeout(std::time::Duration::from_secs(10))
+                        .with_timeout(std::time::Duration::from_secs(30)),
+                )
+                .build()
+                .map_err(|_| CoreError::Invalid("invalid workspace S3 configuration".into()))?;
+            Ok(Arc::new(crate::workspace_recovery::ObjectRecovery {
+                store: Arc::new(store),
+            }))
+        }
+        _ => Err(CoreError::Invalid(
+            "unknown workspace recovery provider: expected s3".into(),
+        )),
+    }
+}
+
+#[cfg(test)]
+mod workspace_recovery_tests {
+    use super::*;
+    #[tokio::test]
+    async fn recovery_selection_requires_explicit_provider_and_secure_endpoint() {
+        let secrets = InMemorySecrets::new();
+        secrets.set("ASTER_WORKSPACE_S3_ACCESS_KEY", "fixture-key");
+        secrets.set("ASTER_WORKSPACE_S3_SECRET_KEY", "fixture-secret");
+        assert!(workspace_recovery(
+            "s3",
+            "https://s3.example.invalid",
+            "workspaces",
+            "us-east-1",
+            &secrets
+        )
+        .await
+        .is_ok());
+        assert!(workspace_recovery(
+            "typo",
+            "https://s3.example.invalid",
+            "workspaces",
+            "us-east-1",
+            &secrets
+        )
+        .await
+        .is_err());
+        for endpoint in [
+            "http://s3.example.invalid",
+            "https://user:password@s3.example.invalid",
+            "https://s3.example.invalid?token=x",
+        ] {
+            assert!(
+                workspace_recovery("s3", endpoint, "workspaces", "us-east-1", &secrets)
+                    .await
+                    .is_err()
+            );
+        }
+        assert!(workspace_recovery(
+            "s3",
+            "https://s3.example.invalid",
+            "workspaces",
+            "us-east-1",
+            &InMemorySecrets::new()
+        )
+        .await
+        .is_err());
+    }
+}
+
+pub fn workspace_checkouts(
+    kind: &str,
+) -> Result<Arc<dyn aster_core::workspace::WorkspaceCheckouts>> {
+    match kind {
+        "git" => Ok(Arc::new(crate::gitstore::GitWorkspaces)),
+        _ => Err(CoreError::Invalid(
+            "unknown workspace checkout provider: expected git".into(),
+        )),
+    }
+}
+
+pub fn workspace_hosting(
+    kind: &str,
+    app: Arc<crate::github_app::GithubApp>,
+) -> Result<Arc<dyn aster_core::workspace::WorkspaceHosting>> {
+    match kind {
+        "github-app" => Ok(app),
+        _ => Err(CoreError::Invalid(
+            "unknown workspace hosting provider: expected github-app".into(),
+        )),
+    }
+}

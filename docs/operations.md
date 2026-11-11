@@ -70,3 +70,51 @@ cannot, restore its matched backup as a separate recovery action. A newly
 created GitHub remote or changed conversation database is outside this local
 rollback path. [Deployment](deploy.md) lists the owning recipes and the
 [notebook guide](notebooks-and-git.md) states the current local-only Git limit.
+
+## Durable workspace activation and recovery
+
+The feature defaults off. Enabling it requires PostgreSQL metadata, verified OIDC
+without `ASTER_DEV_LOGIN`, a signed `ASTER_IDP_USER_UUID_CLAIM`, team Git policy,
+and fresh Authentik authority configured with API origin, read token, admin group
+UUID and editor group UUID. `ASTER_TEAM_GIT_ENABLED=1` and
+`ASTER_TEAM_GIT_POLICY_FILE` select the approved numeric repository/installation
+policy. Supply `ASTER_GITHUB_APP_ID`, `ASTER_GITHUB_APP_KEY_NAME` and the named
+private-key secret through the existing secret provider. The App needs scoped
+contents write and pull-requests write permission for explicit publication.
+
+Recovery needs `ASTER_WORKSPACE_S3_ENDPOINT` (HTTPS origin),
+`ASTER_WORKSPACE_S3_BUCKET`, `ASTER_WORKSPACE_S3_REGION`, and secret-provider keys
+`ASTER_WORKSPACE_S3_ACCESS_KEY` and `ASTER_WORKSPACE_S3_SECRET_KEY`. The bucket
+must be private and permit immutable PUT, GET, prefix LIST and DELETE. Provider
+names are `ASTER_WORKSPACE_CHECKOUTS=git`, `ASTER_WORKSPACE_HOSTING=github-app`
+and `ASTER_WORKSPACE_RECOVERY=s3`; unknown names fail startup. Do not place keys
+in chart values, source control or browser storage.
+
+For Helm, set `server.workspaces.enabled`, `secretName` and `policyConfigMap`.
+The existing Secret supplies the environment names above; the ConfigMap contains
+`teams.json`. Configure `server.identity` separately. The chart mounts private
+working files under a bounded ephemeral `/tmp`; PostgreSQL and S3 hold recovery
+state. Compose remains off by default. A local verified-identity override must
+remove the development login environment entry and supply policy mounts and
+external settings before enabling the flag. No live rollout is implied by local
+fixture tests.
+
+Back up workspace metadata and recovery objects together. Restoring only an older
+metadata backup can roll back publication knowledge; keep remote-operation
+journals and current generation pointers intact. Never clear a pending journal
+or advance an epoch merely because a browser disconnected or a timeout elapsed.
+The owning operation continues independently of the HTTP request. A running
+operation that survives a process crash requires an operator to establish that
+the old process and its Git child are stopped and no remote request remains in
+flight before marking it uncertain for the lookup-only recovery path. If that
+cannot be established, keep the workspace read-only and preserve its export.
+A remote branch missing or changed after an uncertain Push stays fenced.
+
+Keep versioned snapshots and migrations when rolling back. Disable the opt-in
+and preserve both stores; an older server cannot interpret draft revisions as
+legacy Git blob revisions. Do not delete recovery objects to reclaim quota while
+their metadata pointer is current. Maintenance retries incomplete workspace
+deletion and periodically revisits tombstones for delayed uploads. Completed
+workspaces are retained until explicit deletion; bucket expiry must not silently
+remove live generations. Fixed initial quotas require operator capacity sizing;
+no production latency or storage-cost claim has been established.

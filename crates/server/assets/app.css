@@ -397,6 +397,11 @@ table.res td.num { text-align: right; }
 .cell-head .select-wrap { min-width: 0; max-width: 100%; }
 .cell-head select { max-width: 100%; }
 
+.durable-workspace [data-action="ai"], .durable-workspace #chat-toggle, .durable-workspace .model-selector { display: none; }
+.durable-workspace .nb-bar { flex-wrap: wrap; }
+#workspace-checkouts section { margin-block: 1.5rem; }
+#workspace-clone label, #workspace-create label { display: block; margin-block: .75rem; }
+
 /* ---- notebook sessions, markdown and insertion rows ----------------- */
 
 .chat-sessions {
@@ -831,3 +836,19 @@ table.res td.num { text-align: right; }
 .suggestion-actions pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 18rem; overflow: auto; }
 .suggestion-actions select { width: 100%; min-width: 0; }
 .suggestion-actions p { margin: 0; font-size: .85rem; color: var(--muted); }
+
+/* Keep publication forms out of the editor's primary toolbar. */
+.workspace-git-panel { margin: .75rem 0; border: 1px solid var(--border); border-radius: 6px; }
+.workspace-git-panel > summary { cursor: pointer; padding: .6rem .8rem; font-weight: 600; }
+.workspace-git-content { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr)); gap: 1rem; padding: .8rem; }
+.workspace-git-content fieldset { min-width: 0; border: 0; padding: 0; margin: 0; }
+.workspace-git-content legend { font-weight: 600; margin-bottom: .5rem; }
+.workspace-git-content label { display: grid; gap: .25rem; margin-bottom: .5rem; }
+.workspace-git-content input { width: 100%; min-width: 0; box-sizing: border-box; }
+.workspace-git-actions { display: flex; flex-wrap: wrap; gap: .4rem; margin-bottom: .75rem; }
+.workspace-git-content fieldset:last-child { display: flex; flex-direction: column; align-items: start; gap: .4rem; }
+#workspace-branch { display: inline-block; max-width: min(52ch, 70vw); overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; white-space: nowrap; }
+#workspace-open-tabs { display: flex; flex-wrap: wrap; gap: .5rem; padding: 0; list-style: none; }
+.durable-workspace .nb-bar > a[href="/settings/llm#ai-models"] { display: none; }
+
+#workspace-full-branch { overflow-wrap: anywhere; }
