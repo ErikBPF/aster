@@ -227,7 +227,8 @@ pub(crate) fn restore(root: &Path, scope: &str, bytes: &[u8]) -> Result<()> {
         false,
         safe_config.as_bytes().to_vec(),
     )];
-    let mut total = 0_usize;
+    let mut content_bytes = 0_usize;
+    let mut git_bytes = 0_usize;
     for (path, entry) in archive.files {
         if path == ".git" || !valid_path(&path) || excluded(&path) {
             return Err(invalid("unsafe archive path"));
@@ -235,12 +236,7 @@ pub(crate) fn restore(root: &Path, scope: &str, bytes: &[u8]) -> Result<()> {
         let content = base64::engine::general_purpose::STANDARD
             .decode(entry.content)
             .map_err(|_| invalid("invalid archive content"))?;
-        total = total
-            .checked_add(content.len())
-            .ok_or_else(|| invalid("workspace byte quota exceeded"))?;
-        if total > MAX_BYTES {
-            return Err(invalid("workspace byte quota exceeded"));
-        }
+        charge(&path, content.len(), &mut content_bytes, &mut git_bytes)?;
         decoded.push((path, entry.executable, content));
     }
     std::fs::DirBuilder::new()
@@ -459,6 +455,36 @@ mod tests {
         assert!(error.to_string().contains("content quota"), "{error}");
         let error = charge(".git/objects/pack/b.pack", 1, &mut content, &mut git).unwrap_err();
         assert!(error.to_string().contains("Git store quota"), "{error}");
+    }
+
+    #[test]
+    fn restore_accepts_a_checkout_whose_git_store_pushes_the_total_over_one_budget() {
+        let source = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(source.path().join(".git/objects/pack")).unwrap();
+        std::fs::write(
+            source.path().join(".git/objects/pack/a.pack"),
+            vec![b'p'; MAX_BYTES / 2],
+        )
+        .unwrap();
+        std::fs::write(
+            source.path().join("notes.spq"),
+            vec![b'n'; MAX_BYTES / 2 + 1024],
+        )
+        .unwrap();
+        let archive = capture(source.path(), "workspace/checkout").unwrap();
+        let target = tempfile::tempdir().unwrap();
+        let root = target.path().join("workspace");
+        restore(&root, "workspace/checkout", &archive).unwrap();
+        assert_eq!(
+            std::fs::read(root.join("notes.spq")).unwrap().len(),
+            MAX_BYTES / 2 + 1024
+        );
+        assert_eq!(
+            std::fs::read(root.join(".git/objects/pack/a.pack"))
+                .unwrap()
+                .len(),
+            MAX_BYTES / 2
+        );
     }
 
     #[test]
