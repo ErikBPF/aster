@@ -151,6 +151,7 @@ async fn setup_with(
         notebook_owners: owners,
         notebook_write: Arc::new(tokio::sync::Mutex::new(())),
         team_workspaces: None,
+        durable_workspaces: None,
         team_git_targets: None,
         llm,
         shared_models: None,

@@ -28,6 +28,9 @@ must exist, and every selection site must refuse unknown names.
 | Shared model store | `SharedModelStore` (`crates/core/src/shared_models.rs`) | `postgres`, `memory` | `providers::metadata` on `ASTER_METADATA_STORE`; administrator routes additionally require `ASTER_SHARED_MODELS_ENABLED=1`, an approved HTTPS origin and a versioned application key | `crates/server/features/shared-ai-models.feature` |
 | Sessions | `SessionRegistry` (`crates/core/src/state.rs`) | `valkey`, `memory` | `providers::state` on `ASTER_STATE_STORE` | `crates/core/features/session-state.feature` |
 | OIDC handshakes | `HandshakeStore` (`crates/core/src/state.rs`) | `valkey`, `memory` | `providers::state` on `ASTER_STATE_STORE` | `crates/core/features/session-state.feature` |
+| Workspace hosting | `WorkspaceHosting` (`crates/core/src/workspace.rs`) | GitHub App, scoped fake API in tests | `providers::workspace_hosting`, `ASTER_WORKSPACE_HOSTING=github-app` | `crates/server/features/git-web-workspaces.feature` (draft); exact repository and PR retry integration tests |
+| Workspace checkout | `WorkspaceCheckout`, `WorkspaceCheckouts` (`crates/core/src/workspace.rs`) | Git CLI, temporary Git fixture | `providers::workspace_checkouts`, `ASTER_WORKSPACE_CHECKOUTS=git` | `crates/server/features/git-web-workspaces.feature` (draft); explicit draft/commit unit test |
+| Workspace recovery | `WorkspaceRecovery` (`crates/core/src/workspace.rs`) | `s3`, object-store memory fixture in tests | `providers::workspace_recovery`; explicit HTTPS endpoint, bucket, region and secret-store credentials; opt-in `ASTER_WORKSPACES_ENABLED=1` | `crates/server/features/git-web-workspaces.feature` (draft); archive and object adapter unit tests |
 | Working state | `UserState` (`crates/core/src/state.rs`) | `valkey`, `memory` | `providers::state` on `ASTER_STATE_STORE` | `crates/core/features/working-state.feature` |
 | Semantic format | `SemanticFormat` (`crates/core/src/semantic.rs`) | `cube` (semantic layer), `odcs` (data contract) | `semantic::format` on the `target` a render request names | `crates/core/features/semantic-models.feature` |
 
@@ -58,7 +61,6 @@ instead of implicit.
 
 | Domain | Today | Abstract when |
 |---|---|---|
-| Object storage | nothing stores blobs; notebooks are a git working tree and contracts are files | a second notebook/blob backend is wanted — add the arm in `providers::notebooks` |
 | Metadata DB internals for the controller | the controller issues its two statements directly (`crates/controller/src/main.rs`) | a second metadata database must be supported |
 | Clock | `aster-core` ports already take `now`; the server layer calls `SystemTime::now()` | a server-level scenario must freeze time |
 | Telemetry | process-wide `tracing` subscriber, chosen in each binary | a second exporter or sink is required |

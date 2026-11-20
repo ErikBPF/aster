@@ -32,6 +32,103 @@ impl AsterApi {
     pub fn new(state: Arc<AppState>) -> Self {
         Self { state }
     }
+
+    fn workspaces(&self) -> Result<&Arc<crate::workspace::Workspaces>, ConnectError> {
+        self.state
+            .durable_workspaces
+            .as_ref()
+            .ok_or_else(|| ConnectError::permission_denied("durable workspaces are disabled"))
+    }
+}
+
+fn query_message(result: aster_core::QueryResult) -> Result<api::QueryResult, ConnectError> {
+    let columns = result
+        .columns
+        .into_iter()
+        .map(|column| api::Column {
+            name: column.name,
+            data_type: column.data_type,
+            ..Default::default()
+        })
+        .collect();
+    let rows_json = result
+        .rows
+        .iter()
+        .map(serde_json::to_string)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| {
+            tracing::error!(%error, "query row is not serialisable");
+            ConnectError::internal("upstream dependency failed")
+        })?;
+    Ok(api::QueryResult {
+        columns,
+        rows_json,
+        truncated: result.truncated,
+        ..Default::default()
+    })
+}
+
+fn checkout_message(view: crate::workspace::CheckoutView) -> api::WorkspaceCheckout {
+    api::WorkspaceCheckout {
+        id: view.id,
+        workspace: view.workspace,
+        team: view.team,
+        repository: view.repository,
+        branch: view.branch,
+        version: view.version,
+        head: view.head,
+        dirty: view.dirty,
+        notebooks: view.notebooks,
+        draft_revision: view.draft_revision,
+        ..Default::default()
+    }
+}
+
+fn writer_context(
+    workspace: &str,
+    token: &str,
+    epoch: u64,
+) -> Result<crate::workspace::WriterContext, ConnectError> {
+    let valid =
+        |value: &str| value.len() == 32 && value.bytes().all(|byte| byte.is_ascii_hexdigit());
+    if !valid(workspace) || !valid(token) || epoch == 0 {
+        return Err(ConnectError::invalid_argument(
+            "workspace writer credential and epoch are required",
+        ));
+    }
+    Ok(crate::workspace::WriterContext {
+        workspace: workspace.into(),
+        token: token.into(),
+        epoch,
+    })
+}
+
+fn workspace_message(view: crate::workspace::WorkspaceView) -> api::Workspace {
+    api::Workspace {
+        id: view.id,
+        name: view.name,
+        epoch: view.epoch,
+        read_only: view.read_only,
+        writer_token: view.writer_token,
+        deleting: view.deleting,
+        ..Default::default()
+    }
+}
+
+fn repository_message(
+    record: crate::store::TeamGitTargetRecord,
+) -> Result<api::WorkspaceRepository, ConnectError> {
+    Ok(api::WorkspaceRepository {
+        team: record.team,
+        repository: record.repository,
+        repository_id: u64::try_from(record.repository_id)
+            .map_err(|_| ConnectError::internal("invalid repository record"))?,
+        default_branch: record.default_branch,
+        default_commit: record.default_commit,
+        version: u64::try_from(record.version)
+            .map_err(|_| ConnectError::internal("invalid repository record"))?,
+        ..Default::default()
+    })
 }
 
 /// Registers the service on a ConnectRPC router.
@@ -64,6 +161,16 @@ async fn caller(state: &AppState, ctx: &RequestContext) -> Result<Principal, Con
     crate::principal(state, ctx.headers())
         .await
         .map_err(|_| ConnectError::unauthenticated("sign in required"))
+}
+
+async fn workspace_caller(
+    state: &AppState,
+    ctx: &RequestContext,
+    action: aster_core::Action,
+) -> Result<Principal, ConnectError> {
+    crate::current_identity::workspace_principal(state, ctx.headers(), action)
+        .await
+        .map_err(|error| connect_error(error.0))
 }
 
 async fn notebook_context(
@@ -253,6 +360,26 @@ fn mcp_pb(c: aster_core::mcp::McpConnection) -> api::McpConnection {
 
 #[allow(refining_impl_trait)]
 impl api::Aster for AsterApi {
+    async fn export_workspace_checkout(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, api::GetWorkspaceCheckoutRequest>,
+    ) -> ServiceResult<api::WorkspaceExport> {
+        let principal =
+            workspace_caller(&self.state, &ctx, aster_core::Action::ReadNotebook).await?;
+        let request = request.to_owned_message();
+        let archive = self
+            .workspaces()?
+            .export(&principal, &request.workspace, &request.checkout)
+            .await
+            .map_err(connect_error)?;
+        Ok(api::WorkspaceExport {
+            archive,
+            ..Default::default()
+        }
+        .into())
+    }
+
     async fn discover_mcp_tools(
         &self,
         ctx: RequestContext,
@@ -278,6 +405,76 @@ impl api::Aster for AsterApi {
         }
         .into())
     }
+
+    async fn import_workspace_notebook(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, api::ImportWorkspaceNotebookRequest>,
+    ) -> ServiceResult<api::WorkspaceCheckout> {
+        let principal =
+            workspace_caller(&self.state, &ctx, aster_core::Action::WriteNotebook).await?;
+        let request = request.to_owned_message();
+        let writer = writer_context(&request.workspace, &request.writer_token, request.epoch)?;
+        let _read = self.state.notebook_write.lock().await;
+        let record = self
+            .state
+            .notebook_owners
+            .record(&self.state.notebooks.source_key(), &request.notebook)
+            .await
+            .map_err(connect_error)?
+            .filter(|record| record.owner == principal.subject)
+            .ok_or_else(|| ConnectError::permission_denied("legacy notebook unavailable"))?;
+        let snapshot = self
+            .state
+            .notebooks
+            .snapshot(&request.notebook)
+            .await
+            .map_err(connect_error)?;
+        if snapshot.content_revision != request.expected_legacy_revision
+            || record.content_revision != snapshot.content_revision
+        {
+            return Err(connect_error(aster_core::CoreError::Conflict(
+                "legacy notebook revision changed".into(),
+            )));
+        }
+        let view = self
+            .workspaces()?
+            .edit_checkout(
+                &principal,
+                &writer,
+                &request.checkout,
+                request.expected_version,
+                crate::workspace::CheckoutEdit::SaveDraft {
+                    notebook: snapshot.notebook,
+                    expected: None,
+                },
+            )
+            .await
+            .map_err(connect_error)?;
+        Ok(checkout_message(view).into())
+    }
+
+    async fn reconcile_workspace_remote(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, api::GetWorkspaceStateRequest>,
+    ) -> ServiceResult<api::WorkspaceRemoteOutcome> {
+        let principal =
+            workspace_caller(&self.state, &ctx, aster_core::Action::WriteNotebook).await?;
+        let request = request.to_owned_message();
+        let outcome = self
+            .workspaces()?
+            .reconcile(&principal, &request.workspace)
+            .await
+            .map_err(connect_error)?;
+        Ok(api::WorkspaceRemoteOutcome {
+            checkout: outcome.checkout.map(checkout_message).into(),
+            pull_request: outcome.pull_request,
+            ..Default::default()
+        }
+        .into())
+    }
+
     async fn approve_mcp_read(
         &self,
         ctx: RequestContext,
@@ -318,6 +515,177 @@ impl api::Aster for AsterApi {
         Ok(api::CallMcpToolResponse {
             confirmation: result.confirmation,
             result_json: result.result,
+            ..Default::default()
+        }
+        .into())
+    }
+
+    async fn run_workspace_cell(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, api::RunWorkspaceCellRequest>,
+    ) -> ServiceResult<api::QueryResult> {
+        let principal = workspace_caller(&self.state, &ctx, aster_core::Action::RunQuery).await?;
+        let request = request.to_owned_message();
+        let draft = self
+            .workspaces()?
+            .draft(
+                &principal,
+                &request.workspace,
+                &request.checkout,
+                &request.notebook,
+            )
+            .await
+            .map_err(connect_error)?;
+        if request.expected_version != draft.checkout_version {
+            return Err(connect_error(aster_core::CoreError::Conflict(
+                "checkout changed; reload before running".into(),
+            )));
+        }
+        let cell = draft
+            .notebook
+            .cells
+            .iter()
+            .find(|cell| cell.id == request.cell)
+            .ok_or_else(|| ConnectError::not_found("cell unavailable"))?;
+        if cell.kind() == aster_core::CellKind::Markdown {
+            return Err(ConnectError::invalid_argument(
+                "markdown cells do not execute queries",
+            ));
+        }
+        let (catalog_context, schema) = if let Some(context) = &draft.notebook.context {
+            if context.catalog_context.as_deref().is_none_or(str::is_empty) {
+                return Err(ConnectError::invalid_argument(
+                    "select a notebook catalog before running",
+                ));
+            }
+            (context.catalog_context.clone(), context.schema.clone())
+        } else {
+            let field = |name| {
+                cell.metadata
+                    .get(name)
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+            };
+            (field("catalog_context"), field("schema"))
+        };
+        let body = crate::QueryBody {
+            sql: cell.source().to_owned(),
+            engine: draft
+                .notebook
+                .engine
+                .as_ref()
+                .or(cell.engine.as_ref())
+                .map(|engine| engine.0.clone()),
+            catalog_context,
+            catalog: None,
+            schema,
+            max_rows: None,
+            notebook: None,
+            cell: None,
+        };
+        // This admitted cell does not enter the legacy notebook/result-cache namespace.
+        let result = crate::execute_query(&self.state, &principal, true, &body)
+            .await
+            .map_err(connect_error)?;
+        Ok(query_message(result)?.into())
+    }
+
+    async fn open_workspace_pull_request(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, api::OpenWorkspacePullRequestRequest>,
+    ) -> ServiceResult<api::WorkspacePullRequest> {
+        let principal =
+            workspace_caller(&self.state, &ctx, aster_core::Action::WriteNotebook).await?;
+        let request = request.to_owned_message();
+        let writer = writer_context(&request.workspace, &request.writer_token, request.epoch)?;
+        let url = self
+            .workspaces()?
+            .open_pull_request(
+                &principal,
+                &writer,
+                &request.checkout,
+                request.expected_version,
+                &request.title,
+            )
+            .await
+            .map_err(connect_error)?;
+        Ok(api::WorkspacePullRequest {
+            url,
+            ..Default::default()
+        }
+        .into())
+    }
+
+    async fn get_workspace_state(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, api::GetWorkspaceStateRequest>,
+    ) -> ServiceResult<api::WorkspaceState> {
+        let principal =
+            workspace_caller(&self.state, &ctx, aster_core::Action::ReadNotebook).await?;
+        let request = request.to_owned_message();
+        let state = self
+            .workspaces()?
+            .state(&principal, &request.workspace)
+            .await
+            .map_err(connect_error)?;
+        Ok(api::WorkspaceState {
+            checkouts: state.checkouts,
+            layout_json: serde_json::to_string(&state.layout)
+                .map_err(|_| ConnectError::internal("layout unavailable"))?,
+            layout_version: state.layout_version,
+            recovery_bytes: state.recovery_bytes,
+            total_checkouts: state.total_checkouts,
+            max_checkouts: crate::workspace::MAX_CHECKOUTS as u64,
+            max_checkout_bytes: crate::workspace_snapshot::MAX_BYTES as u64,
+            ..Default::default()
+        }
+        .into())
+    }
+
+    async fn save_workspace_layout(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, api::SaveWorkspaceLayoutRequest>,
+    ) -> ServiceResult<api::WorkspaceLayoutVersion> {
+        let principal =
+            workspace_caller(&self.state, &ctx, aster_core::Action::WriteNotebook).await?;
+        let request = request.to_owned_message();
+        let writer = writer_context(&request.workspace, &request.writer_token, request.epoch)?;
+        let layout = serde_json::from_str(&request.layout_json)
+            .map_err(|_| ConnectError::invalid_argument("invalid layout"))?;
+        let version = self
+            .workspaces()?
+            .save_layout(&principal, &writer, request.expected_version, layout)
+            .await
+            .map_err(connect_error)?;
+        Ok(api::WorkspaceLayoutVersion {
+            version,
+            ..Default::default()
+        }
+        .into())
+    }
+
+    async fn list_workspaces(
+        &self,
+        ctx: RequestContext,
+        _: ServiceRequest<'_, api::ListWorkspacesRequest>,
+    ) -> ServiceResult<api::ListWorkspacesResponse> {
+        let principal =
+            workspace_caller(&self.state, &ctx, aster_core::Action::ReadNotebook).await?;
+        let workspaces = self
+            .workspaces()?
+            .list(&principal)
+            .await
+            .map_err(connect_error)?
+            .into_iter()
+            .map(workspace_message)
+            .collect();
+        Ok(api::ListWorkspacesResponse {
+            workspaces,
+            max_workspaces: crate::workspace::MAX_WORKSPACES as u64,
             ..Default::default()
         }
         .into())
@@ -418,6 +786,119 @@ impl api::Aster for AsterApi {
         }
         .into())
     }
+
+    async fn delete_workspace(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, api::DeleteWorkspaceRequest>,
+    ) -> ServiceResult<api::DeleteWorkspaceResponse> {
+        let principal =
+            workspace_caller(&self.state, &ctx, aster_core::Action::WriteNotebook).await?;
+        let request = request.to_owned_message();
+        let writer = writer_context(&request.workspace, &request.writer_token, request.epoch)?;
+        self.workspaces()?
+            .delete(&principal, &writer)
+            .await
+            .map_err(connect_error)?;
+        Ok(api::DeleteWorkspaceResponse::default().into())
+    }
+
+    async fn push_workspace_checkout(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, api::GetWorkspaceMutationRequest>,
+    ) -> ServiceResult<api::WorkspaceCheckout> {
+        let principal =
+            workspace_caller(&self.state, &ctx, aster_core::Action::WriteNotebook).await?;
+        let request = request.to_owned_message();
+        let writer = writer_context(&request.workspace, &request.writer_token, request.epoch)?;
+        if request.expected_version == 0 {
+            return Err(ConnectError::invalid_argument(
+                "checkout version is required",
+            ));
+        }
+        let view = self
+            .workspaces()?
+            .push_checkout(
+                &principal,
+                &writer,
+                &request.checkout,
+                request.expected_version,
+            )
+            .await
+            .map_err(connect_error)?;
+        Ok(checkout_message(view).into())
+    }
+
+    async fn clone_workspace_repository(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, api::CloneWorkspaceRepositoryRequest>,
+    ) -> ServiceResult<api::WorkspaceCheckout> {
+        let principal =
+            workspace_caller(&self.state, &ctx, aster_core::Action::WriteNotebook).await?;
+        let request = request.to_owned_message();
+        let writer = writer_context(&request.workspace, &request.writer_token, request.epoch)?;
+        let view = self
+            .workspaces()?
+            .clone_repository(
+                &principal,
+                &writer,
+                &request.team,
+                request.repository_id,
+                &request.branch,
+            )
+            .await
+            .map_err(connect_error)?;
+        Ok(checkout_message(view).into())
+    }
+
+    async fn get_workspace_checkout(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, api::GetWorkspaceCheckoutRequest>,
+    ) -> ServiceResult<api::WorkspaceCheckout> {
+        let principal =
+            workspace_caller(&self.state, &ctx, aster_core::Action::ReadNotebook).await?;
+        let request = request.to_owned_message();
+        let view = self
+            .workspaces()?
+            .checkout(&principal, &request.workspace, &request.checkout)
+            .await
+            .map_err(connect_error)?;
+        Ok(checkout_message(view).into())
+    }
+
+    async fn get_workspace_draft(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, api::GetWorkspaceDraftRequest>,
+    ) -> ServiceResult<api::WorkspaceDraft> {
+        let principal =
+            workspace_caller(&self.state, &ctx, aster_core::Action::ReadNotebook).await?;
+        let request = request.to_owned_message();
+        let draft = self
+            .workspaces()?
+            .draft(
+                &principal,
+                &request.workspace,
+                &request.checkout,
+                &request.notebook,
+            )
+            .await
+            .map_err(connect_error)?;
+        let notebook_json = serde_json::to_string(&draft.notebook)
+            .map_err(|_| ConnectError::internal("notebook serialization failed"))?;
+        Ok(api::WorkspaceDraft {
+            notebook_json,
+            revision: draft.revision,
+            checkout_version: draft.checkout_version,
+            branch: draft.branch,
+            ..Default::default()
+        }
+        .into())
+    }
+
     async fn get_skill(
         &self,
         ctx: RequestContext,
@@ -449,6 +930,267 @@ impl api::Aster for AsterApi {
         }
         .into())
     }
+
+    async fn save_workspace_draft(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, api::SaveWorkspaceDraftRequest>,
+    ) -> ServiceResult<api::WorkspaceCheckout> {
+        let principal =
+            workspace_caller(&self.state, &ctx, aster_core::Action::WriteNotebook).await?;
+        let request = request.to_owned_message();
+        let writer = writer_context(&request.workspace, &request.writer_token, request.epoch)?;
+        if request.expected_version == 0 {
+            return Err(ConnectError::invalid_argument(
+                "checkout version is required",
+            ));
+        }
+        let expected = match (request.expected_draft_revision, request.if_absent) {
+            (None, true) => None,
+            (Some(revision), false) if !revision.is_empty() && revision.len() <= 256 => {
+                Some(revision)
+            }
+            _ => {
+                return Err(ConnectError::invalid_argument(
+                    "exactly one draft precondition is required",
+                ))
+            }
+        };
+        let notebook = serde_json::from_str(&request.notebook_json)
+            .map_err(|_| ConnectError::invalid_argument("invalid notebook JSON"))?;
+        let view = self
+            .workspaces()?
+            .edit_checkout(
+                &principal,
+                &writer,
+                &request.checkout,
+                request.expected_version,
+                crate::workspace::CheckoutEdit::SaveDraft { notebook, expected },
+            )
+            .await
+            .map_err(connect_error)?;
+        Ok(checkout_message(view).into())
+    }
+
+    async fn pull_workspace_checkout(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, api::GetWorkspaceMutationRequest>,
+    ) -> ServiceResult<api::WorkspaceCheckout> {
+        let principal =
+            workspace_caller(&self.state, &ctx, aster_core::Action::WriteNotebook).await?;
+        let request = request.to_owned_message();
+        let writer = writer_context(&request.workspace, &request.writer_token, request.epoch)?;
+        if request.expected_version == 0 {
+            return Err(ConnectError::invalid_argument(
+                "checkout version is required",
+            ));
+        }
+        let view = self
+            .workspaces()?
+            .edit_checkout(
+                &principal,
+                &writer,
+                &request.checkout,
+                request.expected_version,
+                crate::workspace::CheckoutEdit::Pull,
+            )
+            .await
+            .map_err(connect_error)?;
+        Ok(checkout_message(view).into())
+    }
+
+    async fn switch_workspace_branch(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, api::SwitchWorkspaceBranchRequest>,
+    ) -> ServiceResult<api::WorkspaceCheckout> {
+        let principal =
+            workspace_caller(&self.state, &ctx, aster_core::Action::WriteNotebook).await?;
+        let request = request.to_owned_message();
+        let writer = writer_context(&request.workspace, &request.writer_token, request.epoch)?;
+        if request.expected_version == 0 {
+            return Err(ConnectError::invalid_argument(
+                "checkout version is required",
+            ));
+        }
+        let view = self
+            .workspaces()?
+            .edit_checkout(
+                &principal,
+                &writer,
+                &request.checkout,
+                request.expected_version,
+                crate::workspace::CheckoutEdit::SwitchBranch {
+                    branch: request.branch,
+                    create: request.create,
+                },
+            )
+            .await
+            .map_err(connect_error)?;
+        Ok(checkout_message(view).into())
+    }
+
+    async fn commit_workspace_notebooks(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, api::CommitWorkspaceNotebooksRequest>,
+    ) -> ServiceResult<api::WorkspaceCheckout> {
+        let principal =
+            workspace_caller(&self.state, &ctx, aster_core::Action::WriteNotebook).await?;
+        let request = request.to_owned_message();
+        let writer = writer_context(&request.workspace, &request.writer_token, request.epoch)?;
+        if request.expected_version == 0 {
+            return Err(ConnectError::invalid_argument(
+                "checkout version is required",
+            ));
+        }
+        let view = self
+            .workspaces()?
+            .edit_checkout(
+                &principal,
+                &writer,
+                &request.checkout,
+                request.expected_version,
+                crate::workspace::CheckoutEdit::Commit {
+                    notebooks: request.notebooks,
+                    message: request.message,
+                },
+            )
+            .await
+            .map_err(connect_error)?;
+        Ok(checkout_message(view).into())
+    }
+
+    async fn create_workspace(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, api::CreateWorkspaceRequest>,
+    ) -> ServiceResult<api::Workspace> {
+        let principal =
+            workspace_caller(&self.state, &ctx, aster_core::Action::WriteNotebook).await?;
+        let service =
+            self.state.durable_workspaces.as_deref().ok_or_else(|| {
+                ConnectError::permission_denied("durable workspaces are disabled")
+            })?;
+        let result = service
+            .create(&principal, &request.to_owned_message().name)
+            .await
+            .map_err(connect_error)?;
+        Ok(workspace_message(result).into())
+    }
+
+    async fn takeover_workspace(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, api::TakeoverWorkspaceRequest>,
+    ) -> ServiceResult<api::Workspace> {
+        let principal =
+            workspace_caller(&self.state, &ctx, aster_core::Action::WriteNotebook).await?;
+        let service =
+            self.state.durable_workspaces.as_deref().ok_or_else(|| {
+                ConnectError::permission_denied("durable workspaces are disabled")
+            })?;
+        let request = request.to_owned_message();
+        let result = service
+            .takeover(&principal, &request.workspace, request.expected_epoch)
+            .await
+            .map_err(connect_error)?;
+        Ok(workspace_message(result).into())
+    }
+
+    async fn open_workspace(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, api::OpenWorkspaceRequest>,
+    ) -> ServiceResult<api::Workspace> {
+        let principal =
+            workspace_caller(&self.state, &ctx, aster_core::Action::ReadNotebook).await?;
+        let service =
+            self.state.durable_workspaces.as_deref().ok_or_else(|| {
+                ConnectError::permission_denied("durable workspaces are disabled")
+            })?;
+        let request = request.to_owned_message();
+        let result = service
+            .open(
+                &principal,
+                &request.workspace,
+                request.writer_token.as_deref(),
+            )
+            .await
+            .map_err(connect_error)?;
+        Ok(workspace_message(result).into())
+    }
+
+    async fn configure_workspace_repository(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, api::ConfigureWorkspaceRepositoryRequest>,
+    ) -> ServiceResult<api::WorkspaceRepository> {
+        let principal =
+            crate::current_identity::current_principal(&self.state, ctx.headers(), false)
+                .await
+                .map_err(|error| connect_error(error.0))?;
+        let targets = self
+            .state
+            .team_git_targets
+            .as_deref()
+            .ok_or_else(|| ConnectError::permission_denied("team Git is disabled"))?;
+        let request = request.to_owned_message();
+        targets
+            .maintainer(&request.team, &principal)
+            .map_err(connect_error)?;
+        let expected = match (request.expected_version, request.if_absent) {
+            (None, true) => None,
+            (Some(version), false) if version > 0 => Some(version),
+            _ => {
+                return Err(ConnectError::invalid_argument(
+                    "one repository version precondition is required",
+                ))
+            }
+        };
+        let record = targets
+            .configure_repository(
+                &request.team,
+                &principal,
+                &request.repository,
+                &request.default_branch,
+                expected,
+            )
+            .await
+            .map_err(connect_error)?;
+        Ok(repository_message(record)?.into())
+    }
+
+    async fn list_workspace_repositories(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, api::ListWorkspaceRepositoriesRequest>,
+    ) -> ServiceResult<api::ListWorkspaceRepositoriesResponse> {
+        let principal =
+            crate::current_identity::current_principal(&self.state, ctx.headers(), false)
+                .await
+                .map_err(|error| connect_error(error.0))?;
+        let targets = self
+            .state
+            .team_git_targets
+            .as_deref()
+            .ok_or_else(|| ConnectError::permission_denied("team Git is disabled"))?;
+        let request = request.to_owned_message();
+        let records = targets
+            .repositories(&request.team, &principal)
+            .await
+            .map_err(connect_error)?;
+        Ok(api::ListWorkspaceRepositoriesResponse {
+            repositories: records
+                .into_iter()
+                .map(repository_message)
+                .collect::<Result<_, _>>()?,
+            ..Default::default()
+        }
+        .into())
+    }
+
     async fn put_skill(
         &self,
         ctx: RequestContext,
@@ -1501,34 +2243,20 @@ impl api::Aster for AsterApi {
             .await
             .map_err(connect_error)?;
 
-        let columns: Vec<api::Column> = result
-            .columns
-            .iter()
-            .map(|column| api::Column {
-                name: column.name.clone(),
-                data_type: column.data_type.clone(),
-                ..Default::default()
-            })
-            .collect();
-        let mut rows_json = Vec::with_capacity(result.rows.len());
-        for row in &result.rows {
-            match serde_json::to_string(row) {
-                Ok(encoded) => rows_json.push(encoded),
-                Err(error) => {
-                    tracing::error!(%error, "query row is not serialisable");
-                    return Err(ConnectError::internal("upstream dependency failed"));
-                }
-            }
-        }
+        let result = query_message(result)?;
         if let (Some(notebook), Some(cell)) = (&requested.notebook, &requested.cell) {
-            let names: Vec<String> = columns.iter().map(|column| column.name.clone()).collect();
+            let names: Vec<String> = result
+                .columns
+                .iter()
+                .map(|column| column.name.clone())
+                .collect();
             if let Err(error) = crate::exchange::record_result(
                 &self.state,
                 &caller,
                 notebook,
                 cell,
                 &names,
-                &rows_json,
+                &result.rows_json,
                 result.truncated,
             )
             .await
@@ -1536,13 +2264,7 @@ impl api::Aster for AsterApi {
                 tracing::warn!(%error, "cell result was not recorded for the session exchange");
             }
         }
-        Ok(api::QueryResult {
-            columns,
-            rows_json,
-            truncated: result.truncated,
-            ..Default::default()
-        }
-        .into())
+        Ok(result.into())
     }
 
     async fn render_semantic(

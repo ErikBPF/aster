@@ -236,6 +236,18 @@ async fn repository_identity_requires_exact_installation_and_numeric_id() {
                 .is_ok(),
             allowed
         );
+        use aster_core::workspace::WorkspaceHosting;
+        let credential = app.credential("acme/notebooks", 73, 101).await;
+        assert_eq!(credential.is_ok(), allowed);
+        if allowed {
+            let credential = credential.unwrap();
+            assert_eq!(
+                credential.remote_url,
+                "https://github.com/acme/notebooks.git"
+            );
+            assert_eq!(credential.token, "disposable-test-token");
+            assert!(credential.ca_bundle.is_none());
+        }
         server.abort();
     }
 }
@@ -359,4 +371,139 @@ async fn repository_verification_never_follows_a_credentialed_redirect() {
     assert_eq!(hits.load(Ordering::SeqCst), 0);
     source_server.abort();
     destination_server.abort();
+}
+
+#[tokio::test]
+async fn explicit_pull_request_retry_reuses_exact_repository_head_and_base() {
+    use aster_core::workspace::WorkspaceHosting;
+    use axum::extract::Query;
+    use std::collections::HashMap;
+    let key = Command::new("openssl")
+        .args([
+            "genpkey",
+            "-algorithm",
+            "RSA",
+            "-pkeyopt",
+            "rsa_keygen_bits:2048",
+        ])
+        .output()
+        .unwrap();
+    assert!(key.status.success());
+    let secrets = Arc::new(InMemorySecrets::new());
+    secrets.set(
+        "TEST_GITHUB_APP_KEY",
+        std::str::from_utf8(&key.stdout).unwrap(),
+    );
+    let reject = Arc::new(AtomicUsize::new(1));
+    let server_reject = reject.clone();
+    let created = Arc::new(AtomicUsize::new(0));
+    let listed = created.clone();
+    let writes = created.clone();
+    let scoped_tokens = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let token_requests = scoped_tokens.clone();
+    let pr = json!({"number":7,"state":"open","html_url":"https://github.com/acme/notebooks/pull/7",
+        "head":{"ref":"aster/alice/work","repo":{"id":101}},"base":{"ref":"main","repo":{"id":101}}});
+    let listed_pr = pr.clone();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        axum::serve(listener, Router::new()
+            .route("/repos/acme/notebooks/installation", get(|| async { Json(json!({"id":73})) }))
+            .route("/repos/acme/notebooks", get(|| async { Json(json!({"id":101,"full_name":"acme/notebooks"})) }))
+            .route("/app/installations/73/access_tokens", post(move |Json(body): Json<Value>| {
+                token_requests.lock().unwrap().push(body);
+                async { Json(json!({"token":"disposable-test-token","expires_at":"2099-01-01T00:00:00Z"})) }
+            }))
+            .route("/repos/acme/notebooks/pulls", get(move |Query(query): Query<HashMap<String,String>>| {
+                let listed = listed.clone(); let pr = listed_pr.clone();
+                async move {
+                    assert_eq!(query.get("head").map(String::as_str), Some("acme:aster/alice/work"));
+                    assert_eq!(query.get("base").map(String::as_str), Some("main"));
+                    assert_eq!(query.get("state").map(String::as_str), Some("open"));
+                    Json(if listed.load(Ordering::SeqCst) == 0 { json!([]) } else { json!([pr]) })
+                }
+            }).post(move |Json(body): Json<Value>| {
+                let writes = writes.clone(); let pr = pr.clone(); let reject = server_reject.clone();
+                async move {
+                    assert_eq!(body["head"], "aster/alice/work"); assert_eq!(body["base"], "main");
+                    assert_eq!(body["title"], "Analysis");
+                    let mode = reject.swap(0, Ordering::SeqCst);
+                    if mode == 1 { return (axum::http::StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"message":"no commits"}))); }
+                    writes.fetch_add(1, Ordering::SeqCst);
+                    (axum::http::StatusCode::CREATED, Json(if mode == 2 { json!({"incomplete":true}) } else { pr }))
+                }
+            }))).await.unwrap();
+    });
+    let app = GithubApp::new_for_test(&origin, 41, "TEST_GITHUB_APP_KEY", secrets).unwrap();
+    assert_eq!(
+        app.find_pull_request("acme/notebooks", 73, 101, "aster/alice/work", "main")
+            .await
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        created.load(Ordering::SeqCst),
+        0,
+        "lookup after an uncertain creation must never POST"
+    );
+    let rejected = app
+        .open_pull_request(
+            "acme/notebooks",
+            73,
+            101,
+            "aster/alice/work",
+            "main",
+            "Analysis",
+        )
+        .await
+        .unwrap_err();
+    assert!(!rejected.may_have_written);
+    assert_eq!(created.load(Ordering::SeqCst), 0);
+    reject.store(2, Ordering::SeqCst);
+    let uncertain = app
+        .open_pull_request(
+            "acme/notebooks",
+            73,
+            101,
+            "aster/alice/work",
+            "main",
+            "Analysis",
+        )
+        .await
+        .unwrap_err();
+    assert!(uncertain.may_have_written);
+    for _ in 0..2 {
+        assert_eq!(
+            app.open_pull_request(
+                "acme/notebooks",
+                73,
+                101,
+                "aster/alice/work",
+                "main",
+                "Analysis"
+            )
+            .await
+            .unwrap(),
+            "https://github.com/acme/notebooks/pull/7"
+        );
+    }
+    assert_eq!(created.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        app.find_pull_request("acme/notebooks", 73, 101, "aster/alice/work", "main")
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("https://github.com/acme/notebooks/pull/7")
+    );
+    assert!(scoped_tokens
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|body| body["repository_ids"] == json!([101])
+            && body["permissions"] == json!({"pull_requests":"write"})));
+    assert!(app
+        .open_pull_request("acme/notebooks", 73, 101, "main", "main", "Analysis")
+        .await
+        .is_err());
+    server.abort();
 }

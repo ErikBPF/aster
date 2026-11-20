@@ -78,12 +78,54 @@ impl PgStore {
             include_str!("../../../migrations/0016_notebook_tool_turns.sql"),
             include_str!("../../../migrations/0006_notebook_owners.sql"),
             include_str!("../../../migrations/0009_team_git_targets.sql"),
+            include_str!("../../../migrations/0017_workspace_repositories.sql"),
+            include_str!("../../../migrations/0018_workspaces.sql"),
         ))
         .execute(&mut *tx)
         .await
         .map_err(storage)?;
         tx.commit().await.map_err(storage)?;
         Ok(Self { pool })
+    }
+
+    pub(crate) async fn workspace_repositories(
+        &self,
+        team: &str,
+    ) -> Result<Vec<TeamGitTargetRecord>> {
+        sqlx::query_as("SELECT team, repository, repository_id, installation_id, default_branch, default_commit, version FROM workspace_repositories WHERE team = $1 ORDER BY repository")
+            .bind(team).fetch_all(&self.pool).await.map_err(storage)
+    }
+
+    pub(crate) async fn change_workspace_repository(
+        &self,
+        change: &TeamGitTargetChange,
+        expected: Option<i64>,
+        actor: &str,
+    ) -> Result<TeamGitTargetRecord> {
+        if expected.is_some_and(|v| v < 1) || actor.is_empty() {
+            return Err(CoreError::Invalid(
+                "invalid repository version or actor".into(),
+            ));
+        }
+        let mut tx = self.pool.begin().await.map_err(storage)?;
+        let row: Option<TeamGitTargetRecord> = if let Some(version) = expected {
+            sqlx::query_as("UPDATE workspace_repositories SET repository = $3, installation_id = $4, default_branch = $5, default_commit = $6, version = version + 1, configured_by = $7, configured_at = now() WHERE team = $1 AND repository_id = $2 AND version = $8 RETURNING team, repository, repository_id, installation_id, default_branch, default_commit, version")
+                .bind(&change.team).bind(change.repository_id).bind(&change.repository)
+                .bind(change.installation_id).bind(&change.default_branch).bind(&change.default_commit)
+                .bind(actor).bind(version).fetch_optional(&mut *tx).await.map_err(storage)?
+        } else {
+            sqlx::query_as("INSERT INTO workspace_repositories (team, repository_id, repository, installation_id, default_branch, default_commit, version, configured_by) VALUES ($1, $2, $3, $4, $5, $6, 1, $7) ON CONFLICT DO NOTHING RETURNING team, repository, repository_id, installation_id, default_branch, default_commit, version")
+                .bind(&change.team).bind(change.repository_id).bind(&change.repository)
+                .bind(change.installation_id).bind(&change.default_branch).bind(&change.default_commit)
+                .bind(actor).fetch_optional(&mut *tx).await.map_err(storage)?
+        };
+        let row = row.ok_or_else(|| CoreError::Conflict("workspace repository changed".into()))?;
+        sqlx::query("INSERT INTO workspace_repository_events (team, repository_id, repository, installation_id, default_branch, default_commit, previous_version, version, actor_subject) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)")
+            .bind(&row.team).bind(row.repository_id).bind(&row.repository).bind(row.installation_id)
+            .bind(&row.default_branch).bind(&row.default_commit).bind(expected).bind(row.version)
+            .bind(actor).execute(&mut *tx).await.map_err(storage)?;
+        tx.commit().await.map_err(storage)?;
+        Ok(row)
     }
 
     pub async fn seed_grant(&self, subject: &str, engine: &str) -> Result<()> {
@@ -353,6 +395,43 @@ mod notebook_owner_tests {
 #[cfg(test)]
 mod team_target_tests {
     use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires disposable Postgres via ASTER_TEST_METADATA_URL"]
+    async fn postgres_team_target_multi_repository_registry_is_additive() {
+        let url = std::env::var("ASTER_TEST_METADATA_URL").expect("disposable metadata URL");
+        let store = PgStore::connect(&url).await.unwrap();
+        let registry: Option<String> =
+            sqlx::query_scalar("SELECT to_regclass('workspace_repositories')::text")
+                .fetch_one(&store.pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            registry.as_deref(),
+            Some("workspace_repositories"),
+            "durable workspaces require an additive multi-repository registry"
+        );
+        let team = format!("multi-{}", aster_core::new_sid().unwrap());
+        for (id, name) in [(101_i64, "example/analytics"), (102, "example/reports")] {
+            sqlx::query("INSERT INTO workspace_repositories \
+                (team, repository_id, repository, installation_id, default_branch, default_commit, version, configured_by) \
+                VALUES ($1, $2, $3, 201, 'main', $4, 1, 'alice')")
+                .bind(&team).bind(id).bind(name).bind("a".repeat(40))
+                .execute(&store.pool).await.unwrap();
+        }
+        let reopened = PgStore::connect(&url).await.unwrap();
+        let count: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM workspace_repositories WHERE team = $1")
+                .bind(&team)
+                .fetch_one(&reopened.pool)
+                .await
+                .unwrap();
+        assert_eq!(count, 2);
+        assert!(
+            reopened.team_git_target(&team).await.unwrap().is_none(),
+            "new registry must not overwrite legacy single-target configuration"
+        );
+    }
 
     #[tokio::test]
     #[ignore = "requires disposable Postgres via ASTER_TEST_METADATA_URL"]

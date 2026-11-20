@@ -162,10 +162,124 @@ fn layout(current: &str, title: &str, principal: &Principal, body: &str) -> Stri
     out
 }
 
+pub async fn workspace_index(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let service = state
+        .durable_workspaces
+        .as_ref()
+        .ok_or_else(|| CoreError::NotFound("workspaces are disabled".into()))?;
+    if browser_principal(&state, &headers).await.is_none() {
+        return Ok(sign_in_redirect());
+    }
+    let principal =
+        crate::current_identity::workspace_principal(&state, &headers, Action::ReadNotebook)
+            .await?;
+    let workspaces = service.list(&principal).await?;
+    let mut items = String::new();
+    for workspace in &workspaces {
+        if workspace.deleting {
+            items.push_str(&format!("<li>{} · deletion pending <button class=\"btn\" data-workspace-delete-retry=\"{}\">Retry cleanup</button></li>", escape(&workspace.name), escape(&workspace.id)));
+        } else {
+            items.push_str(&format!(
+                "<li><a href=\"/workspaces/{}\">{}</a></li>",
+                escape(&workspace.id),
+                escape(&workspace.name)
+            ));
+        }
+    }
+    let body = format!(
+        r#"<h1>Workspaces</h1><p>{} / {} workspaces. Drafts stay recoverable until you delete the workspace.</p>
+        <ul id="workspace-list">{items}</ul><form id="workspace-create">
+        <label>Workspace name <input name="name" maxlength="128" required></label>
+        <button class="btn primary" type="submit">Create workspace</button></form>"#,
+        workspaces.len(),
+        crate::workspace::MAX_WORKSPACES
+    );
+    Ok(Html(layout("notebooks", "Workspaces", &principal, &body)).into_response())
+}
+
+pub async fn workspace_view(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(workspace): Path<String>,
+) -> Result<Response, ApiError> {
+    let service = state
+        .durable_workspaces
+        .as_ref()
+        .ok_or_else(|| CoreError::NotFound("workspaces are disabled".into()))?;
+    let principal =
+        crate::current_identity::workspace_principal(&state, &headers, Action::ReadNotebook)
+            .await?;
+    let view = service.open(&principal, &workspace, None).await?;
+    let body = format!(
+        r#"<section id="workspace-dashboard" data-workspace="{}">
+        <p class="crumb"><a href="/workspaces">Workspaces</a></p><h1>{}</h1>
+        <p id="workspace-quota" role="status"></p><button id="workspace-takeover" class="btn">Take over editing</button>
+        <button id="workspace-reconcile" class="btn">Check remote operation</button>
+        <button id="workspace-delete" class="btn danger">Delete workspace</button>
+        <h2>Open notebooks</h2><ul id="workspace-tabs"></ul>
+        <h2>Repositories</h2><div id="workspace-checkouts"></div>
+        <form id="workspace-clone"><h2>Clone an approved repository</h2>
+        <label>Team <input id="workspace-team" required></label>
+        <button type="button" id="workspace-load-repositories" class="btn">Load repositories</button>
+        <label>Repository <select id="workspace-repository" required></select></label>
+        <label>Initial branch name <input id="workspace-new-branch" value="analysis" maxlength="32" required></label>
+        <button class="btn primary" type="submit">Clone repository</button></form></section>"#,
+        escape(&workspace),
+        escape(&view.name)
+    );
+    Ok(Html(layout("notebooks", &view.name, &principal, &body)).into_response())
+}
+
+pub async fn workspace_notebook_view(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((workspace, checkout, notebook)): Path<(String, String, String)>,
+) -> Result<Response, ApiError> {
+    let service = state
+        .durable_workspaces
+        .as_ref()
+        .ok_or_else(|| CoreError::NotFound("workspaces are disabled".into()))?;
+    let principal =
+        crate::current_identity::workspace_principal(&state, &headers, Action::ReadNotebook)
+            .await?;
+    let repository = service
+        .checkout(&principal, &workspace, &checkout)
+        .await?
+        .repository;
+    let draft = service
+        .draft(&principal, &workspace, &checkout, &notebook)
+        .await?;
+    let context = DurableNotebookContext {
+        workspace: &workspace,
+        checkout: &checkout,
+        version: draft.checkout_version,
+        branch: &draft.branch,
+        repository: &repository,
+        head: &draft.head,
+    };
+    let body = notebook_body(&draft.notebook, &draft.revision, None, Some(&context));
+    Ok(Html(layout("notebooks", &draft.notebook.title, &principal, &format!("<div class=\"durable-workspace\"><ul id=\"workspace-open-tabs\" aria-label=\"Open notebooks\"></ul>{body}</div>"))).into_response())
+}
+
+struct DurableNotebookContext<'a> {
+    workspace: &'a str,
+    checkout: &'a str,
+    version: u64,
+    branch: &'a str,
+    repository: &'a str,
+    head: &'a str,
+}
+
 pub async fn index(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
+    if state.durable_workspaces.is_some() {
+        return Ok(Redirect::to("/workspaces").into_response());
+    }
     if !state.local_notebooks_enabled() {
         return Err(CoreError::Unauthorized("team notebook context required".into()).into());
     }
@@ -235,7 +349,7 @@ pub async fn notebook_view(
     let snapshot = state
         .owned_notebook_snapshot(&id, &principal.subject)
         .await?;
-    let body = notebook_body(&snapshot.notebook, &snapshot.content_revision, None);
+    let body = notebook_body(&snapshot.notebook, &snapshot.content_revision, None, None);
     Ok(Html(layout(
         "notebooks",
         &snapshot.notebook.title,
@@ -275,6 +389,7 @@ pub async fn team_notebook_view(
         &snapshot.notebook,
         &snapshot.content_revision,
         Some((&team, workspace)),
+        None,
     );
     Ok(Html(layout(
         "notebooks",
@@ -305,6 +420,7 @@ fn notebook_body(
     notebook: &Notebook,
     content_revision: &str,
     team_context: Option<(&str, &str)>,
+    durable_context: Option<&DurableNotebookContext<'_>>,
 ) -> String {
     let mut cells = String::new();
     let notebook_engine = notebook
@@ -374,8 +490,34 @@ fn notebook_body(
         .unwrap_or_else(|_| "null".into())
         .replace('<', "\\u003c");
 
-    let (crumb, sync_button, context_attributes) = match team_context {
-        Some((team, workspace)) => {
+    let (crumb, sync_button, context_attributes) = match (durable_context, team_context) {
+        (Some(context), _) => (
+            format!("<a href=\"/workspaces/{}\">workspace</a> / {} / <code id=\"workspace-branch\">{}</code> /", escape(context.workspace), escape(context.repository), escape(context.branch)),
+            r#"<details id="workspace-git-panel" class="workspace-git-panel">
+              <summary>Git &amp; branch</summary>
+              <div class="workspace-git-content">
+                <fieldset><legend>Commit &amp; publish</legend>
+                  <label>Commit message <input id="workspace-commit-message" maxlength="4096"></label>
+                  <div class="workspace-git-actions"><button type="button" class="btn" data-action="commit">Commit</button>
+                  <button type="button" class="btn" data-action="push">Push</button>
+                  <button type="button" class="btn" data-action="pull">Pull</button></div>
+                  <label>PR title <input id="workspace-pr-title" maxlength="256"></label>
+                  <button type="button" class="btn" data-action="open-pr">Open PR</button>
+                </fieldset>
+                <fieldset><legend>Branch</legend><p>Current: <code id="workspace-full-branch"></code></p>
+                  <label>Branch <input id="workspace-branch-name" maxlength="128"></label>
+                  <div class="workspace-git-actions"><button type="button" class="btn" data-action="switch-branch">Switch branch</button>
+                  <button type="button" class="btn" data-action="create-branch">Create branch</button></div>
+                </fieldset>
+                <fieldset><legend>Session &amp; recovery</legend>
+                  <button type="button" class="btn" data-action="takeover">Take over</button>
+                  <button type="button" class="btn" data-action="reconcile">Check remote operation</button>
+                  <button type="button" class="btn" data-action="export">Export checkout</button>
+                </fieldset>
+              </div></details>"#,
+            format!(" data-durable-workspace=\"{}\" data-checkout=\"{}\" data-checkout-version=\"{}\" data-branch=\"{}\" data-head=\"{}\"", escape(context.workspace), escape(context.checkout), context.version, escape(context.branch), escape(context.head)),
+        ),
+        (None, Some((team, workspace))) => {
             let path = format!("/teams/{}/notebooks/{}", escape(team), escape(&notebook.id));
             (
                 format!(
@@ -391,11 +533,16 @@ fn notebook_body(
                 ),
             )
         }
-        None => (
+        (None, None) => (
             "<a href=\"/\">notebooks</a> /".to_owned(),
             "",
             String::new(),
         ),
+    };
+    let save_label = if durable_context.is_some() {
+        "Save draft"
+    } else {
+        "Save"
     };
     format!(
         "<div class=\"page-head\"><div>\
@@ -403,7 +550,7 @@ fn notebook_body(
          <h1>{title}</h1></div></div>\
          <div class=\"nb-bar\">\
          <button type=\"button\" class=\"btn\" data-action=\"run-all\">▶ Run all</button>\
-         <button type=\"button\" class=\"btn primary\" data-action=\"save\">Save</button>\
+         <button type=\"button\" class=\"btn primary\" data-action=\"save\">{save_label}</button>\
          {sync_button}\
          <button type=\"button\" class=\"btn\" id=\"chat-toggle\" aria-controls=\"chat-panel\" aria-expanded=\"false\">AI assistant</button>\
          <a class=\"btn ghost\" href=\"/settings/llm#ai-models\">Manage models</a>\
@@ -421,6 +568,7 @@ fn notebook_body(
          <p class=\"status\">run with <span class=\"kbd\">⌘/Ctrl</span> <span class=\"kbd\">Enter</span>, \
          run and move on with <span class=\"kbd\">Shift</span> <span class=\"kbd\">Enter</span>, \
          save with <span class=\"kbd\">⌘/Ctrl</span> <span class=\"kbd\">S</span></p>\
+         {workspace_controls}\
          <details><summary>Contract context for manual query review</summary>{contract_context}</details>\
          <div class=\"cells\" id=\"cells\">{cells}</div>\
          <div class=\"add-cell-row\">\
@@ -447,7 +595,8 @@ fn notebook_body(
          <button type=\"submit\" class=\"btn primary\" id=\"chat-send\">Send</button></form></aside>\
          <script type=\"application/json\" id=\"nb\" data-content-revision=\"{content_revision}\"{context_attributes}>{json}</script>",
         crumb = crumb,
-        sync_button = sync_button,
+        sync_button = if durable_context.is_some() { "" } else { sync_button },
+        workspace_controls = if durable_context.is_some() { sync_button } else { "" },
         context_attributes = context_attributes,
         id = escape(&notebook.id),
         title = escape(&notebook.title),
@@ -1093,10 +1242,58 @@ mod tests {
                 {"id":"c1","sql":"%md\n# Notes","engine":null}]
         }))
         .unwrap();
-        let body = super::notebook_body(&notebook, "revision", None);
+        let body = super::notebook_body(&notebook, "revision", None, None);
         assert!(
             body.contains("data-action=\"run\" hidden"),
             "saved Markdown must retain a hidden Run control that conversion can reveal"
+        );
+    }
+
+    #[test]
+    fn workspace_git_forms_are_collapsed_outside_primary_toolbar() {
+        let notebook: aster_core::Notebook = serde_json::from_value(serde_json::json!({
+            "id":"analysis", "title":"Analysis", "cells":[]
+        }))
+        .unwrap();
+        let context = super::DurableNotebookContext {
+            workspace: "workspace",
+            checkout: "checkout",
+            repository: "acme/repo",
+            branch: "aster/user/analysis",
+            head: "0123456789abcdef",
+            version: 1,
+        };
+        let body = super::notebook_body(&notebook, "draft:one", None, Some(&context));
+        let panel = body
+            .split("<details id=\"workspace-git-panel\"")
+            .nth(1)
+            .expect("Git forms belong in a collapsed panel");
+        assert!(!panel.split('>').next().unwrap().contains("open"));
+        let content = panel.split("</details>").next().unwrap();
+        for action in [
+            "commit",
+            "push",
+            "pull",
+            "open-pr",
+            "switch-branch",
+            "takeover",
+            "export",
+        ] {
+            assert!(
+                content.contains(&format!("data-action=\"{action}\"")),
+                "{action} belongs in Git panel"
+            );
+        }
+        let toolbar = body
+            .split("class=\"nb-bar\"")
+            .nth(1)
+            .unwrap()
+            .split("</div>")
+            .next()
+            .unwrap();
+        assert!(
+            !toolbar.contains("<input"),
+            "primary toolbar must not contain Git forms"
         );
     }
 

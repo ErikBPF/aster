@@ -6,6 +6,11 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+# Private disposable materialization of recovery generations.
+tempfile = "3"
+# S3 signing, TLS, retries and conditional writes for workspace recovery.
+object_store = { version = "=0.14.2", default-features = false, features = ["aws"] }
+futures.workspace = true
 aster-core.workspace = true
 aster-engines.workspace = true
 aster-catalogs.workspace = true
@@ -47,9 +52,7 @@ serde_norway.workspace = true
 cucumber = "0.23"
 async-trait.workspace = true
 tower = "0.5"
-futures.workspace = true
 tokio-rustls = "0.26"
-tempfile = "3"
 
 # The Gherkin harness drives the router in process; it needs its own target
 # because cucumber supplies `main`.

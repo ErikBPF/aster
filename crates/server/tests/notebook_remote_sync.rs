@@ -108,6 +108,7 @@ async fn fixture() -> Fixture {
         notebook_owners: Arc::new(InMemoryNotebookOwners::default()),
         notebook_write: Arc::new(tokio::sync::Mutex::new(())),
         team_workspaces: Some(workspaces),
+        durable_workspaces: None,
         team_git_targets: None,
         llm: Arc::new(InMemoryLlm::new()),
         shared_models: None,

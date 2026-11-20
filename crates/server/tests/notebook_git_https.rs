@@ -290,3 +290,51 @@ fn remote_head(bare: &std::path::Path) -> String {
     assert!(output.status.success());
     String::from_utf8_lossy(&output.stdout).trim().to_owned()
 }
+
+#[tokio::test]
+#[ignore = "requires tests/notebook-git-https.py disposable HTTPS Git fixture"]
+async fn notebook_git_https_a_clone_has_shallow_history() {
+    let checkout = PathBuf::from(std::env::var("ASTER_TEST_HTTPS_CHECKOUT").unwrap());
+    let bare = PathBuf::from(std::env::var("ASTER_TEST_HTTPS_BARE").unwrap());
+    let ca = PathBuf::from(std::env::var("ASTER_TEST_HTTPS_CA").unwrap());
+    let token = std::env::var("ASTER_TEST_HTTPS_TOKEN").unwrap();
+    let binding = NotebookWorkspaceBinding {
+        team: "alpha".into(),
+        branch: "sessions/alice/shallow".into(),
+        installation_id: 17,
+        repository_id: 19,
+        default_branch: "main".into(),
+        default_commit: remote_head(&bare),
+        target_version: 1,
+        remote_url: std::env::var("ASTER_TEST_HTTPS_URL").unwrap(),
+    };
+    let dir = checkout.parent().unwrap().join("shallow-session");
+    GitNotebookStore::clone_https_no_checkout(&dir, &binding, &token, Some(&ca))
+        .await
+        .unwrap();
+    assert_eq!(local_head(&dir), binding.default_commit);
+    let result = Command::new("git")
+        .args(["rev-parse", "--is-shallow-repository"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert!(result.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&result.stdout).trim(),
+        "true",
+        "initial clone must omit older history"
+    );
+    let history = Command::new("git")
+        .args(["rev-list", "--count", "refs/heads/main"])
+        .current_dir(&bare)
+        .output()
+        .unwrap();
+    assert!(history.status.success());
+    assert!(
+        String::from_utf8_lossy(&history.stdout)
+            .trim()
+            .parse::<usize>()
+            .unwrap()
+            > 1
+    );
+}

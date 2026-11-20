@@ -96,6 +96,15 @@
         "notebookDir": { "type": "string" },
         "metricsPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
         "otlpEndpoint": { "type": "string" },
+        "workspaces": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "secretName": { "type": "string" },
+            "policyConfigMap": { "type": "string" }
+          },
+          "additionalProperties": false
+        },
         "sharedModels": {
           "type": "object",
           "properties": {

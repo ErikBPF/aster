@@ -64,6 +64,9 @@ pub use conversation::{
 pub mod exchange;
 pub use exchange::{CellResult, ExchangeStore, InMemoryExchanges, NotebookExchange};
 
+pub mod workspace;
+pub use workspace::WorkspaceRecovery;
+
 pub mod personal_model_policy;
 pub use personal_model_policy::{
     InMemoryPersonalModelPolicy, PersonalModelPolicy, PersonalModelPolicyStore,

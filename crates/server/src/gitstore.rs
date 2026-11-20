@@ -23,20 +23,7 @@ struct SyncMarker {
     pending: bool,
 }
 
-/// Immutable identity of a production team checkout. The token is deliberately
-/// absent; the numeric IDs remain stable across repository rename or transfer.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct NotebookWorkspaceBinding {
-    pub team: String,
-    pub branch: String,
-    pub installation_id: u64,
-    pub repository_id: u64,
-    pub default_branch: String,
-    pub default_commit: String,
-    pub target_version: u64,
-    pub remote_url: String,
-}
+pub use aster_core::workspace::NotebookWorkspaceBinding;
 
 /// Git-backed notebook store for one checkout and branch. Clones share a lock
 /// so local saves cannot interleave; an OS lock excludes other server processes.
@@ -84,6 +71,30 @@ impl GitNotebookStore {
                 "notebook workspace remote changed".into(),
             ));
         }
+        Self::open(dir, branch)
+    }
+
+    pub(crate) fn open_recovered(
+        dir: PathBuf,
+        branch: &str,
+        expected: &NotebookWorkspaceBinding,
+    ) -> Result<Self> {
+        if read_workspace_binding(&dir)? != *expected || !crate::github_app::safe_branch(branch) {
+            return Err(CoreError::Conflict("workspace binding changed".into()));
+        }
+        validate_checkout_config_in(&dir)?;
+        let url = reqwest::Url::parse(&expected.remote_url)
+            .map_err(|_| CoreError::Invalid("invalid workspace remote".into()))?;
+        if url.scheme() != "https" || !url.username().is_empty() || url.password().is_some() {
+            return Err(CoreError::Invalid("invalid workspace remote".into()));
+        }
+        if git_in(&dir, &["symbolic-ref", "--short", "HEAD"])?.trim() != branch {
+            return Err(CoreError::Conflict(
+                "recovered branch differs from metadata".into(),
+            ));
+        }
+        git_in(&dir, &["rev-parse", "--verify", "HEAD"])?;
+        git_in(&dir, &["config", "remote.origin.url", &expected.remote_url])?;
         Self::open(dir, branch)
     }
 
@@ -298,6 +309,21 @@ fn validate_checkout_config_in(dir: &Path) -> Result<()> {
 }
 
 fn git_in_with_auth(dir: &Path, args: &[&str], auth: Option<&GitAuth<'_>>) -> Result<String> {
+    git_in_with_auth_budget(dir, args, auth, None)
+}
+
+struct GitBudget<'a> {
+    root: &'a Path,
+    deadline: std::time::Instant,
+    max_bytes: u64,
+}
+
+fn git_in_with_auth_budget(
+    dir: &Path,
+    args: &[&str],
+    auth: Option<&GitAuth<'_>>,
+    budget: Option<&GitBudget<'_>>,
+) -> Result<String> {
     let mut command = Command::new("git");
     let safe_directory = format!("safe.directory={}", dir.display());
     command.args([
@@ -351,7 +377,11 @@ fn git_in_with_auth(dir: &Path, args: &[&str], auth: Option<&GitAuth<'_>>) -> Re
     command
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", "/dev/null");
-    let output = command.output().map_err(storage)?;
+    let output = if let Some(budget) = budget {
+        bounded_git_output(&mut command, budget.root, budget.deadline, budget.max_bytes)?
+    } else {
+        command.output().map_err(storage)?
+    };
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     } else if auth.is_some() {
@@ -368,6 +398,135 @@ fn git_in_with_auth(dir: &Path, args: &[&str], auth: Option<&GitAuth<'_>>) -> Re
             String::from_utf8_lossy(&output.stderr).trim()
         )))
     }
+}
+
+fn clone_size(root: &Path, limit: u64) -> Result<u64> {
+    let mut bytes = 0_u64;
+    let mut entries = 0_usize;
+    let mut directories = vec![root.to_path_buf()];
+    while let Some(directory) = directories.pop() {
+        let children = match std::fs::read_dir(directory) {
+            Ok(children) => children,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(storage(error)),
+        };
+        for entry in children {
+            let entry = entry.map_err(storage)?;
+            let metadata = match std::fs::symlink_metadata(entry.path()) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(storage(error)),
+            };
+            entries += 1;
+            bytes = bytes.saturating_add(metadata.len());
+            if bytes > limit || entries > 100_000 {
+                return Err(CoreError::Conflict(
+                    "notebook clone storage limit exceeded".into(),
+                ));
+            }
+            if metadata.is_dir() {
+                directories.push(entry.path());
+            }
+        }
+    }
+    Ok(bytes)
+}
+
+fn bounded_git_output(
+    command: &mut Command,
+    root: &Path,
+    deadline: std::time::Instant,
+    max_bytes: u64,
+) -> Result<std::process::Output> {
+    use std::io::{Read, Seek, SeekFrom};
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::process::CommandExt;
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+
+    clone_size(root, max_bytes)?;
+    if Instant::now() >= deadline {
+        return Err(CoreError::Conflict(
+            "notebook clone deadline exceeded".into(),
+        ));
+    }
+    let nonce = aster_core::new_sid()?;
+    let output_dir = root
+        .parent()
+        .ok_or_else(|| CoreError::Invalid("clone root has no parent".into()))?;
+    let paths = [
+        output_dir.join(format!(".aster-command-{nonce}.out")),
+        output_dir.join(format!(".aster-command-{nonce}.err")),
+    ];
+    let result = (|| {
+        let mut stdout = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&paths[0])
+            .map_err(storage)?;
+        std::fs::remove_file(&paths[0]).map_err(storage)?;
+        let mut stderr = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&paths[1])
+            .map_err(storage)?;
+        std::fs::remove_file(&paths[1]).map_err(storage)?;
+        command
+            .process_group(0)
+            .stdout(Stdio::from(stdout.try_clone().map_err(storage)?))
+            .stderr(Stdio::from(stderr.try_clone().map_err(storage)?));
+        let mut child = command.spawn().map_err(storage)?;
+        let outcome = (|| loop {
+            if Instant::now() >= deadline {
+                return Err(CoreError::Conflict(
+                    "notebook clone deadline exceeded".into(),
+                ));
+            }
+            clone_size(root, max_bytes)?;
+            if stdout.metadata().map_err(storage)?.len() > 1024 * 1024
+                || stderr.metadata().map_err(storage)?.len() > 1024 * 1024
+            {
+                return Err(CoreError::Conflict(
+                    "notebook clone output limit exceeded".into(),
+                ));
+            }
+            if let Some(status) = child.try_wait().map_err(storage)? {
+                return Ok(status);
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        })();
+        if outcome.is_err() {
+            // Kill the owned process group so transport helpers cannot outlive Git.
+            unsafe {
+                libc::kill(-(child.id() as i32), libc::SIGKILL);
+            }
+            let _ = child.wait();
+        }
+        let status = outcome?;
+        let read_output = |file: &mut File| -> Result<Vec<u8>> {
+            file.seek(SeekFrom::Start(0)).map_err(storage)?;
+            let mut bytes = Vec::new();
+            file.take(1024 * 1024 + 1)
+                .read_to_end(&mut bytes)
+                .map_err(storage)?;
+            if bytes.len() > 1024 * 1024 {
+                return Err(CoreError::Conflict(
+                    "notebook clone output limit exceeded".into(),
+                ));
+            }
+            Ok(bytes)
+        };
+        Ok(std::process::Output {
+            status,
+            stdout: read_output(&mut stdout)?,
+            stderr: read_output(&mut stderr)?,
+        })
+    })();
+    result
 }
 
 fn storage(error: std::io::Error) -> CoreError {
@@ -507,12 +666,20 @@ impl GitNotebookStore {
         let destination = staging
             .to_str()
             .ok_or_else(|| CoreError::Invalid("invalid notebook checkout path".into()))?;
+        let budget = GitBudget {
+            root: &staging,
+            deadline: std::time::Instant::now() + std::time::Duration::from_secs(60),
+            max_bytes: 128 * 1024 * 1024,
+        };
         let result = (|| {
-            git_in_with_auth(
+            git_in_with_auth_budget(
                 parent,
                 &[
                     "clone",
                     "--no-checkout",
+                    "--depth=1",
+                    "--no-tags",
+                    "--single-branch",
                     "--branch",
                     &binding.default_branch,
                     "--",
@@ -520,36 +687,64 @@ impl GitNotebookStore {
                     destination,
                 ],
                 Some(&auth),
+                Some(&budget),
             )?;
             let metadata = std::fs::symlink_metadata(staging.join(".git")).map_err(storage)?;
             if !metadata.is_dir() {
                 return Err(CoreError::Storage("invalid cloned Git directory".into()));
             }
             validate_checkout_config_in(&staging)?;
-            git_in(
-                &staging,
-                &[
-                    "cat-file",
-                    "-e",
-                    &format!("{}^{{commit}}", binding.default_commit),
-                ],
-            )?;
-            git_in(
-                &staging,
-                &[
-                    "merge-base",
-                    "--is-ancestor",
-                    &binding.default_commit,
-                    &format!("refs/remotes/origin/{}", binding.default_branch),
-                ],
-            )?;
+            let reference = format!("refs/remotes/origin/{}", binding.default_branch);
+            // A moving default may put the pinned base outside the initial depth.
+            let mut verified = false;
+            for depth in [1_u32, 16, 64, 256, 1024] {
+                if depth > 1 {
+                    git_in_with_auth_budget(
+                        &staging,
+                        &[
+                            "fetch",
+                            "--no-tags",
+                            &format!("--depth={depth}"),
+                            "--",
+                            url.as_str(),
+                            &format!("refs/heads/{}:{reference}", binding.default_branch),
+                        ],
+                        Some(&auth),
+                        Some(&budget),
+                    )?;
+                }
+                if git_in_with_auth_budget(
+                    &staging,
+                    &[
+                        "merge-base",
+                        "--is-ancestor",
+                        &binding.default_commit,
+                        &reference,
+                    ],
+                    None,
+                    Some(&budget),
+                )
+                .is_ok()
+                {
+                    verified = true;
+                    break;
+                }
+                if !staging.join(".git/shallow").exists() {
+                    break;
+                }
+            }
+            if !verified {
+                return Err(CoreError::Conflict(
+                    "pinned notebook base unavailable within clone history limit".into(),
+                ));
+            }
             let bytes = serde_json::to_vec(binding)
                 .map_err(|error| CoreError::Storage(error.to_string()))?;
             replace_file(&staging.join(".git/aster.workspace.json"), &bytes)?;
             // Checkout is safe only after the binding is durable. Start the
             // workspace branch at the recorded commit, even if the default
             // branch moved between configuration and this clone.
-            git_in(
+            git_in_with_auth_budget(
                 &staging,
                 &[
                     "checkout",
@@ -558,7 +753,15 @@ impl GitNotebookStore {
                     &binding.branch,
                     &binding.default_commit,
                 ],
+                None,
+                Some(&budget),
             )?;
+            clone_size(&staging, budget.max_bytes)?;
+            if std::time::Instant::now() >= budget.deadline {
+                return Err(CoreError::Conflict(
+                    "notebook clone deadline exceeded".into(),
+                ));
+            }
             std::fs::rename(&staging, dir).map_err(storage)?;
             File::open(parent)
                 .and_then(|directory| directory.sync_all())
@@ -570,6 +773,197 @@ impl GitNotebookStore {
             let _ = std::fs::remove_dir_all(&staging);
         }
         result
+    }
+
+    pub async fn pull_workspace_https(
+        &self,
+        credential: aster_core::workspace::WorkspaceGitCredential,
+    ) -> Result<String> {
+        let store = self.clone();
+        blocking(move || {
+            let (url, auth) = checked_https_remote(
+                &credential.remote_url,
+                &credential.token,
+                credential.ca_bundle.as_deref(),
+            )?;
+            store.pull_workspace_sync(url.as_str(), Some(&auth))
+        })
+        .await
+    }
+
+    fn pull_workspace_sync(&self, destination: &str, auth: Option<&GitAuth<'_>>) -> Result<String> {
+        let _lock = self.transaction.lock().map_err(poisoned)?;
+        self.validate_checkout_config()?;
+        if self.git(&["symbolic-ref", "--short", "HEAD"])?.trim() != self.branch {
+            return Err(CoreError::Conflict("checkout branch changed".into()));
+        }
+        if !self
+            .git(&["status", "--porcelain=v1", "--untracked-files=normal"])?
+            .is_empty()
+        {
+            return Err(CoreError::Conflict("commit drafts before pulling".into()));
+        }
+        let reference = format!("refs/heads/{}", self.branch);
+        let budget = GitBudget {
+            root: &self.dir,
+            deadline: std::time::Instant::now() + std::time::Duration::from_secs(60),
+            max_bytes: 128 * 1024 * 1024,
+        };
+        let run = |args: &[&str]| git_in_with_auth_budget(&self.dir, args, auth, Some(&budget));
+        let remote = parse_remote_ref(&run(&["ls-remote", destination, &reference])?, &reference)?
+            .ok_or_else(|| {
+                CoreError::Conflict("remote branch unavailable; push before pulling".into())
+            })?;
+        let local = self.git(&["rev-parse", "HEAD"])?.trim().to_owned();
+        if local == remote {
+            return Ok(local);
+        }
+        let mut ancestor = false;
+        for depth in [16, 64, 256, 1024] {
+            run(&[
+                "fetch",
+                "--no-tags",
+                &format!("--depth={depth}"),
+                destination,
+                &reference,
+            ])?;
+            if self.git(&["rev-parse", "FETCH_HEAD"])?.trim() != remote {
+                return Err(CoreError::Conflict(
+                    "remote branch changed during Pull; retry".into(),
+                ));
+            }
+            if self
+                .git(&["merge-base", "--is-ancestor", &remote, &local])
+                .is_ok()
+            {
+                return Ok(local);
+            }
+            if self
+                .git(&["merge-base", "--is-ancestor", &local, &remote])
+                .is_ok()
+            {
+                ancestor = true;
+                break;
+            }
+            if self.git(&["rev-parse", "--is-shallow-repository"])?.trim() == "false" {
+                break;
+            }
+        }
+        if !ancestor {
+            return Err(CoreError::Conflict(
+                "branches diverged or exceed history limits; resolve externally".into(),
+            ));
+        }
+        self.git(&["merge", "--ff-only", "--no-edit", &remote])?;
+        Ok(remote)
+    }
+
+    pub async fn switch_workspace_branch(&self, branch: &str, create: bool) -> Result<Self> {
+        let mut store = self.clone();
+        let branch = branch.to_owned();
+        blocking(move || {
+            {
+                let _lock = store.transaction.lock().map_err(poisoned)?;
+                store.validate_checkout_config()?;
+                let scope = store
+                    .branch
+                    .split('/')
+                    .take(3)
+                    .collect::<Vec<_>>()
+                    .join("/")
+                    + "/";
+                if !store.branch.starts_with("aster/")
+                    || !store.branch.starts_with(&scope)
+                    || !branch.starts_with(&scope)
+                    || !crate::github_app::safe_branch(&branch)
+                {
+                    return Err(CoreError::Unauthorized(
+                        "branch is outside this checkout".into(),
+                    ));
+                }
+                if store.git(&["symbolic-ref", "--short", "HEAD"])?.trim() != store.branch {
+                    return Err(CoreError::Conflict("checkout branch changed".into()));
+                }
+                if !store
+                    .git(&["status", "--porcelain=v1", "--untracked-files=normal"])?
+                    .is_empty()
+                {
+                    return Err(CoreError::Conflict(
+                        "commit drafts before switching branches".into(),
+                    ));
+                }
+                if create {
+                    store.git(&["switch", "--no-guess", "-c", &branch])?;
+                } else {
+                    store.git(&["switch", "--no-guess", &branch])?;
+                }
+                store.branch = branch;
+            }
+            Ok(store)
+        })
+        .await
+    }
+
+    async fn check_published_https(
+        &self,
+        credential: aster_core::workspace::WorkspaceGitCredential,
+        acknowledge: bool,
+    ) -> Result<String> {
+        let store = self.clone();
+        blocking(move || {
+            let _lock = store.transaction.lock().map_err(poisoned)?;
+            store.validate_checkout_config()?;
+            if store.git(&["symbolic-ref", "--short", "HEAD"])?.trim() != store.branch {
+                return Err(CoreError::Conflict("checkout branch changed".into()));
+            }
+            let (url, auth) = checked_https_remote(
+                &credential.remote_url,
+                &credential.token,
+                credential.ca_bundle.as_deref(),
+            )?;
+            let head = store.git(&["rev-parse", "HEAD"])?.trim().to_owned();
+            if store
+                .remote_ref(
+                    url.as_str(),
+                    &format!("refs/heads/{}", store.branch),
+                    Some(&auth),
+                )?
+                .as_deref()
+                != Some(head.as_str())
+            {
+                return Err(CoreError::Conflict(
+                    "push the current commit before opening a pull request".into(),
+                ));
+            }
+            if acknowledge {
+                store.write_sync_marker(
+                    &store.sync_marker_path()?,
+                    url.as_str(),
+                    &format!("refs/heads/{}", store.branch),
+                    &head,
+                    false,
+                )?;
+            }
+            Ok(head)
+        })
+        .await
+    }
+
+    pub async fn publish_workspace_https(
+        &self,
+        credential: aster_core::workspace::WorkspaceGitCredential,
+        journal: impl FnOnce(&str, Option<&str>) -> Result<()> + Send + 'static,
+    ) -> Result<String> {
+        let store = self.clone();
+        blocking(move || {
+            let (url, auth) = checked_https_remote(
+                &credential.remote_url,
+                &credential.token,
+                credential.ca_bundle.as_deref(),
+            )?;
+            store.sync_with_remote_journal(url.as_str(), Some(&auth), journal, || Ok(()))
+        })
+        .await
     }
 
     pub async fn sync_https(
@@ -635,6 +1029,16 @@ impl GitNotebookStore {
         before_push: impl FnOnce() -> Result<()>,
         after_push: impl FnOnce() -> Result<()>,
     ) -> Result<String> {
+        self.sync_with_remote_journal(destination, auth, |_, _| before_push(), after_push)
+    }
+
+    fn sync_with_remote_journal(
+        &self,
+        destination: &str,
+        auth: Option<&GitAuth<'_>>,
+        before_push: impl FnOnce(&str, Option<&str>) -> Result<()>,
+        after_push: impl FnOnce() -> Result<()>,
+    ) -> Result<String> {
         let _transaction = self.transaction.lock().map_err(poisoned)?;
         if auth.is_some() {
             self.validate_checkout_config()?;
@@ -694,7 +1098,7 @@ impl GitNotebookStore {
             }
         }
         self.write_sync_marker(&marker, destination, &reference, &local, true)?;
-        before_push()?;
+        before_push(&local, before.as_deref())?;
         // The lease is an exact ref CAS. The ancestry check above still forbids
         // a non-fast-forward update; a concurrent deletion or creation must
         // never be silently repaired by this push.
@@ -721,7 +1125,13 @@ impl GitNotebookStore {
 
     fn sync_marker_path(&self) -> Result<PathBuf> {
         let admin = self.git(&["rev-parse", "--absolute-git-dir"])?;
-        Ok(PathBuf::from(admin.trim()).join("aster.sync"))
+        let name = if self.branch.starts_with("aster/") {
+            use sha2::{Digest, Sha256};
+            format!("aster.sync.{:x}", Sha256::digest(self.branch.as_bytes()))
+        } else {
+            "aster.sync".into()
+        };
+        Ok(PathBuf::from(admin.trim()).join(name))
     }
 
     fn read_sync_marker(&self, marker: &Path) -> Result<Option<SyncMarker>> {
@@ -776,7 +1186,12 @@ impl GitNotebookStore {
     }
 
     fn git_remote(&self, args: &[&str], auth: Option<&GitAuth<'_>>) -> Result<String> {
-        git_in_with_auth(&self.dir, args, auth)
+        let budget = GitBudget {
+            root: &self.dir,
+            deadline: std::time::Instant::now() + std::time::Duration::from_secs(60),
+            max_bytes: 128 * 1024 * 1024,
+        };
+        git_in_with_auth_budget(&self.dir, args, auth, Some(&budget))
     }
 
     fn validate_checkout_config(&self) -> Result<()> {
@@ -804,21 +1219,7 @@ impl GitNotebookStore {
     fn save_sync_locked(&self, notebook: &Notebook, actor: &str) -> Result<String> {
         self.validate_checkout_config()?;
         let path = self.path_for(&notebook.id)?;
-        if notebook.title.contains('\r')
-            || notebook.title.contains('\n')
-            || notebook.engine.as_ref().is_some_and(|engine| {
-                engine.0.is_empty() || engine.0.chars().any(char::is_whitespace)
-            })
-            || notebook.cells.iter().any(|cell| {
-                cell.id.is_empty()
-                    || cell.id.chars().any(char::is_whitespace)
-                    || cell.engine.as_ref().is_some_and(|engine| {
-                        engine.0.is_empty() || engine.0.chars().any(char::is_whitespace)
-                    })
-            })
-        {
-            return Err(CoreError::Invalid("invalid notebook metadata".into()));
-        }
+        let text = notebook_text(notebook)?;
         let name = path
             .file_name()
             .map(|name| name.to_string_lossy().to_string())
@@ -837,10 +1238,6 @@ impl GitNotebookStore {
             .is_empty()
         {
             return Err(CoreError::Conflict("notebook has staged changes".into()));
-        }
-        let text = notebook.to_text();
-        if text.len() as u64 > MAX_NOTEBOOK_BYTES {
-            return Err(CoreError::Invalid("notebook exceeds size limit".into()));
         }
         let previous = match std::fs::symlink_metadata(&path) {
             Ok(metadata) if metadata.file_type().is_symlink() => {
@@ -1012,6 +1409,30 @@ impl GitNotebookStore {
         ids.sort();
         Ok(ids)
     }
+}
+
+fn notebook_text(notebook: &Notebook) -> Result<String> {
+    if notebook.title.contains('\r')
+        || notebook.title.contains('\n')
+        || notebook
+            .engine
+            .as_ref()
+            .is_some_and(|engine| engine.0.is_empty() || engine.0.chars().any(char::is_whitespace))
+        || notebook.cells.iter().any(|cell| {
+            cell.id.is_empty()
+                || cell.id.chars().any(char::is_whitespace)
+                || cell.engine.as_ref().is_some_and(|engine| {
+                    engine.0.is_empty() || engine.0.chars().any(char::is_whitespace)
+                })
+        })
+    {
+        return Err(CoreError::Invalid("invalid notebook metadata".into()));
+    }
+    let text = notebook.to_text();
+    if text.len() as u64 > MAX_NOTEBOOK_BYTES {
+        return Err(CoreError::Invalid("notebook exceeds size limit".into()));
+    }
+    Ok(text)
 }
 
 fn poisoned<T>(error: std::sync::PoisonError<T>) -> CoreError {
@@ -1740,5 +2161,543 @@ mod tests {
                 .trim(),
             "unrelated.txt"
         );
+    }
+}
+
+#[cfg(test)]
+mod clone_budget_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn clone_budget_terminates_and_reaps_a_stalled_process() {
+        let root = tempfile::tempdir().unwrap();
+        let started = Instant::now();
+        let result = bounded_git_output(
+            Command::new("sh").args(["-c", "sleep 2"]),
+            root.path(),
+            started + Duration::from_millis(100),
+            1024,
+        );
+        assert!(
+            result.is_err(),
+            "stalled Git command must exceed its deadline"
+        );
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn clone_output_has_no_named_file_while_transport_runs() {
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("checkout");
+        std::fs::create_dir(&root).unwrap();
+        let result = bounded_git_output(
+            Command::new("sh").current_dir(parent.path()).args(["-c", "for f in .aster-command-*; do [ ! -e \"$f\" ] || exit 9; done; printf bounded-output"]),
+            &root, Instant::now() + Duration::from_secs(2), 1024,
+        ).unwrap();
+        assert!(
+            result.status.success(),
+            "transport output must not leave a named recovery artifact"
+        );
+        assert_eq!(result.stdout, b"bounded-output");
+    }
+
+    #[test]
+    fn clone_budget_refuses_excess_disk_usage() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("oversized"), vec![0_u8; 2048]).unwrap();
+        let result = bounded_git_output(
+            Command::new("git").arg("--version"),
+            root.path(),
+            Instant::now() + Duration::from_secs(2),
+            1024,
+        );
+        assert!(
+            result.is_err(),
+            "disk budget must include the entire staged checkout"
+        );
+    }
+}
+
+impl GitNotebookStore {
+    fn draft_locked(&self, id: &str) -> Result<aster_core::workspace::WorkspaceDraft> {
+        use sha2::{Digest, Sha256};
+        let path = self.path_for(id)?;
+        let metadata = std::fs::symlink_metadata(&path).map_err(storage)?;
+        if !metadata.is_file() || metadata.len() > MAX_NOTEBOOK_BYTES {
+            return Err(CoreError::Invalid("invalid notebook draft file".into()));
+        }
+        let bytes = std::fs::read(&path).map_err(storage)?;
+        let text = std::str::from_utf8(&bytes)
+            .map_err(|_| CoreError::Invalid("invalid notebook text".into()))?;
+        let mut notebook = Notebook::from_text(text)?;
+        notebook.id = id.into();
+        Ok(aster_core::workspace::WorkspaceDraft {
+            notebook,
+            revision: format!("draft:{:x}", Sha256::digest(&bytes)),
+        })
+    }
+}
+
+#[async_trait]
+impl aster_core::workspace::WorkspaceCheckout for GitNotebookStore {
+    async fn switch_branch(
+        &self,
+        branch: &str,
+        create: bool,
+    ) -> Result<Box<dyn aster_core::workspace::WorkspaceCheckout>> {
+        Ok(Box::new(
+            self.switch_workspace_branch(branch, create).await?,
+        ))
+    }
+    async fn pull(
+        &self,
+        credential: aster_core::workspace::WorkspaceGitCredential,
+    ) -> Result<String> {
+        self.pull_workspace_https(credential).await
+    }
+    async fn publish(
+        &self,
+        credential: aster_core::workspace::WorkspaceGitCredential,
+        journal: aster_core::workspace::PublicationJournal,
+    ) -> Result<String> {
+        self.publish_workspace_https(credential, journal).await
+    }
+    async fn published(
+        &self,
+        credential: aster_core::workspace::WorkspaceGitCredential,
+        acknowledge: bool,
+    ) -> Result<String> {
+        self.check_published_https(credential, acknowledge).await
+    }
+
+    async fn draft(&self, id: &str) -> Result<aster_core::workspace::WorkspaceDraft> {
+        let store = self.clone();
+        let id = id.to_owned();
+        blocking(move || {
+            let _lock = store.transaction.lock().map_err(poisoned)?;
+            store.draft_locked(&id)
+        })
+        .await
+    }
+    async fn save_draft(
+        &self,
+        notebook: &Notebook,
+        expected: Option<String>,
+    ) -> Result<aster_core::workspace::WorkspaceDraft> {
+        let store = self.clone();
+        let notebook = notebook.clone();
+        blocking(move || {
+            let _lock = store.transaction.lock().map_err(poisoned)?;
+            store.validate_checkout_config()?;
+            let path = store.path_for(&notebook.id)?;
+            let current = match std::fs::symlink_metadata(&path) {
+                Ok(_) => Some(store.draft_locked(&notebook.id)?.revision),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => return Err(storage(error)),
+            };
+            if current != expected {
+                return Err(CoreError::Conflict(
+                    "notebook draft changed; reopen before saving".into(),
+                ));
+            }
+            let text = notebook_text(&notebook)?;
+            replace_file(&path, text.as_bytes())?;
+            store.draft_locked(&notebook.id)
+        })
+        .await
+    }
+    async fn commit_drafts(&self, ids: Vec<String>, message: String) -> Result<String> {
+        let store = self.clone();
+        blocking(move || {
+            let _lock = store.transaction.lock().map_err(poisoned)?;
+            store.validate_checkout_config()?;
+            if ids.is_empty()
+                || ids.len() > 1000
+                || message.trim().is_empty()
+                || message.len() > 4096
+                || message.contains('\0')
+            {
+                return Err(CoreError::Invalid(
+                    "select notebooks and a valid commit message".into(),
+                ));
+            }
+            let names = ids
+                .iter()
+                .map(|id| {
+                    store.draft_locked(id)?;
+                    Ok(format!("{id}.aster"))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let previous_index = match std::fs::read(store.dir.join(".git/index")) {
+                Ok(bytes) => Some(bytes),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => return Err(storage(error)),
+            };
+            let outcome = (|| {
+                let mut add = vec!["add", "--"];
+                add.extend(names.iter().map(String::as_str));
+                store.git(&add)?;
+                let mut commit = vec!["commit", "--only", "-q", "-m", &message, "--"];
+                commit.extend(names.iter().map(String::as_str));
+                store.git(&commit)?;
+                Ok(store.git(&["rev-parse", "HEAD"])?.trim().to_owned())
+            })();
+            if outcome.is_err() {
+                match previous_index {
+                    Some(bytes) => replace_file(&store.dir.join(".git/index"), &bytes)?,
+                    None => match std::fs::remove_file(store.dir.join(".git/index")) {
+                        Ok(()) => {}
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(error) => return Err(storage(error)),
+                    },
+                }
+            }
+            outcome
+        })
+        .await
+    }
+    async fn draft_ids(&self) -> Result<Vec<String>> {
+        let store = self.clone();
+        blocking(move || {
+            let _lock = store.transaction.lock().map_err(poisoned)?;
+            let mut ids = Vec::new();
+            for entry in std::fs::read_dir(&store.dir).map_err(storage)? {
+                let entry = entry.map_err(storage)?;
+                let name = entry.file_name();
+                if let Some(id) = name.to_str().and_then(|name| name.strip_suffix(".aster")) {
+                    if store.path_for(id).is_ok() && entry.file_type().map_err(storage)?.is_file() {
+                        ids.push(id.to_owned());
+                    }
+                }
+            }
+            ids.sort();
+            Ok(ids)
+        })
+        .await
+    }
+    async fn git_status(&self) -> Result<aster_core::workspace::WorkspaceGitStatus> {
+        let store = self.clone();
+        blocking(move || {
+            let _lock = store.transaction.lock().map_err(poisoned)?;
+            store.validate_checkout_config()?;
+            let branch = store
+                .git(&["symbolic-ref", "--short", "HEAD"])?
+                .trim()
+                .to_owned();
+            if branch != store.branch {
+                return Err(CoreError::Conflict("checkout branch changed".into()));
+            }
+            let head = if store.head_exists_locked()? {
+                store.git(&["rev-parse", "HEAD"])?.trim().to_owned()
+            } else {
+                String::new()
+            };
+            let dirty = !store
+                .git(&["status", "--porcelain=v1", "--untracked-files=normal"])?
+                .is_empty();
+            Ok(aster_core::workspace::WorkspaceGitStatus {
+                branch,
+                head,
+                dirty,
+            })
+        })
+        .await
+    }
+}
+
+#[cfg(test)]
+mod draft_tests {
+    use super::*;
+    use aster_core::workspace::WorkspaceCheckout;
+
+    #[tokio::test]
+    async fn workspace_push_records_exact_intent_before_remote_write() {
+        let root = tempfile::tempdir().unwrap();
+        let remote = root.path().join("remote.git");
+        assert!(Command::new("git")
+            .args(["init", "--bare", "--quiet"])
+            .arg(&remote)
+            .status()
+            .unwrap()
+            .success());
+        let store =
+            GitNotebookStore::open(root.path().join("checkout"), "aster/alice/checkout/first")
+                .unwrap();
+        let notebook = Notebook {
+            engine: None,
+            context: None,
+            id: "one".into(),
+            title: "Base".into(),
+            cells: vec![],
+        };
+        let first = store.save(&notebook, "alice").await.unwrap();
+        let reference = "refs/heads/aster/alice/checkout/first";
+        let destination = remote.to_str().unwrap();
+        let mut recorded = false;
+        assert_eq!(
+            store
+                .sync_with_remote_journal(
+                    destination,
+                    None,
+                    |local, previous| {
+                        assert_eq!(local, first);
+                        assert_eq!(previous, None);
+                        assert_eq!(
+                            store.remote_ref(destination, reference, None).unwrap(),
+                            None
+                        );
+                        recorded = true;
+                        Ok(())
+                    },
+                    || Ok(())
+                )
+                .unwrap(),
+            first
+        );
+        assert!(recorded);
+        let changed = Notebook {
+            title: "Next".into(),
+            ..notebook
+        };
+        let second = store.save(&changed, "alice").await.unwrap();
+        let result = store.sync_with_remote_journal(
+            destination,
+            None,
+            |local, previous| {
+                assert_eq!(local, second);
+                assert_eq!(previous, Some(first.as_str()));
+                Err(CoreError::Storage("journal unavailable".into()))
+            },
+            || Ok(()),
+        );
+        assert!(result.is_err());
+        assert_eq!(
+            store.remote_ref(destination, reference, None).unwrap(),
+            Some(first)
+        );
+    }
+
+    #[tokio::test]
+    async fn workspace_pull_is_fast_forward_only_and_preserves_dirty_or_diverged_files() {
+        let root = tempfile::tempdir().unwrap();
+        let remote = root.path().join("remote");
+        let origin = GitNotebookStore::open(&remote, "aster/alice/checkout/first").unwrap();
+        let mut notebook = Notebook {
+            engine: None,
+            context: None,
+            id: "one".into(),
+            title: "Base".into(),
+            cells: vec![],
+        };
+        origin.save(&notebook, "alice").await.unwrap();
+        let local = root.path().join("local");
+        let output = Command::new("git")
+            .args(["clone", "--quiet"])
+            .arg(&remote)
+            .arg(&local)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let store = GitNotebookStore::open(&local, "aster/alice/checkout/first").unwrap();
+        notebook.title = "Advanced".into();
+        let advanced = origin.save(&notebook, "alice").await.unwrap();
+        assert_eq!(
+            store
+                .pull_workspace_sync(remote.to_str().unwrap(), None)
+                .unwrap(),
+            advanced
+        );
+        assert_eq!(store.draft("one").await.unwrap().notebook.title, "Advanced");
+        notebook.title = "Local draft".into();
+        store
+            .save_draft(&notebook, Some(store.draft("one").await.unwrap().revision))
+            .await
+            .unwrap();
+        assert!(store
+            .pull_workspace_sync(remote.to_str().unwrap(), None)
+            .is_err());
+        assert_eq!(
+            store.draft("one").await.unwrap().notebook.title,
+            "Local draft"
+        );
+        let local_head = store
+            .commit_drafts(vec!["one".into()], "Local".into())
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .pull_workspace_sync(remote.to_str().unwrap(), None)
+                .unwrap(),
+            local_head
+        );
+        notebook.title = "Remote divergence".into();
+        origin.save(&notebook, "alice").await.unwrap();
+        assert!(store
+            .pull_workspace_sync(remote.to_str().unwrap(), None)
+            .is_err());
+        assert_eq!(store.git_status().await.unwrap().head, local_head);
+        assert_eq!(
+            store.draft("one").await.unwrap().notebook.title,
+            "Local draft"
+        );
+    }
+
+    #[tokio::test]
+    async fn workspace_branch_switch_preserves_history_and_refuses_dirty_checkout() {
+        let root = tempfile::tempdir().unwrap();
+        let store = GitNotebookStore::open(root.path(), "aster/alice/checkout/first").unwrap();
+        let notebook = Notebook {
+            engine: None,
+            context: None,
+            id: "one".into(),
+            title: "First".into(),
+            cells: vec![],
+        };
+        let head = store.save(&notebook, "alice").await.unwrap();
+        let second = store
+            .switch_workspace_branch("aster/alice/checkout/second", true)
+            .await
+            .unwrap();
+        assert_eq!(second.git_status().await.unwrap().head, head);
+        assert_eq!(
+            second.git_status().await.unwrap().branch,
+            "aster/alice/checkout/second"
+        );
+        let mut changed = notebook.clone();
+        changed.title = "Second".into();
+        let revision = second.draft("one").await.unwrap().revision;
+        second.save_draft(&changed, Some(revision)).await.unwrap();
+        assert!(second
+            .switch_workspace_branch("aster/alice/checkout/first", false)
+            .await
+            .is_err());
+        assert_eq!(second.draft("one").await.unwrap().notebook.title, "Second");
+        second
+            .commit_drafts(vec!["one".into()], "Second branch".into())
+            .await
+            .unwrap();
+        let first = second
+            .switch_workspace_branch("aster/alice/checkout/first", false)
+            .await
+            .unwrap();
+        assert_eq!(first.draft("one").await.unwrap().notebook.title, "First");
+        assert!(first.switch_workspace_branch("main", false).await.is_err());
+        assert!(first
+            .switch_workspace_branch("aster/bob/checkout/other", true)
+            .await
+            .is_err());
+        assert!(first
+            .switch_workspace_branch("aster/alice/checkout/../other", true)
+            .await
+            .is_err());
+        assert_eq!(
+            first.git_status().await.unwrap().branch,
+            "aster/alice/checkout/first"
+        );
+    }
+
+    #[tokio::test]
+    async fn drafts_do_not_commit_and_explicit_commit_selects_only_named_notebooks() {
+        let root = tempfile::tempdir().unwrap();
+        let store = GitNotebookStore::open(root.path(), "alice/analysis").unwrap();
+        let mut first = Notebook {
+            engine: None,
+            context: None,
+            id: "one".into(),
+            title: "One".into(),
+            cells: vec![],
+        };
+        let original_head = store.save(&first, "alice").await.unwrap();
+        let original = store.draft("one").await.unwrap();
+        first.title = "Changed draft".into();
+        let saved = store
+            .save_draft(&first, Some(original.revision.clone()))
+            .await
+            .unwrap();
+        assert_ne!(saved.revision, original.revision);
+        assert_eq!(store.git_status().await.unwrap().head, original_head);
+        assert_eq!(
+            store.draft("one").await.unwrap().notebook.title,
+            "Changed draft"
+        );
+        assert!(store
+            .save_draft(&first, Some(original.revision))
+            .await
+            .is_err());
+        let second = Notebook {
+            engine: None,
+            context: None,
+            id: "two".into(),
+            title: "Uncommitted".into(),
+            cells: vec![],
+        };
+        store.save_draft(&second, None).await.unwrap();
+        assert_eq!(store.draft_ids().await.unwrap(), vec!["one", "two"]);
+        let commit = store
+            .commit_drafts(vec!["one".into()], "Commit only one".into())
+            .await
+            .unwrap();
+        assert_ne!(commit, original_head);
+        assert_eq!(store.get("one").await.unwrap().title, "Changed draft");
+        assert!(store.get("two").await.is_err());
+        assert!(store.git_status().await.unwrap().dirty);
+        let mut traversal = second.clone();
+        traversal.id = "../escape".into();
+        assert!(store.save_draft(&traversal, None).await.is_err());
+        assert!(store
+            .commit_drafts(vec!["../escape".into()], "Invalid".into())
+            .await
+            .is_err());
+        assert!(store.save_draft(&second, None).await.is_err());
+        std::fs::write(root.path().join("invalid.aster"), "not a notebook").unwrap();
+        assert!(store
+            .draft_ids()
+            .await
+            .unwrap()
+            .contains(&"invalid".to_owned()));
+        assert!(store.draft("invalid").await.is_err());
+    }
+}
+
+pub(crate) struct GitWorkspaces;
+#[async_trait]
+impl aster_core::workspace::WorkspaceCheckouts for GitWorkspaces {
+    async fn clone_repository(
+        &self,
+        root: PathBuf,
+        binding: NotebookWorkspaceBinding,
+        credential: aster_core::workspace::WorkspaceGitCredential,
+    ) -> Result<Box<dyn aster_core::workspace::WorkspaceCheckout>> {
+        GitNotebookStore::clone_https_no_checkout(
+            &root,
+            &binding,
+            &credential.token,
+            credential.ca_bundle.as_deref(),
+        )
+        .await?;
+        blocking(move || {
+            Ok(Box::new(GitNotebookStore::open_bound(
+                root,
+                binding.branch.clone(),
+                &binding,
+            )?)
+                as Box<dyn aster_core::workspace::WorkspaceCheckout>)
+        })
+        .await
+    }
+    async fn open(
+        &self,
+        root: PathBuf,
+        branch: String,
+        binding: NotebookWorkspaceBinding,
+    ) -> Result<Box<dyn aster_core::workspace::WorkspaceCheckout>> {
+        blocking(move || {
+            Ok(
+                Box::new(GitNotebookStore::open_recovered(root, &branch, &binding)?)
+                    as Box<dyn aster_core::workspace::WorkspaceCheckout>,
+            )
+        })
+        .await
     }
 }

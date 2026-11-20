@@ -188,6 +188,7 @@ async fn fixture_with_conversations(
         current_identity: authority,
         shared_model_use_enabled: use_enabled,
         team_workspaces: None,
+        durable_workspaces: None,
         team_git_targets: None,
         conversations,
         exchanges: Arc::new(InMemoryExchanges::default()),

@@ -23,6 +23,7 @@
 
     # workflows and glue
     pkgs.git
+    pkgs.gnutar
     pkgs.just
     pkgs.jq
     pkgs.curl

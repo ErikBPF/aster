@@ -1,10 +1,17 @@
-.git
-.devenv
-.direnv
-target
-worktrees
-graphify-out
-data
-.env*
-*.secrets.json
-*.secret.json
+# Only application sources enter the image build; omit caches and local secrets.
+**
+!Cargo.toml
+!Cargo.lock
+!proto/
+!proto/**
+!crates/
+!crates/**
+!migrations/
+!migrations/**
+!contracts/
+!contracts/**
+!docker/
+!docker/**
+**/*.secrets.json
+**/*.secret.json
+**/.env*

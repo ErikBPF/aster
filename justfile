@@ -260,6 +260,15 @@ chart-lint:
     helm dependency build {{chart}} 2>/dev/null || true
     helm template aster {{chart}} \
       | nix shell nixpkgs#kubeconform -c kubeconform -strict -summary -ignore-missing-schemas
+    if helm template aster {{chart}} --set server.workspaces.enabled=true >/dev/null 2>&1; then
+      echo "workspaces require verified identity and explicit storage configuration" >&2
+      exit 1
+    fi
+    helm template aster {{chart}} --set server.workspaces.enabled=true \
+      --set server.identity.kind=oidc --set server.identity.issuer=https://id.example.invalid \
+      --set server.identity.userUuidClaim=aster_user_uuid --set server.workspaces.secretName=workspace-settings \
+      --set server.workspaces.policyConfigMap=workspace-policy \
+      | nix shell nixpkgs#kubeconform -c kubeconform -strict -summary -ignore-missing-schemas
     if helm template aster {{chart}} --set ingress.enabled=true >/dev/null 2>&1; then
       echo "development identity must not render with ingress enabled" >&2
       exit 1
@@ -788,6 +797,44 @@ shared-model-access-validation:
     just shared-model-validation
     just ai-selection-validation
     echo 'shared-model-access-validation OK'
+
+# Real TLS Git clone, pinned ancestry, and credential isolation.
+workspace-clone-validation:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    python3 tests/notebook-git-https.py
+    echo 'workspace-clone-validation OK'
+
+# Durable workspace identities and owner-only access across login sessions.
+workspace-identity-validation:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bash tests/workspace-postgres.sh
+    echo 'workspace-identity-validation OK'
+
+# Recover unpublished workspace files from real disposable S3 + PostgreSQL.
+workspace-recovery-validation:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    python3 tests/workspace-recovery.py
+
+# Full browser/router flow plus real storage/Git service contracts in disposable fixtures.
+workspace-e2e-validation:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ASTER_TEST_WORKSPACE_BROWSER=1 python3 tests/workspace-recovery.py
+    echo 'workspace-e2e-validation OK'
+
+workspace-browser-validation:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    python3 tests/workspace-browser.py
+
+# Open a seeded, disposable workspace in Chromium for manual validation (two-hour limit).
+workspace-demo:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ASTER_WORKSPACE_DEMO=1 ASTER_TEST_WORKSPACE_BROWSER=1 python3 tests/workspace-recovery.py
 
 # Browser navigation, retry and stale-response checks against a controlled API.
 catalog-navigation-browser:
