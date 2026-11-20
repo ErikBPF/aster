@@ -4,8 +4,18 @@ use aster_core::{CoreError, Result};
 use std::path::Path;
 
 pub(crate) const MAX_FILES: usize = 10_000;
+/// Working-tree content, matching the documented checkout content limit.
 pub(crate) const MAX_BYTES: usize = 64 * 1024 * 1024;
-pub(crate) const MAX_ARCHIVE_BYTES: usize = 96 * 1024 * 1024;
+/// Git objects, refs and index of the depth-1 clone. Content plus Git store is
+/// the 128 MiB clone staging budget, so a repository inside the content limit
+/// can still be checkpointed.
+pub(crate) const MAX_GIT_BYTES: usize = 64 * 1024 * 1024;
+/// Base64 of the 128 MiB content-plus-Git ceiling plus JSON framing.
+pub(crate) const MAX_ARCHIVE_BYTES: usize = 192 * 1024 * 1024;
+
+const CONTENT_QUOTA: &str = "workspace content quota exceeded: working-tree files exceed 64 MiB";
+const GIT_QUOTA: &str =
+    "workspace Git store quota exceeded: the shallow clone exceeds 64 MiB of Git metadata";
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -42,6 +52,23 @@ fn excluded(path: &str) -> bool {
             | ".git/aster.checkout.lock"
     ) || path.starts_with(".git/hooks/")
         || (path.starts_with(".git/") && path.ends_with(".lock"))
+}
+
+/// Git metadata has its own budget so a checkout with 64 MiB of content is not
+/// rejected because the clone also carries a packfile.
+fn charge(path: &str, length: usize, content: &mut usize, git: &mut usize) -> Result<()> {
+    let (counter, limit, message) = if path.starts_with(".git/") {
+        (git, MAX_GIT_BYTES, GIT_QUOTA)
+    } else {
+        (content, MAX_BYTES, CONTENT_QUOTA)
+    };
+    *counter = counter
+        .checked_add(length)
+        .ok_or_else(|| invalid(message))?;
+    if *counter > limit {
+        return Err(invalid(message));
+    }
+    Ok(())
 }
 
 fn valid_path(path: &str) -> bool {
@@ -110,7 +137,8 @@ pub(crate) fn capture(root: &Path, scope: &str) -> Result<Vec<u8>> {
     let object_format = object_format(root)?;
     let mut files = std::collections::BTreeMap::new();
     let mut directories = vec![root.to_path_buf()];
-    let mut bytes = 0_usize;
+    let mut content_bytes = 0_usize;
+    let mut git_bytes = 0_usize;
     let mut count = 0_usize;
     while let Some(directory) = directories.pop() {
         for entry in std::fs::read_dir(directory).map_err(io)? {
@@ -144,12 +172,7 @@ pub(crate) fn capture(root: &Path, scope: &str) -> Result<Vec<u8>> {
             }
             let length = usize::try_from(meta.len())
                 .map_err(|_| invalid("workspace byte quota exceeded"))?;
-            bytes = bytes
-                .checked_add(length)
-                .ok_or_else(|| invalid("workspace byte quota exceeded"))?;
-            if bytes > MAX_BYTES {
-                return Err(invalid("workspace byte quota exceeded"));
-            }
+            charge(&relative, length, &mut content_bytes, &mut git_bytes)?;
             let content = std::fs::read(&path).map_err(io)?;
             if content.len() != length {
                 return Err(CoreError::Conflict(
@@ -416,6 +439,26 @@ mod tests {
             assert!(!target.join("deleted.txt").exists());
             assert_eq!(std::fs::read(target.join("untracked")).unwrap(), b"new");
         }
+    }
+
+    #[test]
+    fn git_metadata_does_not_spend_the_content_budget() {
+        let (mut content, mut git) = (0_usize, 0_usize);
+        charge(
+            ".git/objects/pack/a.pack",
+            MAX_BYTES,
+            &mut content,
+            &mut git,
+        )
+        .unwrap();
+        assert_eq!(content, 0);
+        charge("notes/query.spq", MAX_BYTES, &mut content, &mut git).unwrap();
+        assert_eq!(content, MAX_BYTES);
+        assert_eq!(git, MAX_BYTES);
+        let error = charge("notes/extra.spq", 1, &mut content, &mut git).unwrap_err();
+        assert!(error.to_string().contains("content quota"), "{error}");
+        let error = charge(".git/objects/pack/b.pack", 1, &mut content, &mut git).unwrap_err();
+        assert!(error.to_string().contains("Git store quota"), "{error}");
     }
 
     #[test]

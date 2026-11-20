@@ -204,7 +204,10 @@ conversations. Workspace query execution uses the saved, admitted cell and its
 checkout version. Assistant controls are unavailable in this delivery. The first
 delivery accepts regular files and directories; symlinks, external Git object
 stores and special files are rejected instead of silently omitted. A checkout
-has a 64 MiB content limit and a 10,000-entry limit. The dashboard shows quota
+has a 64 MiB working-tree content limit and a 10,000-entry limit; Git objects,
+refs and index are limited separately at 64 MiB, so the 128 MiB clone staging
+budget is content plus Git metadata. A repository that exceeds either limit is
+refused with the limit named, after the shallow transfer. The dashboard shows quota
 usage. Incomplete deletion remains visible and charged until cleanup succeeds.
 
 Existing legacy files are not reassigned or moved automatically. An explicitly
