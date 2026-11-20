@@ -303,8 +303,8 @@ access requirements. Each installation is one organization.
 Registry validation uses `just ai-registry-test`, `just ai-registry-browser`,
 `just notebook-ai-browser` (real Rust notebook/cell UI with controlled model/MCP endpoints),
 `just ai-registry-postgres-test` and `just ai-registry-live-browser`. See the
-review and local deployment record for observed
-results and runtime configuration limits. The notebook controls validation
+[review and local deployment record](plans/ai-skills-models-rv.md) for observed
+results and runtime configuration limits. The [notebook controls validation](plans/notebook-ai-controls.md)
 records multiple selections, personal defaults and notebook MCP execution.
 
 
@@ -384,7 +384,7 @@ Attachment details open through Attach, with a removable context chip after
 selection. Pending tool confirmations remain in the conversation, with exact
 arguments available before approval. Personal defaults remain in AI settings.
 
-See the layout delivery record for browser
+See the [layout delivery record](plans/compact-conversation-ui.md) for browser
 coverage and deployment status.
 
 ## Local mock assistant
